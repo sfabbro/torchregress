@@ -17,7 +17,7 @@ import shutil
 import subprocess
 import sys
 
-PROJECT = pathlib.Path("/Users/fabbros/src/torchregress")
+PROJECT = pathlib.Path("/Users/fabbros/src/astroai/torchregress")
 BACKUP = pathlib.Path("/tmp/torchregress_revert_backup")
 LOSSES = PROJECT / "src/torchregress" / "losses"
 

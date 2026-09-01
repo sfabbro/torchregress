@@ -18,7 +18,9 @@ from torchregress.inference.ppi import (
     ppi_calibrated_mean_ci,
     ppi_diagnostics,
     ppi_mean_ci,
+    ppi_multivariate_mean_ci,
     ppi_ols_ci,
+    ppi_parameter_inversion,
     ppi_quantile_ci,
 )
 
@@ -583,3 +585,102 @@ class TestPPINoSeed:
         )
         assert result["bootstrap_samples"] == 1000
         assert len(result["coef"]) > 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TestPPIMultivariateMeanCI
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestPPIMultivariateMeanCI:
+    def test_multivariate_shape_and_covariance(self) -> None:
+        """K-dimensional multivariate PPI produces valid estimates and positive-definite covariance."""
+        torch.manual_seed(42)
+        n_l, n_u, k = 50, 500, 3
+        # True multivariate normal means: [1.0, -0.5, 2.0]
+        true_mean = torch.tensor([1.0, -0.5, 2.0])
+        y_l = true_mean + 0.5 * torch.randn(n_l, k)
+        p_l = y_l + 0.2 * torch.randn(n_l, k)  # Correlated predictions
+        p_u = true_mean + 0.2 * torch.randn(n_u, k)
+
+        res = ppi_multivariate_mean_ci(y_l, p_l, p_u, alpha=0.05)
+
+        assert res["method"] == "ppi_multivariate_mean_ci"
+        assert res["dim"] == k
+        assert len(res["estimate"]) == k
+        assert len(res["se"]) == k
+        assert len(res["ci_lower"]) == k
+        assert len(res["ci_upper"]) == k
+
+        cov = torch.tensor(res["covariance"])
+        assert cov.shape == (k, k)
+        # Covariance matrix must be symmetric positive-definite
+        assert torch.allclose(cov, cov.T, atol=1e-5)
+        eigenvalues = torch.linalg.eigvalsh(cov)
+        assert (eigenvalues > 0).all()
+
+        # Check marginal coverage covers true values
+        for i in range(k):
+            assert res["ci_lower"][i] <= res["ci_upper"][i]
+            assert res["se"][i] > 0.0
+
+        # Critical value for 3 degrees of freedom at alpha=0.05 is ~7.815
+        assert 7.0 < res["chi2_critical"] < 8.5
+
+    def test_multivariate_1d_fallback(self) -> None:
+        """1D input tensors are handled cleanly as K=1 multivariate problem."""
+        y_l = torch.randn(30) + 2.0
+        p_l = y_l + 0.1 * torch.randn(30)
+        p_u = torch.randn(100) + 2.0
+
+        res = ppi_multivariate_mean_ci(y_l, p_l, p_u, alpha=0.1)
+        assert res["dim"] == 1
+        assert len(res["estimate"]) == 1
+        assert res["ci_lower"][0] <= res["ci_upper"][0]
+
+    def test_multivariate_input_validation(self) -> None:
+        """Mismatched sample counts or dimensions raise ValueError."""
+        y_l = torch.randn(20, 2)
+        p_l = torch.randn(20, 3)  # Wrong dimension
+        p_u = torch.randn(50, 2)
+
+        with pytest.raises(ValueError, match="matching dimension"):
+            ppi_multivariate_mean_ci(y_l, p_l, p_u)
+
+        with pytest.raises(ValueError, match="alpha must be in"):
+            ppi_multivariate_mean_ci(y_l, torch.randn(20, 2), p_u, alpha=1.5)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TestPPIParameterInversion
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestPPIParameterInversion:
+    def test_parameter_inversion_root_finding(self) -> None:
+        """Inverting residual equation E[Y - theta] = 0 recovers true parameter with coverage."""
+        torch.manual_seed(123)
+        theta_true = 3.5
+        y_l = theta_true + torch.randn(40)
+        p_l = y_l + 0.1 * torch.randn(40)
+        p_u = theta_true + 0.1 * torch.randn(300)
+
+        def residual_fn(y: torch.Tensor, theta: float) -> torch.Tensor:
+            return torch.as_tensor(y) - float(theta)
+
+        grid = [2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0]
+        res = ppi_parameter_inversion(
+            estimating_fn=residual_fn,
+            theta_grid=grid,
+            y_labeled=y_l,
+            pred_labeled=p_l,
+            pred_unlabeled=p_u,
+            alpha=0.05,
+        )
+
+        assert res["theta_best"] == 3.5
+        assert theta_true in res["confidence_set"]
+        assert 3.5 in res["confidence_set"]
+        # Far-away parameters should be rejected
+        assert 2.0 not in res["confidence_set"]
+        assert 5.0 not in res["confidence_set"]

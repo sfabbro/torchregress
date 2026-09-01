@@ -5,7 +5,9 @@ from .ppi import (
     ppi_calibrated_mean_ci,
     ppi_diagnostics,
     ppi_mean_ci,
+    ppi_multivariate_mean_ci,
     ppi_ols_ci,
+    ppi_parameter_inversion,
     ppi_pp_mean_ci,
     ppi_quantile_ci,
 )
@@ -14,8 +16,10 @@ __all__ = [
     "PPIConfig",
     "ppi_calibrated_mean_ci",
     "ppi_mean_ci",
+    "ppi_multivariate_mean_ci",
+    "ppi_ols_ci",
+    "ppi_parameter_inversion",
     "ppi_pp_mean_ci",
     "ppi_quantile_ci",
-    "ppi_ols_ci",
     "ppi_diagnostics",
 ]

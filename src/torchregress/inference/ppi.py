@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, Callable, cast
 
 import torch
 from torch import Tensor
@@ -610,12 +610,277 @@ def ppi_pp_mean_ci(  # noqa: PLR0912
     }
 
 
+def ppi_multivariate_mean_ci(
+    y_labeled: Tensor | list[Any],
+    pred_labeled: Tensor | list[Any],
+    pred_unlabeled: Tensor | list[Any],
+    *,
+    alpha: float = 0.05,
+    lambdas: Tensor | list[float] | None = None,
+    cross_fits: int = 0,
+) -> dict[str, Any]:
+    """Prediction-powered confidence region for a multivariate population mean E[Y].
+
+    Extends prediction-powered inference to K-dimensional target vectors.
+    Computes component-wise point estimates and marginal confidence intervals,
+    along with the full K x K asymptotic empirical covariance matrix and joint
+    confidence ellipsoid critical value (chi2_K).
+
+    Parameters
+    ----------
+    y_labeled : Tensor or nested list of shape (n, K) or (n,)
+        Ground-truth labels on the labeled set.
+    pred_labeled : Tensor or nested list of shape (n, K) or (n,)
+        Model predictions on the labeled set.
+    pred_unlabeled : Tensor or nested list of shape (N, K) or (N,)
+        Model predictions on the unlabeled set.
+    alpha : float, default=0.05
+        Error level (0 < alpha < 1).
+    lambdas : Tensor or list of float, optional
+        Grid of lambda candidates for component-wise PPI++ variance minimization.
+    cross_fits : int, default=0
+        Number of cross-fitting folds for affine calibration.
+
+    Returns
+    -------
+    dict[str, Any] with keys:
+        - "estimate": list[float] (length K)
+        - "covariance": list[list[float]] (K x K)
+        - "se": list[float] (length K)
+        - "ci_lower": list[float] (length K)
+        - "ci_upper": list[float] (length K)
+        - "lambda": list[float] (length K)
+        - "chi2_critical": float
+        - "n_labeled": int
+        - "n_unlabeled": int
+        - "dim": int
+    """
+    if not 0 < alpha < 1:
+        raise ValueError(f"alpha must be in (0, 1), got {alpha}")
+
+    y_l = _as_2d(torch.as_tensor(y_labeled, dtype=torch.float32).detach())
+    p_l = _as_2d(torch.as_tensor(pred_labeled, dtype=torch.float32).detach())
+    p_u = _as_2d(torch.as_tensor(pred_unlabeled, dtype=torch.float32).detach())
+
+    if y_l.shape[0] != p_l.shape[0]:
+        raise ValueError("y_labeled and pred_labeled must have the same number of samples")
+    if y_l.shape[1] != p_l.shape[1] or y_l.shape[1] != p_u.shape[1]:
+        raise ValueError(
+            "y_labeled, pred_labeled, and pred_unlabeled must have matching dimension K"
+        )
+
+    n = y_l.shape[0]
+    big_n = p_u.shape[0]
+    k_dim = y_l.shape[1]
+
+    min_l = cross_fits + 2 if cross_fits > 0 else 2
+    if n < min_l or big_n < 2:
+        raise ValueError(
+            f"ppi_multivariate_mean_ci requires at least {min_l} labeled and 2 unlabeled samples"
+        )
+
+    estimates = []
+    lambda_stars = []
+    r_components = []
+    p_u_eff_components = []
+
+    for k in range(k_dim):
+        res_k = ppi_pp_mean_ci(
+            y_l[:, k],
+            p_l[:, k],
+            p_u[:, k],
+            lambdas=lambdas,
+            cross_fits=cross_fits,
+            alpha=alpha,
+        )
+        estimates.append(float(res_k["estimate"]))
+        lam_k = float(res_k["lambda"])
+        lambda_stars.append(lam_k)
+
+        if cross_fits > 0:
+            k_fold = int(cross_fits)
+            fold_idx = torch.arange(n) % k_fold
+            pl_cal = torch.empty_like(p_l[:, k])
+            for f in range(k_fold):
+                t_mask = fold_idx != f
+                pl_cal[~t_mask] = _linear_calibrate_apply(
+                    p_l[t_mask, k], y_l[t_mask, k], p_l[~t_mask, k]
+                )
+            pu_cal = _linear_calibrate_apply(p_l[:, k], y_l[:, k], p_u[:, k])
+            r_k = y_l[:, k] - lam_k * pl_cal
+            p_u_eff_components.append(pu_cal)
+        else:
+            r_k = y_l[:, k] - lam_k * p_l[:, k]
+            p_u_eff_components.append(p_u[:, k])
+        r_components.append(r_k)
+
+    r_mat = torch.stack(r_components, dim=1)
+    pu_mat = torch.stack(p_u_eff_components, dim=1)
+
+    r_cent = r_mat - r_mat.mean(dim=0, keepdim=True)
+    cov_r = (r_cent.T @ r_cent) / max(n - 1, 1)
+
+    pu_cent = pu_mat - pu_mat.mean(dim=0, keepdim=True)
+    cov_pu = (pu_cent.T @ pu_cent) / max(big_n - 1, 1)
+
+    lam_diag = torch.diag(torch.as_tensor(lambda_stars, dtype=torch.float32, device=y_l.device))  # noqa: TOR003
+    cov_ppi = (cov_r / n) + (lam_diag @ cov_pu @ lam_diag) / big_n
+
+    cov_ppi = 0.5 * (cov_ppi + cov_ppi.T)
+    variances = torch.diagonal(cov_ppi).clamp_min(1e-20)
+    ses = torch.sqrt(variances)
+
+    z = float(torch.distributions.Normal(0.0, 1.0).icdf(torch.tensor(1.0 - alpha / 2.0)).item())
+    ci_lower = [est - z * float(se.item()) for est, se in zip(estimates, ses)]
+    ci_upper = [est + z * float(se.item()) for est, se in zip(estimates, ses)]
+
+    from scipy import stats
+
+    chi2_crit = float(stats.chi2.ppf(1.0 - alpha, df=k_dim))
+
+    return {
+        "method": "ppi_multivariate_mean_ci",
+        "estimate": estimates,
+        "covariance": cov_ppi.detach().cpu().tolist(),
+        "se": [float(s.item()) for s in ses],
+        "ci_lower": ci_lower,
+        "ci_upper": ci_upper,
+        "lambda": lambda_stars,
+        "chi2_critical": chi2_crit,
+        "alpha": float(alpha),
+        "n_labeled": int(n),
+        "n_unlabeled": int(big_n),
+        "dim": int(k_dim),
+    }
+
+
+def ppi_parameter_inversion(
+    estimating_fn: Callable[[Any, Any], Any],
+    theta_grid: Tensor | list[Any],
+    y_labeled: Tensor | list[Any],
+    pred_labeled: Tensor | list[Any],
+    pred_unlabeled: Tensor | list[Any],
+    *,
+    alpha: float = 0.05,
+    use_ppi_pp: bool = True,
+    cross_fits: int = 0,
+    lambdas: Tensor | list[float] | None = None,
+) -> dict[str, Any]:
+    """Prediction-powered parameter confidence set via estimating equation test inversion.
+
+    Given a target estimating equation E[g(Y, theta)] = 0 (e.g. Hubble residuals,
+    regression residuals, or score functions), this computes the PPI / PPI++
+    confidence interval for each candidate parameter theta in theta_grid.
+
+    The valid (1 - alpha) confidence set is the set of parameters whose PPI interval
+    covers zero:
+        C_{1 - alpha} = { theta in theta_grid : 0 in CI_{1 - alpha}(PPI[g(Y, theta)]) }
+
+    Parameters
+    ----------
+    estimating_fn : Callable[[Any, Any], Any]
+        Function mapping (y, theta) to residual or estimating vector g(y, theta).
+    theta_grid : Tensor or list of Any
+        Collection of candidate parameter values (scalar, tuple, or vector).
+    y_labeled : Tensor or list
+        Labeled targets.
+    pred_labeled : Tensor or list
+        Model predictions for labeled set.
+    pred_unlabeled : Tensor or list
+        Model predictions for unlabeled set.
+    alpha : float, default=0.05
+        Error level.
+    use_ppi_pp : bool, default=True
+        Whether to use variance-optimal PPI++ tuning.
+    cross_fits : int, default=0
+        Number of cross-fitting folds.
+    lambdas : Tensor or list of float, optional
+        Lambda search grid for PPI++.
+
+    Returns
+    -------
+    dict[str, Any] with keys:
+        - "theta_grid": list
+        - "estimates": list[float]
+        - "ci_lower": list[float]
+        - "ci_upper": list[float]
+        - "se": list[float]
+        - "covered_indices": list[int]
+        - "confidence_set": list[Any]
+        - "theta_best": Any
+        - "alpha": float
+    """
+    estimates = []
+    lowers = []
+    uppers = []
+    ses = []
+    covered_indices = []
+    confidence_set = []
+
+    grid_list = list(theta_grid) if not isinstance(theta_grid, list) else theta_grid
+
+    for idx, theta in enumerate(grid_list):
+        g_l_true = estimating_fn(y_labeled, theta)
+        g_l_pred = estimating_fn(pred_labeled, theta)
+        g_u_pred = estimating_fn(pred_unlabeled, theta)
+
+        if use_ppi_pp:
+            res = ppi_pp_mean_ci(
+                g_l_true,
+                g_l_pred,
+                g_u_pred,
+                lambdas=lambdas,
+                cross_fits=cross_fits,
+                alpha=alpha,
+            )
+        else:
+            res = ppi_mean_ci(
+                g_l_true,
+                g_l_pred,
+                g_u_pred,
+                config=PPIConfig(alpha=alpha),
+            )
+
+        est = float(res["estimate"])
+        lo = float(res["ci_lower"])
+        hi = float(res["ci_upper"])
+        se_val = float(res["se"])
+
+        estimates.append(est)
+        lowers.append(lo)
+        uppers.append(hi)
+        ses.append(se_val)
+
+        if lo <= 0.0 <= hi:
+            covered_indices.append(idx)
+            confidence_set.append(theta)
+
+    abs_estimates = [abs(e) for e in estimates]
+    best_idx = int(abs_estimates.index(min(abs_estimates))) if abs_estimates else 0
+    theta_best = grid_list[best_idx] if len(grid_list) > 0 else None
+
+    return {
+        "theta_grid": grid_list,
+        "estimates": estimates,
+        "ci_lower": lowers,
+        "ci_upper": uppers,
+        "se": ses,
+        "covered_indices": covered_indices,
+        "confidence_set": confidence_set,
+        "theta_best": theta_best,
+        "alpha": float(alpha),
+        "use_ppi_pp": use_ppi_pp,
+    }
+
+
 __all__ = [
     "PPIConfig",
     "ppi_calibrated_mean_ci",
     "ppi_diagnostics",
     "ppi_mean_ci",
+    "ppi_multivariate_mean_ci",
     "ppi_ols_ci",
+    "ppi_parameter_inversion",
     "ppi_pp_mean_ci",
     "ppi_quantile_ci",
 ]
