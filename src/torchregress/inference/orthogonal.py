@@ -216,7 +216,7 @@ def orthogonal_partially_linear(
     theta = float((residual_x * residual_y).sum()) / denominator
 
     scores = residual_x * (residual_y - theta * residual_x)
-    variance = float((scores**2).sum()) / (denominator**2) * y_vec.numel()
+    variance = float((scores**2).sum()) / (denominator**2)
     sigma = variance**0.5
     z_value = _normal_quantile(0.5 + 0.5 * confidence)
     return OrthogonalEstimate(

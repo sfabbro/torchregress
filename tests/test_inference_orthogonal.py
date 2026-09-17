@@ -19,6 +19,17 @@ def _confounded_sample(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     generator = torch.Generator().manual_seed(seed)
     z = torch.rand(n, generator=generator, dtype=torch.float64)
+    eta = z + z**2 + 0.5 * z**3
+    x = 2.0 * eta + 0.5 * torch.randn(n, generator=generator, dtype=torch.float64)
+    y = theta * x + eta + 0.5 * torch.randn(n, generator=generator, dtype=torch.float64)
+    return y, x, z
+
+
+def _smooth_nuisance_sample(
+    n: int = 4000, theta: float = 1.0, seed: int = 0
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    generator = torch.Generator().manual_seed(seed)
+    z = torch.rand(n, generator=generator, dtype=torch.float64)
     eta = torch.sin(2.0 * math.pi * z) + z**2
     x = 2.0 * eta + 0.5 * torch.randn(n, generator=generator, dtype=torch.float64)
     y = theta * x + eta + 0.5 * torch.randn(n, generator=generator, dtype=torch.float64)
@@ -45,6 +56,18 @@ def test_orthogonal_interval_covers_truth_across_seeds():
         if estimate.ci_low <= 0.7 <= estimate.ci_high:
             covered += 1
     assert covered >= 0.85 * reps
+
+
+def test_misspecified_nuisance_basis_leaves_persistent_bias():
+    rigid = orthogonal_partially_linear(
+        *_smooth_nuisance_sample(n=24000, seed=13), folds=5, nuisance_degree=3, seed=13
+    )
+    assert abs(rigid.theta - 1.0) > 3.0 * rigid.sigma
+    flexible = orthogonal_partially_linear(
+        *_smooth_nuisance_sample(n=24000, seed=13), folds=5, nuisance_degree=8, seed=13
+    )
+    assert abs(flexible.theta - 1.0) < 3.0 * flexible.sigma
+    assert flexible.ci_low <= 1.0 <= flexible.ci_high
 
 
 def test_orthogonal_estimator_handles_multidimensional_nuisance():
@@ -140,3 +163,13 @@ def test_nuisance_features_validation():
         orthogonal_partially_linear(y, x, z, nuisance_features=lambda z: z[:, :0])
     with pytest.raises(ValueError, match="finite"):
         orthogonal_partially_linear(y, x, z, nuisance_features=lambda z: z * float("nan"))
+
+
+def test_influence_function_variance_scales_as_one_over_sqrt_n():
+    sigmas = []
+    for n in (2000, 8000):
+        y, x, z = _confounded_sample(n=n, theta=1.0, seed=12)
+        estimate = orthogonal_partially_linear(y, x, z, folds=5, seed=12)
+        sigmas.append(estimate.sigma)
+    ratio = sigmas[0] / sigmas[1]
+    assert 1.5 < ratio < 2.7, f"sigma should shrink like 1/sqrt(n), got ratio {ratio}"
