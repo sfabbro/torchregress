@@ -101,3 +101,42 @@ def test_naive_estimator_is_unbiased_without_confounding():
     naive = naive_linear_estimate(y, x)
     assert abs(naive.theta - 0.3) < 3.0 * naive.sigma
     assert not naive.cross_fitted
+
+
+def _one_hot(z: torch.Tensor, n_groups: int) -> torch.Tensor:
+    index = z[:, 0].to(torch.long)
+    return torch.nn.functional.one_hot(index, n_groups).to(torch.float64)
+
+
+def test_categorical_per_method_nuisance_with_one_hot_features():
+    generator = torch.Generator().manual_seed(11)
+    n = 3000
+    n_methods = 4
+    method = torch.randint(0, n_methods, (n,), generator=generator).to(torch.float64)
+    offsets = torch.tensor([0.0, 0.4, -0.3, 0.7], dtype=torch.float64)
+    offset = offsets[method.to(torch.long)]
+    x = offset + 0.5 * torch.randn(n, generator=generator, dtype=torch.float64)
+    y = 1.2 * x + offset + 0.5 * torch.randn(n, generator=generator, dtype=torch.float64)
+
+    naive = naive_linear_estimate(y, x)
+    orthogonal = orthogonal_partially_linear(
+        y,
+        x,
+        method,
+        folds=5,
+        nuisance_features=lambda z: _one_hot(z, n_methods),
+        seed=0,
+    )
+    assert abs(naive.theta - 1.2) > 0.1
+    assert abs(orthogonal.theta - 1.2) < 3.0 * orthogonal.sigma
+    assert orthogonal.ci_low <= 1.2 <= orthogonal.ci_high
+
+
+def test_nuisance_features_validation():
+    y, x, z = _confounded_sample(n=200, seed=6)
+    with pytest.raises(ValueError, match="matching y"):
+        orthogonal_partially_linear(y, x, z, nuisance_features=lambda z: z[:10])
+    with pytest.raises(ValueError, match="at least one column"):
+        orthogonal_partially_linear(y, x, z, nuisance_features=lambda z: z[:, :0])
+    with pytest.raises(ValueError, match="finite"):
+        orthogonal_partially_linear(y, x, z, nuisance_features=lambda z: z * float("nan"))

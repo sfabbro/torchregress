@@ -28,6 +28,7 @@ same real data, while cosmology is estimated from an orthogonal moment.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import torch
@@ -141,6 +142,7 @@ def orthogonal_partially_linear(
     folds: int = 5,
     ridge: float = 1.0e-6,
     nuisance_degree: int = 3,
+    nuisance_features: Callable[[Tensor], Tensor] | None = None,
     confidence: float = 0.95,
     seed: int = 0,
 ) -> OrthogonalEstimate:
@@ -152,8 +154,12 @@ def orthogonal_partially_linear(
         z: Nuisance covariate(s): ``[N]`` or ``[N, K]``.
         folds: Number of cross-fitting folds (``>= 2`` recommended; ``1`` gives
             the non-cross-fitted variant for diagnostics only).
-        ridge: Ridge penalty for the polynomial nuisance regressions.
-        nuisance_degree: Degree of the polynomial nuisance basis on ``z``.
+        ridge: Ridge penalty for the nuisance regressions.
+        nuisance_degree: Degree of the polynomial nuisance basis on ``z``
+            (ignored when ``nuisance_features`` is given).
+        nuisance_features: Optional callable mapping ``z`` ``[N, K]`` to a
+            feature matrix ``[N, P]``; use for categorical/per-method
+            nuisances (one-hot) or richer bases (splines, RBFs).
         confidence: Two-sided confidence level for the reported interval.
         seed: Seed for the fold assignment.
 
@@ -181,7 +187,21 @@ def orthogonal_partially_linear(
         raise ValueError("confidence must lie strictly between 0 and 1")
 
     generator = torch.Generator().manual_seed(seed)
-    features = _poly_features(z_tensor, nuisance_degree)
+    if nuisance_features is not None:
+        features = nuisance_features(z_tensor)
+        if not torch.is_tensor(features):
+            features = torch.as_tensor(features)
+        features = features.to(dtype=torch.float64)
+        if features.ndim != 2 or features.shape[0] != y_vec.numel():
+            raise ValueError(
+                f"nuisance_features must return shape [N,P] matching y, got {tuple(features.shape)}"
+            )
+        if features.shape[1] < 1:
+            raise ValueError("nuisance_features must return at least one column")
+        if not bool(torch.isfinite(features).all()):
+            raise ValueError("nuisance_features must be finite")
+    else:
+        features = _poly_features(z_tensor, nuisance_degree)
     residual_x, r2_x = _cross_fitted_residuals(
         features, x_vec, folds=folds, ridge=ridge, generator=generator
     )
