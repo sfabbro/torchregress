@@ -170,3 +170,16 @@ def test_float32_inputs_supported(basis: BSplineDensityBasis) -> None:
     vals = basis.evaluate(z)
     assert vals.dtype == torch.float32
     assert torch.allclose(basis.evaluate(z, normalized=False).sum(-1), torch.ones(101), atol=1e-5)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_cumulative_moment_accepts_cuda_x_with_cpu_breakpoints(basis: BSplineDensityBasis) -> None:
+    """Construction-time breakpoints stay on CPU; callers may evaluate on CUDA."""
+    assert basis.breakpoints.device.type == "cpu"
+    z = torch.linspace(0.0, 3.0, 17, device="cuda", dtype=torch.float32)
+    cdf = basis.cdf(z)
+    assert cdf.device.type == "cuda"
+    assert cdf.shape == (17, basis.n_basis)
+    w1 = basis.absolute_deviation(z)
+    assert w1.device.type == "cuda"
+    assert torch.isfinite(w1).all()

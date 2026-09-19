@@ -262,7 +262,10 @@ class BSplineDensityBasis:
             raise ValueError("cumulative_moment expects a 1D tensor of evaluation points")
         xc = x.detach().to(torch.float64).clamp(self.lo, self.hi)
         uniq, inverse = torch.unique(xc, return_inverse=True)
-        pts = torch.unique(torch.cat([self.breakpoints[:1], uniq]))
+        # Breakpoints may live on CPU while ``x`` is on CUDA (e.g. after
+        # ``module.to(device)`` without moving construction-time buffers).
+        bp0 = self.breakpoints[:1].to(device=uniq.device, dtype=uniq.dtype)
+        pts = torch.unique(torch.cat([bp0, uniq]))
         pieces, integrals = self._piece_integrals(pts, moment=moment)
         cum = torch.cat(
             [integrals.new_zeros(1, self.n_basis), integrals.cumsum(0)]
@@ -276,7 +279,7 @@ class BSplineDensityBasis:
 
     def basis_means(self) -> Tensor:
         """``int x M_m(x) dx`` for every basis function (the mean of each basis density)."""
-        e = self.breakpoints[[0, -1]]
+        e = self.breakpoints[[0, -1]].to(dtype=torch.float64)
         _, integrals = self._piece_integrals(e, moment=1)
         return integrals.sum(0)
 
