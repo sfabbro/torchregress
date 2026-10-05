@@ -833,7 +833,7 @@ class InputNoiseMDNLoss(InputNoiseAugmentationLoss):
         reduction: str = "mean",
         **kwargs: Any,
     ) -> None:
-        mdn_kwargs = {
+        mdn_kwargs: dict[str, Any] = {
             "n_components": n_components,
             "n_features": n_features,
             "covariance_type": kwargs.pop("covariance_type", "diagonal"),

@@ -20,7 +20,7 @@ try:
 except ImportError:
     HAS_ZUKO = False
 
-    MAF = NSF = RealNVP = None  # ty: ignore[invalid-assignment]  # zuko is optional; call sites are guarded by HAS_ZUKO
+    MAF = NSF = RealNVP = None  # zuko is optional; call sites are guarded by HAS_ZUKO
 
 from ..utils.tensor_ops import masked_reduction
 from .base import DistributionLoss

@@ -66,6 +66,8 @@ class FaithfulGaussianLoss(GaussianNLLLoss):
     BetaNLLLoss : Variance-detached *reweighting* of the joint NLL.
     """
 
+    mean_weight: torch.Tensor
+
     def __init__(
         self,
         *,
