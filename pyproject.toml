@@ -32,9 +32,9 @@ dependencies = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/sfabbro/torchregress"
-"Bug Tracker" = "https://github.com/sfabbro/torchregress/issues"
-"Documentation" = "https://sfabbro.github.io/torchregress/"
+"Homepage" = "https://github.com/astroai/torchregress"
+"Bug Tracker" = "https://github.com/astroai/torchregress/issues"
+"Documentation" = "https://astroai.github.io/torchregress/"
 
 [project.scripts]
 torchregress-health = "torchregress.health:check_health"

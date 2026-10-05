@@ -1,15 +1,18 @@
 name: Release
 
+# vX.Y.ZrcN tags publish to TestPyPI (dry run); vX.Y.Z tags publish to PyPI.
+# Both use Trusted Publishing: astroai/torchregress, workflow release.yml,
+# environment `testpypi` or `pypi` respectively (see docs/RELEASING.md).
+
 on:
   push:
     tags: ["v*"]
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
-  publish:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,6 +30,46 @@ jobs:
       - name: Validate artifacts
         run: ./scripts/release/build_package.sh --check-only
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish-testpypi:
+    if: contains(github.ref_name, 'rc')
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/torchregress
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          attestations: true
+
+  publish-pypi:
+    if: ${{ !contains(github.ref_name, 'rc') }}
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/torchregress
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:

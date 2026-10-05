@@ -25,23 +25,31 @@ Add a **GitHub** trusted publisher with:
 
 | Field | Value |
 |-------|-------|
-| Owner | `sfabbro` |
+| Owner | `astroai` |
 | Repository | `torchregress` |
 | Workflow name | `release.yml` |
 | Environment name | `pypi` |
 
 No long-lived PyPI API token is required in GitHub secrets when Trusted Publishing is configured.
 
-### 2. Create the GitHub `pypi` environment
+Before the first upload the project does not exist on PyPI yet: add the same values as a
+**pending publisher** under *Your account → Publishing*. Do the same on TestPyPI
+(`https://test.pypi.org`) for release-candidate dry runs.
+
+### 2. Create the GitHub `pypi` and `testpypi` environments
 
 In the GitHub repository:
 
-**Settings → Environments → New environment → `pypi`**
+**Settings → Environments → New environment → `pypi`** (and again for `testpypi`)
+
+Tags `vX.Y.ZrcN` publish to TestPyPI through the `testpypi` environment; tags `vX.Y.Z`
+publish to PyPI through `pypi`. A TestPyPI trusted publisher with the same owner,
+repository and workflow, and environment `testpypi`, is needed for the dry run.
 
 Recommended protection rules:
 
 - Required reviewers before deployment (optional but recommended for production releases)
-- Restrict deployment branches to `main` if you use branch protections
+- Deployment branches and tags: allow tags matching `v*` (the release job runs on tag pushes, not on `main`)
 
 The workflow job in [`.github/workflows/release.yml`](../.github/workflows/release.yml) uses
 `environment: pypi` and `permissions.id-token: write`, which are required for OIDC-based
