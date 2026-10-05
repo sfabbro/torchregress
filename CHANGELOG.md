@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+**Algorithm freeze for 0.3.0 (from 2026-10-05):** no new methods or method changes
+until 0.3.0 ships; only fixes, tests, docs and packaging. Methods to add or
+remove are decided for 0.4.0.
+
+### Changed
+- Dependency floors raised to the newest releases resolvable from conda-forge:
+  `torch>=2.13`, `numpy>=2.5`, `scipy>=1.18`, `torchmetrics>=1.9`; extras
+  `matplotlib>=3.11`, `zuko>=1.6`, `scikit-learn>=1.9`, `pandas>=3.0`,
+  `polars>=1.43`, `pyarrow>=25.0`, `pytest>=9.1`. Pre-commit hooks: ruff
+  v0.16.10, pre-commit-hooks v6.0.0. Tested on torch 2.14.1 / numpy 2.5.3 /
+  scipy 1.18.1 (PyPI) and the pixi lock (conda-forge torch 2.13.0).
+
 ### Fixed
 - `inference.orthogonal_partially_linear`: both nuisance regressions (`E[x|z]`, `E[y|z]`) now share one cross-fitting split. Independent splits biased `theta` (-0.026, about 7.7 standard errors, over 200 replications of the DoubleML CCDDHNR-2018 design at n = 500); found by the harness `orthogonal_inference` suite against DoubleML on the same nuisance basis. Point estimates for a given `seed` change.
 

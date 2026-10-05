@@ -1,5 +1,11 @@
 # Roadmap
 
+> **2026-10-05: algorithm freeze for 0.3.0** (first PyPI release, published
+> from `astroai/torchregress`). Until it ships, only fixes, tests, docs and
+> packaging land. Which methods to add or remove is decided for 0.4.0. The
+> release plan lives in the project doc "torchregress release plan"; this file
+> is rewritten after 0.3.0.
+
 Current version: `0.1.0` (unreleased).
 Tests: 2723 pass, 89% coverage. Docs: build clean.
 

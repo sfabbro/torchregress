@@ -7611,20 +7611,20 @@ packages:
 - pypi: ./
   name: torchregress
   requires_dist:
-  - torch
-  - numpy
-  - torchmetrics
-  - scipy
-  - pytest ; extra == 'test'
-  - pytest-cov ; extra == 'test'
-  - polars ; extra == 'test'
-  - pyarrow ; extra == 'test'
-  - pyyaml ; extra == 'test'
-  - scikit-learn ; extra == 'test'
-  - pandas ; extra == 'test'
-  - zensical ; extra == 'docs'
-  - matplotlib ; extra == 'viz'
-  - zuko ; extra == 'flows'
+  - torch>=2.13
+  - numpy>=2.5
+  - torchmetrics>=1.9
+  - scipy>=1.18
+  - pytest>=9.1 ; extra == 'test'
+  - pytest-cov>=7.1 ; extra == 'test'
+  - polars>=1.43 ; extra == 'test'
+  - pyarrow>=25.0 ; extra == 'test'
+  - pyyaml>=6.0.3 ; extra == 'test'
+  - scikit-learn>=1.9 ; extra == 'test'
+  - pandas>=3.0 ; extra == 'test'
+  - zensical>=0.0.52 ; extra == 'docs'
+  - matplotlib>=3.11 ; extra == 'viz'
+  - zuko>=1.6 ; extra == 'flows'
   - torchregress[test,docs,viz,flows] ; extra == 'all'
   requires_python: '>=3.12,<3.16'
 - pypi: https://files.pythonhosted.org/packages/05/f7/54539984418de11387bbace39a744195555d32c98c95bf4d112b432548f5/zensical-0.0.57-cp310-abi3-macosx_11_0_arm64.whl
