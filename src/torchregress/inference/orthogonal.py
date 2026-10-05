@@ -113,14 +113,21 @@ def _cross_fitted_residuals(
     *,
     folds: int,
     ridge: float,
-    generator: torch.Generator,
+    order: Tensor,
 ) -> tuple[Tensor, float]:
+    """Out-of-fold residuals of ``target`` on ``features``.
+
+    ``order`` is the fold assignment (a permutation of the rows).  Both
+    nuisances of one estimate must share it: with independent splits for
+    ``E[x|z]`` and ``E[y|z]`` the product of the two residuals picks up a
+    non-vanishing cross term and the estimate is biased (about -0.03 on the
+    DoubleML CCDDHNR-2018 design at n = 500, several standard errors).
+    """
     n_samples = features.shape[0]
     if folds < 2:
         train = torch.arange(n_samples)
         predictions, r2 = _ridge_fit_predict(features, target, ridge=ridge, train=train, test=train)
         return target - predictions, r2
-    order = torch.randperm(n_samples, generator=generator)
     residual = torch.empty_like(target)
     r2_folds: list[float] = []
     for fold in range(folds):
@@ -202,11 +209,13 @@ def orthogonal_partially_linear(
             raise ValueError("nuisance_features must be finite")
     else:
         features = _poly_features(z_tensor, nuisance_degree)
+    # One fold assignment for both nuisances (see _cross_fitted_residuals).
+    order = torch.randperm(y_vec.numel(), generator=generator)
     residual_x, r2_x = _cross_fitted_residuals(
-        features, x_vec, folds=folds, ridge=ridge, generator=generator
+        features, x_vec, folds=folds, ridge=ridge, order=order
     )
     residual_y, r2_y = _cross_fitted_residuals(
-        features, y_vec, folds=folds, ridge=ridge, generator=generator
+        features, y_vec, folds=folds, ridge=ridge, order=order
     )
 
     denominator = float((residual_x * residual_x).sum())
