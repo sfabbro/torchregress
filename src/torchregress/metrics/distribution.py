@@ -165,7 +165,9 @@ def probability_integral_transform(
             return pit_values.numpy()
         return pit_values
 
-    bin_edges = torch.linspace(0.0, 1.0, n_bins + 1, device=pit_values.device)
+    bin_edges = torch.linspace(
+        0.0, 1.0, n_bins + 1, device=pit_values.device, dtype=pit_values.dtype
+    )
     counts = torch.histogram(pit_values, bin_edges)[0]
     expected = pit_values.numel() / n_bins
     uniformity_chi2 = torch.sum((counts - expected) ** 2 / max(expected, 1.0))

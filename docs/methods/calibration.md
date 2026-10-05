@@ -46,6 +46,25 @@ scaler.fit(pred_mean_cal, pred_var_cal, y_cal)
 calibrated_var = scaler.transform(pred_var_test)
 ```
 
+Three optional extensions, all off by default:
+
+* `fit_floor=True` also fits an additive variance floor $f \ge 0$, giving
+  $\sigma_{\text{cal}}^2 = T\,\sigma_{\text{pred}}^2 + f$. Use it when the
+  error budget has a component the model does not see (systematics, template
+  mismatch). A single $T$ then over-covers the noisiest samples and
+  under-covers the best-measured ones.
+* `target_var=...` gives per-sample label variances (noisy ground truth). The
+  fit uses $T\,\sigma_{\text{pred}}^2 + f + \sigma_{\text{target}}^2$, so
+  label noise is not charged to the model. `transform` returns the model's
+  part only.
+* `clip=5.0` ignores calibration samples more than 5 robust standard
+  deviations from the median residual, so catastrophic failures do not set
+  the scale.
+
+```python
+scaler.fit(mu_cal, var_cal, y_cal, target_var=label_var_cal, fit_floor=True, clip=5.0)
+```
+
 !!! warning "Calibration Set Requirements & Risks"
     * **Independent Calibration Set**: The calibration dataset **must** be strictly held out from model training. If the model has seen the calibration data, its predicted variances $\sigma^2_{\text{pred}}$ will be artificially small relative to the residuals, forcing the scaler to converge to an excessively large temperature $T \gg 1$, which will over-inflate (make too wide) prediction intervals at test time.
     * **Covariate Representation**: The calibration set must share the same covariate distribution as the test set. Under covariate shift, a single global temperature $T$ may fail to calibrate variance uniformly across feature space.

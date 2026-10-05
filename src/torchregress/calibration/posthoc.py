@@ -17,14 +17,38 @@ from torchregress.utils.distributions import normal_cdf
 class VarianceTemperatureScaler:
     """Scalar variance-temperature calibration for Gaussian predictive variance.
 
+    Fits ``T`` (and optionally an additive variance floor ``f``) by Gaussian
+    negative log-likelihood on a held-out calibration split, so that the
+    calibrated predictive variance is ``T * pred_var + f``.
+
+    Two optional extensions of the scalar temperature, both off by default:
+
+    * ``target_var``: per-sample variance of a *noisy* target (labels with their
+      own uncertainty). The likelihood then uses ``T * pred_var + f + target_var``
+      (as in :func:`torchregress.metrics.uncertain.noisy_target_gaussian_nll`),
+      so label noise is not attributed to the model. :meth:`transform` returns
+      the model's variance only.
+    * ``fit_floor``: also fit ``f >= 0``. A temperature alone cannot represent an
+      error budget with a floor (e.g. template or systematics error added to
+      a photon-noise error), which shows up as under-coverage for the
+      best-measured samples and over-coverage for the worst.
+
+    ``clip`` drops calibration samples whose residual lies more than ``clip``
+    robust standard deviations (1.4826 MAD) from the median before fitting, so
+    a few catastrophic failures do not set the scale.
+
     References
     ----------
     .. [1] Guo, C., Pleiss, G., Sun, Y., & Weinberger, K. Q. (2017). On Calibration
        of Modern Neural Networks. In *ICML 2017*. https://arxiv.org/abs/1706.04599
+    .. [2] Kuleshov, V., Fenner, N., & Ermon, S. (2018). Accurate Uncertainties for
+       Deep Learning Using Calibrated Regression. In *ICML 2018*.
+       https://arxiv.org/abs/1807.00263
     """
 
     temperature: float = 1.0
     eps: float = 1e-8
+    variance_floor: float = 0.0
 
     def fit(
         self,
@@ -34,33 +58,83 @@ class VarianceTemperatureScaler:
         *,
         max_iter: int = 200,
         lr: float = 0.05,
+        target_var: Tensor | None = None,
+        fit_floor: bool = False,
+        clip: float | None = None,
     ) -> "VarianceTemperatureScaler":
         if pred_mean.shape != pred_var.shape or pred_mean.shape != target.shape:
             raise ValueError("pred_mean, pred_var, and target must share shape")
+        if target_var is not None and target_var.shape != pred_var.shape:
+            raise ValueError("target_var must share shape with pred_var")
+        if clip is not None and not clip > 0:
+            raise ValueError("clip must be positive")
 
-        mean = pred_mean.detach().float()
-        var = pred_var.detach().float().clamp_min(self.eps)
-        y = target.detach().float()
+        mean = pred_mean.detach().double()
+        # ``eps`` is applied after rescaling to the typical variance below, so a
+        # target measured in tiny units (variances ~1e-10) is not clamped.
+        var = pred_var.detach().double().clamp_min(torch.finfo(torch.float64).tiny)
+        y = target.detach().double()
+        noise = (
+            torch.zeros_like(var)
+            if target_var is None
+            else target_var.detach().double().clamp_min(0.0)
+        )
+        keep = torch.isfinite(mean) & torch.isfinite(var) & torch.isfinite(y)
+        keep &= torch.isfinite(noise)
+        if clip is not None:
+            residual = (y - mean)[keep]
+            centre = residual.median()
+            robust = 1.4826 * (residual - centre).abs().median()
+            if float(robust) > 0:
+                keep &= (y - mean - centre).abs() <= clip * robust
+        if int(keep.sum()) < 2:
+            raise ValueError("need at least two finite calibration samples")
+        mean, var, y, noise = mean[keep], var[keep], y[keep], noise[keep]
 
-        log_t = torch.nn.Parameter(torch.tensor(math.log(self.temperature), dtype=torch.float32))
-        optimizer = torch.optim.Adam([log_t], lr=lr)
+        # Work in units of the typical predicted variance, so the optimiser sees
+        # O(1) numbers whatever the physical scale of the target.
+        unit = var.median().clamp_min(torch.finfo(torch.float64).tiny)
+        var_u, noise_u = (var / unit).clamp_min(self.eps), noise / unit
+        residual_sq = (y - mean) ** 2 / unit
+
+        log_t = torch.nn.Parameter(torch.tensor(math.log(self.temperature), dtype=torch.float64))
+        parameters = [log_t]
+        log_f = None
+        if fit_floor:
+            start = max(self.variance_floor / float(unit), 1e-2)
+            log_f = torch.nn.Parameter(torch.tensor(math.log(start), dtype=torch.float64))
+            parameters.append(log_f)
+        optimizer = torch.optim.Adam(parameters, lr=lr)
+
+        def total_variance() -> Tensor:
+            t = torch.exp(log_t).clamp(min=0.05, max=20.0)
+            floor = (
+                torch.exp(log_f)
+                if log_f is not None
+                else torch.tensor(self.variance_floor / float(unit), dtype=torch.float64)
+            )
+            return (var_u * t + floor + noise_u).clamp_min(self.eps)
 
         for _ in range(max_iter):
             optimizer.zero_grad(set_to_none=True)
-            t = torch.exp(log_t).clamp(min=0.05, max=20.0)
-            scaled_var = (var * t).clamp_min(self.eps)
-            nll = 0.5 * (
-                torch.log(scaled_var) + ((y - mean) ** 2) / scaled_var + math.log(2.0 * math.pi)
-            )
+            total = total_variance()
+            nll = 0.5 * (torch.log(total) + residual_sq / total + math.log(2.0 * math.pi))
             loss = nll.mean()
             loss.backward()
             optimizer.step()
 
-        self.temperature = float(torch.exp(log_t).item())
+        self.temperature = float(torch.exp(log_t).clamp(min=0.05, max=20.0).item())
+        if log_f is not None:
+            self.variance_floor = float(torch.exp(log_f).item() * float(unit))
         return self
 
     def transform(self, pred_var: Tensor) -> Tensor:
-        return (pred_var * self.temperature).clamp_min(self.eps)
+        """Calibrated variance ``T * pred_var + f``, clamped below at ``eps``.
+
+        ``eps`` is in the caller's variance units: set it below the smallest
+        meaningful variance when targets live on tiny scales.
+        """
+        return (pred_var * self.temperature + self.variance_floor).clamp_min(self.eps)
 
 
 @dataclass
