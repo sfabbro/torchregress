@@ -9,7 +9,9 @@ Local scripts handle version bumps, validation, and tagging.
 
 1. Run `./scripts/release/prepare_release.sh` locally.
 2. Push `main` and the new tag `vX.Y.Z`.
-3. GitHub Actions builds the package and publishes to PyPI via Trusted Publishing.
+3. GitHub Actions builds the package, checks its contents and metadata, installs
+   the wheel with core dependencies only on Linux and macOS for Python 3.12–3.14,
+   and then publishes to PyPI via Trusted Publishing.
 
 See also [`scripts/release/README.md`](https://github.com/astroai/torchregress/blob/main/scripts/release/README.md) for command-level reference.
 
@@ -54,6 +56,37 @@ Recommended protection rules:
 The workflow job in [`.github/workflows/release.yml`](../.github/workflows/release.yml) uses
 `environment: pypi` and `permissions.id-token: write`, which are required for OIDC-based
 publishing with GitHub Actions OIDC (`pypa/gh-action-pypi-publish`).
+
+### 3. Turn on GitHub Pages for the docs
+
+**Settings → Pages → Source: GitHub Actions.** The `Docs` workflow
+(`.github/workflows/docs.yml`) then publishes https://astroai.github.io/torchregress/
+on every push to `main`. The README, `pyproject.toml` and the PyPI page link there.
+
+## First release (0.3.0): dry run on TestPyPI first
+
+1. Finish the one-time setup above, including the TestPyPI pending publisher.
+2. Move the `[Unreleased]` notes in `CHANGELOG.md` under `## [0.3.0] - <date>`.
+3. Prepare a release candidate and push it:
+
+   ```bash
+   ./scripts/release/prepare_release.sh --version 0.3.0rc1
+   git push origin main && git push origin v0.3.0rc1
+   ```
+
+4. Watch **Actions → Release**: `build`, the six `install-smoke` legs, then
+   `publish-testpypi`.
+5. Install from TestPyPI in a clean environment (dependencies come from PyPI):
+
+   ```bash
+   python -m venv /tmp/tr && . /tmp/tr/bin/activate
+   pip install --index-url https://test.pypi.org/simple/ \
+       --extra-index-url https://pypi.org/simple/ torchregress==0.3.0rc1
+   torchregress-health
+   ```
+
+6. Run the local CUDA tests on the candidate (`pixi run -e cuda test-cuda` on a GPU machine).
+7. Release: `./scripts/release/prepare_release.sh --version 0.3.0`, push `main` and `v0.3.0`.
 
 ## Release checklist
 
@@ -125,6 +158,15 @@ The tag must point to a commit whose `pyproject.toml` version matches the tag. U
 `prepare_release.sh` so the commit and tag are created together.
 
 ### Local build validation
+
+`build_package.sh` checks the archives with `scripts/release/check_dist.py`
+(no build or tooling output, `py.typed` and `LICENSE` present, matching versions).
+To repeat the CI install check by hand:
+
+```bash
+python -m venv /tmp/tr && /tmp/tr/bin/pip install dist/*.whl
+cd /tmp && /tmp/tr/bin/python <repo>/scripts/release/smoke_install.py
+```
 
 ```bash
 ./scripts/release/build_package.sh

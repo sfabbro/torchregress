@@ -16,7 +16,6 @@ from typing import Any, Dict, Optional, Union, cast
 
 import numpy as np
 import torch
-from sklearn.linear_model import LogisticRegression  # type: ignore
 
 from torchregress.losses.conformal import _weighted_quantile
 from torchregress.prediction import PredictiveBatch
@@ -264,6 +263,9 @@ class WeightedConformalRegressionAdapter:
     Estimates the covariate shift density ratio w(x) = p_target(x) / p_source(x)
     by training a classifier (defaulting to Logistic Regression) to distinguish
     between calibration and target features.
+
+    The default classifier needs scikit-learn, which is not a core dependency
+    of torchregress; any classifier with ``fit`` and ``predict_proba`` works.
     """
 
     def __init__(
@@ -276,6 +278,16 @@ class WeightedConformalRegressionAdapter:
         self.alpha = float(alpha)
 
         if classifier is None:
+            # scikit-learn is not a core dependency: only the default classifier
+            # needs it, so it is imported here rather than at module level.
+            try:
+                from sklearn.linear_model import LogisticRegression
+            except ImportError as exc:
+                raise ImportError(
+                    "WeightedConformalRegressionAdapter's default classifier needs "
+                    "scikit-learn (pip install scikit-learn), or pass classifier= "
+                    "(any object with fit and predict_proba)."
+                ) from exc
             classifier = LogisticRegression(random_state=42, max_iter=1000)
         self.classifier = classifier
         self.scores_: torch.Tensor | None = None
