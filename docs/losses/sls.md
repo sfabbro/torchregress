@@ -82,6 +82,9 @@ A conditional normalizing flow with **Jacobian determinant = 1** by construction
 
 Mixture-of-experts frontier: $K$ independent `MahalanobisFrontier` components whose predictions are combined via a learned softmax over Mahalanobis scores. The temperature parameter $\beta$ is annealed during training to sharpen the assignment.
 
+!!! info "Step-derived frontier state (pure forward)"
+    `SLSLoss` derives the $K>1$ frontier state from `step` on every call: mixture weights are frozen (uniform) for `step <= warmup_steps` and learned afterwards, and $\beta = \beta_{\text{init}} \cdot 1.01^{\,\text{step}-\text{warmup}}$ (capped). Nothing is mutated, so `loss(ctx, y, step=s)` is a pure function of the parameters, inputs and `s`, and the quantile pass sees the same $G$ as the frontier pass. `SLSLoss.evaluate_frontier(y, ctx, step=None)` evaluates the frontier without side effects (learned weights when `step` is omitted), which is what `SLSConformal` uses.
+
 ### `QuantileNetwork`
 
 A small MLP that predicts three learned **score thresholds** $[t_{\text{low}}, t_{\text{mid}}, t_{\text{high}}]$ on the Mahalanobis frontier $G$ representing the coverage window around $\tau$. These are not quantile probability levels — they are thresholds in the score space of $G$. The thresholds are constrained to be ordered via sorting.

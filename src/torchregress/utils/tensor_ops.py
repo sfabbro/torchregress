@@ -197,12 +197,41 @@ def prepare_model_input_for_gradients(x: torch.Tensor) -> torch.Tensor:
 
 
 def compute_model_gradients(
-    y_pred: torch.Tensor, x: torch.Tensor, n_features_y: int
+    y_pred: torch.Tensor,
+    x: torch.Tensor,
+    n_features_y: int,
+    create_graph: Optional[bool] = None,
 ) -> torch.Tensor:
     """
     Compute gradients of model predictions with respect to inputs (Jacobian per sample).
+
+    When autograd is enabled the Jacobian is built with ``create_graph=True`` so
+    that quantities derived from it (e.g. the propagated EIV variance
+    ``J Sigma_x J^T``) stay differentiable w.r.t. the model parameters; under
+    ``torch.no_grad()`` / inference the graph is not built.
+
+    Parameters
+    ----------
+    y_pred : torch.Tensor
+        Model outputs ``[batch, n_features_y]`` computed from ``x``.
+    x : torch.Tensor
+        Model inputs ``[batch, n_features_x]`` with ``requires_grad=True``.
+    n_features_y : int
+        Number of output features.
+    create_graph : bool, optional
+        Build a differentiable Jacobian.  Defaults to
+        ``torch.is_grad_enabled()``; callers that compute the Jacobian inside
+        ``torch.enable_grad()`` pass the OUTER grad mode so evaluation under
+        ``torch.no_grad()`` does not build a double-backward graph.
+
+    Returns
+    -------
+    torch.Tensor
+        Per-sample Jacobian ``[batch, n_features_y, n_features_x]``.
     """
     batch_size = x.shape[0]
+    if create_graph is None:
+        create_graph = torch.is_grad_enabled()
     n_features_x = x.shape[1]
 
     if n_features_y == 1:
@@ -210,7 +239,7 @@ def compute_model_gradients(
             outputs=y_pred,
             inputs=x,
             grad_outputs=torch.ones_like(y_pred),
-            create_graph=False,
+            create_graph=create_graph,
             retain_graph=True,
             only_inputs=True,
         )[0]
@@ -227,7 +256,7 @@ def compute_model_gradients(
             outputs=y_pred,
             inputs=x,
             grad_outputs=grad_outputs,
-            create_graph=False,
+            create_graph=create_graph,
             retain_graph=True,
             only_inputs=True,
             is_grads_batched=True,

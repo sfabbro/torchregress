@@ -119,6 +119,8 @@ loss = loss_fn(
 )
 ```
 
+Unlabelled entries of `target_with_placeholders` may hold any placeholder, including `NaN`: entries outside `label_mask` are replaced (via `torch.where`) before the supervised term is evaluated, so they affect neither the loss nor its gradient. The same holds for `PseudoLabelNLL`.
+
 ### Pseudo-label generation and EMA teacher update
 
 ```python
