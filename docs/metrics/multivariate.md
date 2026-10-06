@@ -75,6 +75,11 @@ $$\text{TAC} = \frac{1}{N \cdot D} \sum_{n=1}^N \sum_{i=1}^D |\tilde{y}_{n, i} -
 
 A lower TAC score indicates that the predicted covariance matrix $\Sigma$ more accurately captures the correlation structure between targets, allowing for better conditional updates.
 
+Each covariance is inverted as $\Sigma_n + \epsilon\,\overline{\operatorname{diag}\Sigma_n}\,I$
+(`jitter` $\epsilon = 10^{-6}$, relative to the mean variance), so TAC scales
+with the targets: multiplying $y$ and $\hat y$ by $c$ and $\Sigma$ by $c^2$
+multiplies TAC by $c$.
+
 ---
 
 ## Comparison Table: When to use which

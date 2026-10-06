@@ -351,7 +351,8 @@ EXPECTED_SIGNATURES = {
     ),
     "metrics.mahalanobis_distance": (
         "(x: torch.Tensor | numpy.ndarray, mean: torch.Tensor | numpy.ndarray, "
-        "cov: torch.Tensor | numpy.ndarray, reduction: str = 'none') -> torch.Tensor"
+        "cov: torch.Tensor | numpy.ndarray, reduction: str = 'none', "
+        "jitter: float = 1e-06) -> torch.Tensor"
     ),
     "ensemble.BaseEnsembleModel.predict": "(self, x: torch.Tensor, correction: int = 0) -> Dict[str, torch.Tensor]",
     "ensemble.HeteroscedasticEnsembleModel.predict": (
@@ -368,7 +369,7 @@ EXPECTED_SIGNATURES = {
         "(self, x: torch.Tensor, n_samples: int = 30, scale: float = 1.0, correction: int = 0) -> "
         "tuple[torch.Tensor, torch.Tensor, torch.Tensor]"
     ),
-    "metrics.task_agnostic_correlations": "(y_pred: 'torch.Tensor | np.ndarray', y_true: 'torch.Tensor | np.ndarray', covariance: 'torch.Tensor | np.ndarray') -> 'torch.Tensor'",
+    "metrics.task_agnostic_correlations": "(y_pred: 'torch.Tensor | np.ndarray', y_true: 'torch.Tensor | np.ndarray', covariance: 'torch.Tensor | np.ndarray', jitter: 'float' = 1e-06) -> 'torch.Tensor'",
     "algorithms.TaylorInducedCovarianceHead": "(base_model: 'nn.Module', target_dim: 'int', input_dim: 'int | None' = None, k1_init: 'float' = 1.0, k2_init: 'float' = 1.0, k3_init: 'float' = 1.0, jitter: 'float' = 1e-06) -> 'None'",
     "algorithms.NaturalHeteroscedasticHead": "(in_features: 'int', out_features: 'int', link_fn: 'str' = 'exp') -> 'None'",
     "algorithms.NaturalReparamHead": "(link_fn: 'str' = 'exp') -> 'None'",
@@ -462,6 +463,7 @@ EXPECTED_PARAM_ORDERS = {
         "target_var",
         "fit_floor",
         "clip",
+        "temperature_bounds",
     ],
     "calibration.VarianceTemperatureScaler.transform": ["self", "pred_var"],
     "calibration.IsotonicMeanCalibrator.fit": ["self", "pred_mean", "target"],
@@ -498,7 +500,7 @@ EXPECTED_PARAM_ORDERS = {
         "gap_diagnostics",
         "calibration_ess_inv_square",
     ],
-    "metrics.task_agnostic_correlations": ["y_pred", "y_true", "covariance"],
+    "metrics.task_agnostic_correlations": ["y_pred", "y_true", "covariance", "jitter"],
     "algorithms.HeteroscedasticLaplaceRegressor.fit": [
         "self",
         "train_loader",

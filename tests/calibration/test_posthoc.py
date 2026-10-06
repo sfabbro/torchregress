@@ -132,18 +132,21 @@ class TestPAVA:
         x = np.array([0.0, 1.0, 2.0, 3.0])
         y = np.array([3.0, 2.0, 1.0, 0.0])
         rx, ry = IsotonicMeanCalibrator._pava(x, y)
-        # All violations → everything merges into one block
-        assert len(rx) == 1
-        assert ry[0] == pytest.approx(1.5)  # mean of [3,2,1,0] = 1.5
+        # All violations → everything merges into one block, stored by its
+        # first and last x (sklearn X_thresholds_), both at mean([3,2,1,0]) = 1.5
+        assert rx == pytest.approx(np.array([0.0, 3.0]))
+        assert ry == pytest.approx(np.array([1.5, 1.5]))
 
     def test_partial_violations(self):
         """Only some blocks violate monotonic order."""
         x = np.array([0.0, 1.0, 2.0, 3.0, 4.0])
         y = np.array([0.0, 2.0, 0.5, 3.0, 4.0])  # 0.5 < 2.0 at index 2 is a violation
         rx, ry = IsotonicMeanCalibrator._pava(x, y)
-        # Block [1.0, 2.0] with means [2.0, 0.5] merge → mean = 1.25
+        # Block [1.0, 2.0] with means [2.0, 0.5] merge → mean = 1.25; the block
+        # keeps both end points, so the thresholds are all of x here.
         assert np.all(np.diff(ry) >= -1e-10)  # monotonic
-        assert len(rx) < len(x)  # at least one merge
+        assert rx == pytest.approx(x)
+        assert ry == pytest.approx(np.array([0.0, 1.25, 1.25, 3.0, 4.0]))
 
     def test_preserves_monotonicity_invariant(self):
         rng = np.random.RandomState(42)

@@ -27,6 +27,9 @@ pyarrow = ">=25.0"
 pyyaml = ">=6.0.3"
 scikit-learn = ">=1.9"
 pandas = ">=3.0"
+scoringrules = ">=0.11"
+properscoring = ">=0.1"
+hypothesis = ">=6.100"
 
 [feature.docs.pypi-dependencies]
 zensical = ">=0.0.52"

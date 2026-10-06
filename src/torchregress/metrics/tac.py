@@ -24,6 +24,13 @@ class TaskAgnosticCorrelations(Metric):
     variables and predicting it from the remaining observed dimensions using
     conditional normal updates.
 
+    Parameters
+    ----------
+    jitter : float
+        Relative diagonal regulariser: ``jitter * mean(diag(cov_b)) * I`` is
+        added to each covariance before inversion, so the metric is
+        equivariant to rescaling the targets.
+
     References
     ----------
     .. [1] Shukla, S., et al. (2024). TIC-TAC: A Framework For Improved Covariance
@@ -35,8 +42,9 @@ class TaskAgnosticCorrelations(Metric):
     higher_is_better = False
     full_state_update = False
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(self, jitter: float = 1e-6, **kwargs: Any) -> None:
         super().__init__(**kwargs)
+        self.jitter = jitter
         self.add_state("sum_tac_error", default=torch.tensor(0.0), dist_reduce_fx="sum")
         self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
 
@@ -72,9 +80,12 @@ class TaskAgnosticCorrelations(Metric):
         device = y_pred.device
         dtype = y_pred.dtype
 
-        # Add jitter to full covariance for stable inversion
-        eye_jitter = torch.eye(d, device=device, dtype=dtype).unsqueeze(0) * 1e-6
-        cov_jittered = covariance + eye_jitter
+        # Relative jitter (M-MET-011): eps * mean(diag(cov_b)) per matrix keeps the
+        # metric scale-equivariant; an absolute 1e-6 swamps small-variance targets.
+        level = self.jitter * covariance.diagonal(dim1=-2, dim2=-1).mean(-1).abs()
+        level = level.clamp_min(torch.finfo(dtype).tiny).view(B, 1, 1)
+        eye = torch.eye(d, device=device, dtype=dtype).unsqueeze(0)
+        cov_jittered = covariance + level * eye
 
         diff = (y_true - y_pred).unsqueeze(-1)  # [B, d, 1]
 
@@ -100,9 +111,10 @@ def task_agnostic_correlations(
     y_pred: Union[torch.Tensor, np.ndarray],
     y_true: Union[torch.Tensor, np.ndarray],
     covariance: Union[torch.Tensor, np.ndarray],
+    jitter: float = 1e-6,
 ) -> torch.Tensor:
     """Functional wrapper for :class:`TaskAgnosticCorrelations`."""
-    metric = TaskAgnosticCorrelations()
+    metric = TaskAgnosticCorrelations(jitter=jitter)
     metric.update(
         convert_to_tensor(y_pred),  # ty: ignore[invalid-argument-type]  # torchmetrics update/compute overrides confuse ty
         convert_to_tensor(y_true),

@@ -42,6 +42,29 @@ loss = energy_score(y_samples, y_true)
 
 → See [Mathematical Foundations](../guide/math/index.md) for the Gaussian closed-form derivation. API Reference: [crps_gaussian](../api/metrics.md).
 
+### Estimators and conventions
+
+| Forecast type | Function | Estimator | Reference implementation |
+|:--|:--|:--|:--|
+| Gaussian $\mathcal N(\mu, \sigma^2)$ | `crps_gaussian` | closed form | `scoringrules.crps_normal`, `properscoring.crps_gaussian` |
+| $M$ samples $x_1, \dots, x_M$ | `crps_from_samples` | fair: $\frac1M\sum_i \lvert x_i - y\rvert - \frac{1}{2M(M-1)}\sum_{i \ne j}\lvert x_i - x_j\rvert$ | `scoringrules.crps_ensemble(estimator="fair")` |
+| $K$ quantiles $q_{\tau_k}$ | `continuous_ranked_probability_score` | $2\sum_k w_k\,\text{QS}_{\tau_k}$, trapezoid $w_k = (\tau_{k+1} - \tau_{k-1})/2$, $\tau_0 = 0$, $\tau_{K+1} = 1$ | `scoringrules.quantile_score` with these weights |
+
+The fair estimator is unbiased for the CRPS of the distribution the members
+are drawn from. The biased $1/M^2$ version (`properscoring.crps_ensemble`,
+`scoringrules` `estimator="nrg"`) favours small ensembles. One sample is a
+Dirac forecast, so the CRPS is the absolute error. The quantile form only
+approximates the integral: it has no information beyond the outermost levels,
+so use the sample or closed-form estimator when you have samples or a
+distribution.
+
+`vario_score` / `VarioScore` (Zamo & Naveau) is positively oriented,
+$\nu_\rho = \tfrac12\mathbb E\lvert X - X'\rvert^\rho - \mathbb E\lvert X - y\rvert^\rho$
+(equal to $-\text{CRPS}$ at $\rho = 1$), so `VarioScore.higher_is_better` is
+`True`. `variogram_score` sums over pairs $i < j$, which is half of
+`scoringrules.variogram_score`. All reference conventions are pinned in
+`tests/metrics/test_reference_parity.py`.
+
 ---
 
 ## Multivariate: Energy Score
@@ -109,6 +132,23 @@ print(f"90% Coverage: {results['coverage_90']:.2%}")
 ```
 
 This is the recommended way to evaluate complex probabilistic models, as it provides a multi-faceted view of model performance.
+
+`results["crps"]` uses the best representation available. A Normal `dist`
+gets the closed form. `samples` (or samples drawn from a non-Normal `dist`)
+get the fair ensemble estimator. Only `y_pred_quantiles` use the quantile
+approximation. Before 0.3 the report always reduced samples to 7 quantiles,
+which underestimated the CRPS by 3-4%.
+
+!!! info "PIT from quantile forecasts"
+    A quantile forecast says nothing about the CDF beyond its outermost levels
+    $\tau_1$ and $\tau_K$. A target below $q_{\tau_1}$ therefore gets the
+    randomised PIT $U\tau_1$, and a target above $q_{\tau_K}$ gets
+    $\tau_K + U(1 - \tau_K)$, with $U \sim \text{Uniform}(0, 1)$. For a
+    calibrated forecast this has exactly the distribution of the true PIT in
+    each tail. Mapping such targets to exactly 0 or 1 (as before 0.3) put
+    point masses at the ends and made `pit_ks` / `pit_chi2` reject even
+    perfect forecasts. The draw uses a fixed seed by default; pass
+    `generator=torch.Generator().manual_seed(...)` to change it.
 
 ---
 

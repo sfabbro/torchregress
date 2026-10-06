@@ -129,13 +129,19 @@ See also: [mean_squared_log_error](../api/metrics.md).
 Median of absolute differences, robust to outliers:
 
 $$
-\text{MedAE}(y, \hat{y}) = \text{median}\left(\{|y_i - \hat{y}_i|\}_{i: m_i=1}\right)
+\text{MedAE}(y, \hat{y}) = \text{median}\left(\{|y_i - \hat{y}_i|\}_{i=1}^{N}\right)
 $$
+
+For an even $N$ the median is the mean of the two middle values, as in
+`numpy.median` and `sklearn.metrics.median_absolute_error`. Multi-output
+targets $[N, D]$ take the median per output and then average the $D$ medians
+(`multioutput="uniform_average"`), or return them (`"raw_values"`).
 
 ```python
 from torchregress.metrics.point import median_absolute_error
 
-median_ae = median_absolute_error(y_pred, y_true, mask=mask)
+median_ae = median_absolute_error(y_pred, y_true)
+per_output = median_absolute_error(y_pred, y_true, multioutput="raw_values")
 ```
 See also: [median_absolute_error](../api/metrics.md).
 
@@ -155,7 +161,7 @@ $$
 from torchregress.metrics.point import huber_loss
 
 # delta controls the transition point from quadratic to linear error
-hl = huber_loss(y_pred, y_true, delta=1.0, mask=mask, weights=weights)
+hl = huber_loss(y_pred, y_true, delta=1.0, sample_weight=weights)
 ```
 See also: [huber_loss](../api/metrics.md).
 
@@ -164,16 +170,19 @@ See also: [huber_loss](../api/metrics.md).
 MSE computed after removing the most extreme squared errors from both tails:
 
 $$
-\text{TrimmedMSE}(y, \hat{y}; \alpha) = \frac{1}{M} \sum_{j=\lfloor N\alpha \rfloor + 1}^{\lfloor N(1-\alpha) \rfloor} r_{(j)}^2
+\text{TrimmedMSE}(y, \hat{y}; \alpha) = \frac{1}{N - 2k} \sum_{j=k+1}^{N-k} r_{(j)}^2, \qquad k = \lfloor N\alpha \rfloor
 $$
 
-where $r_{(j)}^2$ are the sorted squared residuals for valid elements, and $M = \lfloor N(1-\alpha) \rfloor - \lfloor N\alpha \rfloor$ for a trimming fraction $\alpha$ applied to **each** tail. The parameter $\alpha$ must satisfy $0 \le \alpha < 0.5$.
+where $r_{(j)}^2$ are the sorted squared residuals. Exactly $k$ values are cut
+from **each** tail, as in `scipy.stats.trim_mean`. Before 0.3 the upper cut was
+$N - \lfloor N(1-\alpha) \rfloor$, which differs from $k$ when $N\alpha$ is not
+an integer. The parameter $\alpha$ must satisfy $0 \le \alpha < 0.5$.
 
 ```python
 from torchregress.metrics.point import trimmed_mean_squared_error
 
 # trim 10% of data from each end (keeps the middle 80%)
-tmse = trimmed_mean_squared_error(y_pred, y_true, proportion=0.1, mask=mask)
+tmse = trimmed_mean_squared_error(y_pred, y_true, proportion=0.1)
 ```
 See also: [trimmed_mean_squared_error](../api/metrics.md).
 
@@ -182,15 +191,19 @@ See also: [trimmed_mean_squared_error](../api/metrics.md).
 Median of absolute deviations from the median error, scaled by a consistency factor:
 
 $$
-\text{MAD}(e) = c \cdot \text{median}\left(\{|e_i - \text{median}(e)|\}_{i: m_i=1}\right)
+\text{MAD}(e) = c \cdot \text{median}\left(\{|e_i - \text{median}(e)|\}_{i=1}^{N}\right)
 $$
 
-where $e_i = y_i - \hat{y}_i$ and $c = 1.4826$ by default (the Gaussian consistency factor that makes MAD an unbiased estimator of $\sigma$ for normally distributed residuals).
+where $e_i = y_i - \hat{y}_i$ and $c = 1.4826$ by default (the Gaussian
+consistency factor that makes MAD a consistent estimator of $\sigma$ for
+normally distributed residuals). Both medians average the two middle values
+for even $N$, so the result equals
+`c * scipy.stats.median_abs_deviation(e)`.
 
 ```python
 from torchregress.metrics.point import median_absolute_deviation
 
-mad = median_absolute_deviation(y_pred, y_true, scale=1.4826, mask=mask)
+mad = median_absolute_deviation(y_pred, y_true, scale=1.4826)
 ```
 See also: [median_absolute_deviation](../api/metrics.md).
 
@@ -207,24 +220,30 @@ where $\text{scale}$ can be the standard deviation (`std`), the range (`range`),
 ```python
 from torchregress.metrics.point import normalized_rmse
 
-nrmse = normalized_rmse(y_pred, y_true, normalization='std', mask=mask)
+nrmse = normalized_rmse(y_pred, y_true, normalization='std')
 ```
 See also: [normalized_rmse](../api/metrics.md).
 
 ### Normalized Median Absolute Deviation
 
-MAD normalized by target statistics for relative scale comparison:
+The photometric-redshift NMAD, a stateful metric:
 
 $$
-\text{NMAD}(y, \hat{y}) = \frac{\text{MAD}(y - \hat{y})}{\text{scale}}
+\text{NMAD} = 1.4826 \cdot \text{median}\left(|d_i - \text{median}(d)|\right),
+\qquad d_i = \hat{y}_i - y_i \;\; \text{or} \;\; d_i = \frac{\hat{y}_i - y_i}{1 + y_i}
 $$
+
+The relative form is selected with `normalization="relative"`. Medians average
+the two middle values for even $N$.
 
 ```python
-from torchregress.metrics.point import normalized_median_absolute_deviation
+from torchregress.metrics import NormalizedMedianAbsoluteDeviation
 
-nmad = normalized_median_absolute_deviation(y_pred, y_true, mask=mask)
+nmad = NormalizedMedianAbsoluteDeviation(normalization="relative")
+nmad.update(z_pred, z_true)
+print(nmad.compute())
 ```
-See also: [normalized_median_absolute_deviation](../api/metrics.md).
+See also: [NormalizedMedianAbsoluteDeviation](../api/metrics.md).
 
 ---
 
