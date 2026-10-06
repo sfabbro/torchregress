@@ -20,6 +20,62 @@ remove are decided for 0.4.0.
 
 ### Fixed
 - `inference.orthogonal_partially_linear`: both nuisance regressions (`E[x|z]`, `E[y|z]`) now share one cross-fitting split. Independent splits biased `theta` (-0.026, about 7.7 standard errors, over 200 replications of the DoubleML CCDDHNR-2018 design at n = 500); found by the harness `orthogonal_inference` suite against DoubleML on the same nuisance basis. Point estimates for a given `seed` change.
+- **0.3.0 release audit: 61 defects fixed**, each with a regression test in
+  `tests/audit/` (full list with severities: `docs/reports/audit_0.3.0.md`).
+  Results that change for existing code:
+  - *Conformal prediction.* Thresholds are `+inf` (infinite intervals) when
+    `ceil((n+1)(1-alpha)) > n`, per Mondrian group, or when the weighted mass
+    cannot reach `1-alpha`; they used to fall back to the largest score and
+    under-cover at small `n`. Weighted conformal follows Tibshirani et al.
+    (2019): only relative weights matter, the test point defaults to the mean
+    calibration weight, and a new `test_weights=` argument gives per-point
+    thresholds. CV+/Jackknife+ use the lower rank `floor(alpha (n+1))`.
+    `DensityConformal` scores use the density at `y_pred` in both phases.
+    Negative Mondrian group ids work; R2C, CTI, DCP and `SLSConformal` honour
+    `groups=`. `SemiConformalCalibrator` computes in float64.
+  - *Losses.* `EvidentialRegressionLoss` uses the NIG predictive
+    (`Omega = 2 beta (1 + nu)`, Amini et al. 2020, Eq. 8). Skew-t NLL values
+    change (incomplete-beta bug). Skew-normal, censored/AFT, zero-inflated
+    Poisson and GEV are exact in the tails instead of saturating.
+    `BetaNLLLoss` and `CVaRLoss` handle 1-D `[B]` inputs. Weighted `'mean'`
+    is normalised by the sum of weights in the flow, multi-expectile and
+    imbalanced losses (FocalR, BalancedMSE, BinReweightedMSE,
+    DensityWeighted, LDS, PropensityWeighted), and `BaseLoss` accepts `[B, D]`
+    masks with `[B]` weights. `ExpectileCrossoverLoss` raises on
+    non-ascending levels. EIV losses propagate gradients through the
+    Jacobian; latent-marginalisation and input-noise losses now marginalise;
+    `SLSLoss.forward` no longer mutates state (new `evaluate_frontier`).
+  - *Metrics.* `distribution_metrics_report["crps"]` is exact (was 3-4% low).
+    Quantile PIT randomises out-of-range targets (seedable `generator=`).
+    MedAE/MAD/NMAD use the true median and per-output averaging (sklearn);
+    trimmed MSE matches `scipy.stats.trim_mean`. `VarioScore.higher_is_better`
+    is `True`. Absolute variance floors and covariance jitter became
+    `min_variance=` / relative `jitter=` arguments.
+  - *Calibration.* `VarianceTemperatureScaler` has no hidden `[0.05, 20]`
+    clamp (`temperature_bounds=` restores it) and returns the closed-form MLE
+    by default. `IsotonicMeanCalibrator` is true isotonic regression.
+  - *Inference and causal.* `ppi_quantile_ci` inverts the rectified CDF
+    (Angelopoulos et al. 2023); the old estimator was inconsistent. PPI and
+    DR estimators keep float64; the PPI bootstrap no longer allocates an
+    `[n_boot, N]` matrix. DR `fold_bootstrap` standard errors are correct
+    (were 0.56x at two folds); trimming every unit raises.
+  - *Ensembles.* Predicted variances use the `GaussianNLLLoss` training range
+    `[1e-6, e^30]` (was `[e^-8, e^6]`); `predict` runs in eval mode and
+    restores the previous modes; `base_seed` leaves the global RNG alone.
+    `bars_to_density_grid` puts no mass outside the bin edges.
+  - *Semi-supervised.* The documented trust-weight options (`tau`,
+    `weight_power`, `hard_weight_threshold`, `batch_relative_mode`,
+    `batch_trust_top_k`) take effect; `TeacherStudentTrainer(tau=)` defaults
+    to 0.2, the value the code always used. Unknown options raise.
+- `test_time.ShiftFactoredPredictiveTransport.ppi_target_ci` keeps float64 inputs.
+
+### Tests
+- `tests/metrics/test_reference_parity.py` checks all 97 `metrics` exports
+  against scoringrules, properscoring, scipy, scikit-learn or closed forms
+  (14 have no reference and say why); `tests/metrics/test_scoring_properties.py`
+  adds Hypothesis invariants (CRPS non-negativity and equivariance,
+  propriety, pinball monotonicity). `scoringrules`, `properscoring` and
+  `hypothesis` join the `test` extra.
 
 ### Added
 - `losses.FaithfulGaussianLoss`: `mean_weight` accepts a per-output vector (length `D`, validated finite and non-negative), and a new `mean_loss="huber"` option (with `huber_delta`) bounds the pull of outlying targets on the mean. Defaults unchanged. `mean_weight` is now a registered buffer.

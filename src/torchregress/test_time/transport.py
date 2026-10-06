@@ -22,6 +22,11 @@ from .subspace import WeightedSubspaceMomentAligner
 ArrayLike = np.ndarray | Tensor | Sequence[float]
 
 
+def _floating(t: Tensor) -> Tensor:
+    """Keep a floating dtype (float64 stays float64); cast integers to the default dtype."""
+    return t if t.is_floating_point() else t.to(torch.get_default_dtype())
+
+
 def _to_tensor(x: ArrayLike) -> Tensor:
     if torch.is_tensor(x):
         return x
@@ -966,9 +971,9 @@ class ShiftFactoredPredictiveTransport:
         n_boot: int = 2000,
         seed: int | None = None,
     ) -> dict[str, Any]:
-        y_l = _as_1d(labeled_targets).float()
-        pred_l = _as_1d(self._ppi_vector(labeled_predictions, q=q)).float()
-        pred_u = _as_1d(self._ppi_vector(unlabeled_predictions, q=q)).float()
+        y_l = _floating(_as_1d(labeled_targets))
+        pred_l = _floating(_as_1d(self._ppi_vector(labeled_predictions, q=q)))
+        pred_u = _floating(_as_1d(self._ppi_vector(unlabeled_predictions, q=q)))
         config = PPIConfig(alpha=alpha, n_boot=n_boot, seed=seed)
         if estimand == "mean":
             return ppi_mean_ci(y_l, pred_l, pred_u, config=config)
@@ -986,9 +991,9 @@ class ShiftFactoredPredictiveTransport:
             if x_labeled is None or x_unlabeled is None:
                 raise ValueError("x_labeled and x_unlabeled are required for OLS PPI")
             return ppi_ols_ci(
-                _as_2d(x_labeled).float(),
+                _floating(_as_2d(x_labeled)),
                 y_l,
-                _as_2d(x_unlabeled).float(),
+                _floating(_as_2d(x_unlabeled)),
                 pred_l,
                 pred_u,
                 config=PPIConfig(alpha=alpha, n_boot=max(1000, n_boot // 2), seed=seed),

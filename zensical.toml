@@ -94,7 +94,7 @@ features = [
 
 # ─── Announcement bar (dismissible) ────────────────────────────────────────
 [project.theme.announce]
-content = "⭐ <strong>torchregress 0.1.0</strong> — now using <strong>Zensical</strong>. If you spot anything off, please <a href='https://github.com/astroai/torchregress/issues'>open an issue</a>."
+content = "<strong>torchregress 0.3.0</strong> is the first release on PyPI. If you spot anything off, please <a href='https://github.com/astroai/torchregress/issues'>open an issue</a>."
 
 # ─── Logo icon (fallback when logo image is not set) ───────────────────────
 [project.theme.icon]
@@ -168,6 +168,7 @@ nav = [
       { "Comparative Evidence" = "reports/comparative_evidence_matrix.md" },
       { "Real-Data Recommendation Guide" = "reports/real_data_recommendation_guide.md" },
       { "Docs Quality Audit" = "reports/docs_quality_audit.md" },
+      { "0.3.0 Release Audit" = "reports/audit_0.3.0.md" },
     ] },
   ] },
   { "Loss Functions" = [
