@@ -319,7 +319,7 @@ nav = [
       { "Doubly Robust Causal (Real Data)" = "examples/causal_dr_realdata_comparison.md" },
     ] },
     { "External Comparisons" = [
-      { "vs MAPIE, BoTorch, scikit-lego" = "examples/external-comparison-vs-mapie-botorch-sklego.md" },
+      { "vs MAPIE, crepes, torchcp, BoTorch, scikit-learn" = "examples/external-comparison-vs-mapie-botorch-sklego.md" },
     ] },
   ] },
   { "API Reference" = [

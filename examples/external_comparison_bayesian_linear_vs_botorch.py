@@ -9,7 +9,7 @@ runtime.
 
 Run::
 
-    uv pip install "torchregress[external]"
+    uv pip install botorch gpytorch
     uv run python examples/external_comparison_bayesian_linear_vs_botorch.py \\
         --summary-json-path reports/external_comparison_bayesian_linear_vs_botorch_latest.json
 

@@ -51,7 +51,7 @@ Use the comparison examples first when making implementation decisions:
 - `examples/causal_dr_realdata_comparison.py`: real-covariate DR ATE/CATE comparison with overlap diagnostics
 - `examples/external_comparison_conformal_vs_mapie.py`: conformal intervals (split + CQR) vs MAPIE; JSON → `reports/external_comparison_conformal_vs_mapie_latest.json`
 - `examples/external_comparison_bayesian_linear_vs_botorch.py`: low-shot Bayesian linear head vs BoTorch `SingleTaskGP`; JSON → `reports/external_comparison_bayesian_linear_vs_botorch_latest.json`
-- `examples/external_comparison_tweedie_vs_sklego.py`: Tweedie / compound-Poisson regression vs scikit-lego `GLMRegressor`; JSON → `reports/external_comparison_tweedie_vs_sklego_latest.json`
+- `examples/external_comparison_tweedie_vs_sklego.py`: Tweedie / compound-Poisson regression vs scikit-learn `TweedieRegressor` (scikit-lego no longer ships a GLM); JSON → `reports/external_comparison_tweedie_vs_sklego_latest.json`
 - [External comparison guide](external-comparison-vs-mapie-botorch-sklego.md): consolidated page for the three external benchmarks.
 - `examples/normalizing_flows_multitarget.py`: multi-target multimodal modeling (single-method deep dive)
 - `examples/contrastive_flow_parameter_estimation.py`: nuisance-aware parameter scans with `ContrastiveFlowLoss`

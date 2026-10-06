@@ -91,8 +91,8 @@ Optional dependencies are noted where a script needs one (`zuko` for flows,
 | `transformed_target_regression_comparison.py` | comparison | Transformed-target losses. | fast |
 | `uncertain_gt_density_conformal_comparison.py` | comparison | Uncertain labels with density-aware conformal methods. | fast |
 | `external_comparison_bayesian_linear_vs_botorch.py` | comparison | `BayesianLinearHead` vs BoTorch `SingleTaskGP` (needs `botorch`). | fast |
-| `external_comparison_conformal_vs_mapie.py` | comparison | Conformal intervals vs MAPIE, crepes, torchcp. With MAPIE 1.x and torchcp 1.2 their rows are skipped (API drift, see below). | fast |
-| `external_comparison_tweedie_vs_sklego.py` | comparison | Tweedie losses vs scikit-lego `GLMRegressor`. With scikit-lego 0.9.x that row is skipped (class removed). | fast |
+| `external_comparison_conformal_vs_mapie.py` | comparison | Conformal intervals vs MAPIE >= 1.0, crepes, torchcp >= 1.2 (needs `mapie crepes torchcp`; ported to the current comparator APIs, see below). | fast |
+| `external_comparison_tweedie_vs_sklego.py` | comparison | Tweedie losses vs a log-link GLM. scikit-lego 0.9.x has no Tweedie GLM, so the baseline is `sklearn.linear_model.TweedieRegressor`. | fast |
 
 ## Real-data comparisons
 
@@ -161,15 +161,30 @@ script with a `--dataset {synthetic,diabetes}` style switch:
 - **Wasserstein bound**: `gaussian_wasserstein_bound_demo` and `wasserstein_bound_hybrid_pretrain_demo`.
 - **Intro**: `basic_usage` and `native_api_usage`.
 
-## Known external-library drift
+## External-library comparators
 
-The `external_comparison_*` scripts degrade gracefully (rows are marked
-`skipped`), but with the versions pinned for the harness the comparison rows are
-empty:
+The `external_comparison_*` scripts need their comparator packages installed
+explicitly (there is no `torchregress[external]` extra):
 
-- MAPIE 1.x no longer has `MapieRegressor` / `MapieQuantileRegressor` (use `SplitConformalRegressor` / `ConformalizedQuantileRegressor`).
-- torchcp 1.2 no longer exports `SplitCP` (use `SplitPredictor`).
-- scikit-lego 0.9.x no longer has `GLMRegressor`.
+```bash
+uv pip install mapie crepes torchcp botorch gpytorch   # scikit-lego is optional, see below
+```
 
-The skip message says "not installed" even when the package is installed but
-incompatible.
+They track the current comparator APIs (last checked with MAPIE 1.5.0 and
+1.5.1.dev6, crepes 0.9.1, torchcp 1.2.1, scikit-learn 1.9.1, scikit-lego 0.9.10):
+
+- `external_comparison_conformal_vs_mapie.py` uses MAPIE's `SplitConformalRegressor`
+  and `ConformalizedQuantileRegressor` (`fit` / `conformalize` / `predict_interval`,
+  `confidence_level = 1 - alpha`) and torchcp's `SplitPredictor` with the `ABS`
+  score. MAPIE 0.x (`MapieRegressor`) and torchcp < 1.2 (`SplitCP`) are no longer supported.
+- `external_comparison_tweedie_vs_sklego.py` compares against
+  `sklearn.linear_model.TweedieRegressor` because scikit-lego 0.9.x has no
+  Tweedie/GLM estimator (`GLMRegressor` was removed). scikit-lego is only probed
+  so its version and the missing GLM are recorded in the summary.
+
+A comparator that is not installed gives a `skipped: <lib> not installed` row. One that is
+installed but whose API does not match gives `skipped: <lib> <version> incompatible`
+(or `failed: <lib> <version> incompatible (...)` if it breaks while running), so API
+drift is never reported as "not installed". Skipped rows keep `null` metrics so the JSON
+schema is stable. Each script prints the installed comparator versions and records them in
+the summary JSON `notes` and per-row `Version` field.
