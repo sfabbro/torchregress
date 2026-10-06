@@ -129,7 +129,8 @@ def test_quantiles_grid_zero_on_extrapolated_margins():
 def _bars_reference_rowwise(
     logits: torch.Tensor, edges: torch.Tensor, *, n_support: int, range_margin: float
 ):
-    """Row-wise reference replicating the pre-vectorization implementation."""
+    """Row-wise reference: pre-vectorization implementation, with zero density
+    outside ``[edges[0], edges[-1]]`` (I-ENS-003)."""
     logits = logits - logits.amax(dim=1, keepdim=True)
     probs = logits.exp()
     probs = probs / probs.sum(dim=1, keepdim=True).clamp(min=1.0e-8)
@@ -148,6 +149,8 @@ def _bars_reference_rowwise(
             0, logits.shape[1] - 1
         )
         dens = bar_density[bin_idx].clamp(min=0.0)
+        outside = (support[idx] < edges[idx][0]) | (support[idx] > edges[idx][-1])
+        dens[outside] = 0.0
         integral_val = float(torch.trapezoid(dens, support[idx]).item())
         density[idx] = dens / max(integral_val, 1.0e-8)
     return support, density

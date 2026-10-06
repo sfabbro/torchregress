@@ -81,7 +81,12 @@ def bars_to_density_grid(
     n_support: int = 200,
     range_margin: float = 0.05,
 ) -> tuple[Tensor, Tensor]:
-    """Convert piecewise-constant bar distributions to a regular support grid."""
+    """Convert piecewise-constant bar distributions to a regular support grid.
+
+    The grid spans ``[edges[0], edges[-1]]`` widened by ``range_margin`` times the
+    edge range on each side; the density is zero outside the bin edges (bars have no
+    mass there) and is renormalised to integrate to one on the grid.
+    """
     logits = torch.as_tensor(bar_logits)
     if torch.is_grad_enabled():
         logits = logits.detach()
@@ -110,6 +115,10 @@ def bars_to_density_grid(
     bar_density = probs / widths
     bin_idx = torch.searchsorted(edges[:, 1:-1], support).clamp(0, logits.shape[1] - 1)
     dens = torch.gather(bar_density, 1, bin_idx).clamp(min=0.0)
+    # searchsorted maps points left/right of the edges to the first/last bar; the
+    # piecewise-constant law has no mass outside [edges[0], edges[-1]].
+    inside = (support >= edges[:, :1]) & (support <= edges[:, -1:])
+    dens = torch.where(inside, dens, torch.zeros_like(dens))
     integral = torch.trapezoid(dens, support, dim=1).clamp(min=1.0e-8)
     density = dens / integral[:, None]
     return support, density

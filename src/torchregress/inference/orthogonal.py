@@ -219,8 +219,14 @@ def orthogonal_partially_linear(
     )
 
     denominator = float((residual_x * residual_x).sum())
-    treatment_scale = float((x_vec * x_vec).sum())
-    if denominator <= 0.0 or denominator <= 1.0e-8 * treatment_scale:
+    # Centred: a constant offset in x changes neither theta nor identification.
+    x_centred = x_vec - x_vec.mean()
+    treatment_scale = float((x_centred * x_centred).sum())
+    if (
+        denominator <= 0.0
+        or denominator <= 1.0e-8 * treatment_scale
+        or treatment_scale <= 1.0e-24 * float((x_vec * x_vec).sum())
+    ):
         raise ValueError("x is perfectly explained by z; theta is not identified")
     theta = float((residual_x * residual_y).sum()) / denominator
 

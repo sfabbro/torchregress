@@ -14,7 +14,7 @@ For background, see [PPI + conformal](../guide/method-selection.md) and the
 
 | Symbol | Description |
 |:-------|:------------|
-| `PPIConfig` | Frozen dataclass with `alpha` (target error rate), `method` (always `"bootstrap"`), `n_boot` (default `2000`), `seed`. |
+| `PPIConfig` | Frozen dataclass with `alpha` (target error rate), `method` (always `"bootstrap"`), `n_boot` (default `2000`), `seed`. Bootstrap means use O(N) memory (chunked); for samples above 100,000 points the bootstrap mean of that component is drawn from its CLT approximation `N(mean, var/N)`. All PPI functions keep the floating dtype of their inputs (float64 stays float64). |
 
 ---
 
@@ -58,7 +58,7 @@ res = ppi_calibrated_mean_ci(y_labeled, pred_labeled, pred_unlabeled,
 
 | Symbol | Description |
 |:-------|:------------|
-| `ppi_quantile_ci` | `(y_labeled, pred_labeled, pred_unlabeled, *, q=0.5, config=None)` — PPI CI for a target quantile. Estimator: `Q_q(Y) ≈ Q_q(pred_unlabeled) + median(y_labeled − pred_labeled)`. Bootstrap re-estimates the shift and target quantile. |
+| `ppi_quantile_ci` | `(y_labeled, pred_labeled, pred_unlabeled, *, q, config=None)` — PPI CI for a target quantile (Angelopoulos et al., 2023). Inverts the rectified CDF `F(θ) = mean_u 1{f_u ≤ θ} + mean_l(1{y ≤ θ} − 1{f_l ≤ θ})`: estimate `inf{θ : F(θ) ≥ q}`, CI `{θ : |F(θ) − q| ≤ z·sqrt(F_u(1−F_u)/N + Var_l(rectifier)/n)}` on a grid of observed values. Analytic (CLT) interval: `n_boot`/`seed` are unused, `bootstrap_samples` is 0 and `se` is the normal-equivalent half-width. |
 
 ---
 

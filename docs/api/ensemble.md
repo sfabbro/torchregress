@@ -10,13 +10,12 @@ is listed here. For background and decision guidance, see
 
 | Symbol | Description |
 |:-------|:------------|
-| `BaseEnsembleModel` | Foundation class. Each call to `forward(x)` runs every member and stacks outputs. Provides `predict` (mean + variance) and `predict_full_covariance`. |
-| `EnsembleFitConfig` | Dataclass holding training options: `epochs`, `lr`, `optimizer_cls`, `optimizer_kwargs`, `optimizer_factory`, `device`, `adversarial_training`, etc. Passed to `fit()`. |
+| `BaseEnsembleModel` | Foundation class. Each call to `forward(x)` runs every member and returns a stacked tensor `[M, batch, ...]` (a list only for non-tensor member outputs). Provides `predict` (mean + variance) and `predict_full_covariance`, which run members in eval mode and restore their previous modes. `base_seed` seeds member initialisation inside a forked RNG (the global RNG state is unchanged). |
+| `EnsembleFitConfig` | Dataclass holding training options: `epochs`, `lr`, `optimizer_cls`, `optimizer_kwargs`, `optimizer_factory`, `verbose`, `device`. Built by `fit()`. |
 
-**`BaseEnsembleModel.fit(...)`** trains each member independently. With
-`adversarial_training=True`, each member is also trained on an FGSM/PGD-style
-adversarial objective. `optimizer_factory(model) -> Optimizer` lets you supply
-custom per-member optimizers (e.g. AdamW + Muon).
+**`BaseEnsembleModel.fit(...)`** trains each member independently with the
+given criterion (no adversarial training term). `optimizer_factory(model) -> Optimizer`
+lets you supply custom per-member optimizers (e.g. AdamW + Muon).
 
 ---
 
@@ -24,11 +23,13 @@ custom per-member optimizers (e.g. AdamW + Muon).
 
 | Symbol | Output | Predicts |
 |:-------|:-------|:---------|
-| `DeepEnsemble` | `stacked` | Just the per-member means (epistemic variance from disagreement) |
+| `BaseEnsembleModel` (deep ensemble) | `dict` | `mean`, `variance` (epistemic variance from member disagreement) |
 | `HeteroscedasticEnsembleModel` | `dict` | `mean`, `variance` (total), `epistemic_variance`, `aleatoric_variance` (each member outputs `(μ, log_σ²)`) |
 | `HeteroscedasticEnsembleModel.predict_full_covariance` | `dict` | `mean`, `epistemic_covariance`, `aleatoric_covariance`, `total_covariance` |
 
-Both inherit from `BaseEnsembleModel`; same training loop and adversarial options.
+`HeteroscedasticEnsembleModel` inherits from `BaseEnsembleModel` (same training loop).
+Member log-variances are converted with the `GaussianNLLLoss` training bounds
+(`log_var` clamped to `[log(1e-6), 30]`), here and in the batch/packed ensembles.
 
 ---
 
@@ -48,7 +49,7 @@ Both inherit from `BaseEnsembleModel`; same training loop and adversarial option
 from torchregress.ensemble import HeteroscedasticBatchEnsembleModel
 
 model = HeteroscedasticBatchEnsembleModel(
-    backbone=backbone, input_size=128, output_size=1, ensemble_size=4
+    backbone=backbone, output_size=1, ensemble_size=4  # backbone.feature_dim required
 )
 out = model(x)        # {"means": [B, M, D], "log_vars": [B, M, D]}
 pred = model.predict(x)
