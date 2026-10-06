@@ -46,6 +46,7 @@ lint = { cmd = "ruff check src/torchregress tests tools && ruff format --check s
 format = "ruff format src/torchregress tests tools"
 typecheck = "ty check --python .pixi/envs/default src/torchregress"
 test = "pytest --cov=torchregress --cov-report=term --cov-report=xml"
+test-cuda = "bash scripts/ci_cuda.sh"
 docs = "zensical build --strict"
 build = "python -m build"
 ci = { depends-on = ["lint", "typecheck", "test", "docs"] }
