@@ -11,7 +11,16 @@ from torch.distributions import Normal
 from torchmetrics import Metric
 
 from .interval import IntervalScore, PredictionIntervalCoverageProbability
-from .utils import convert_to_tensor, metric_state_tensor
+from .utils import convert_to_tensor, metric_state_tensor, prepare_functional_metric
+
+
+def _standard_normal_icdf(prob: float, like: torch.Tensor) -> torch.Tensor:
+    """Standard-normal quantile at ``prob`` in the dtype/device of ``like``."""
+    dist = Normal(
+        torch.zeros((), device=like.device, dtype=like.dtype),
+        torch.ones((), device=like.device, dtype=like.dtype),
+    )
+    return dist.icdf(torch.tensor(prob, device=like.device, dtype=like.dtype))
 
 
 def _variance_floor(var: torch.Tensor, min_variance: Optional[float]) -> torch.Tensor:
@@ -205,7 +214,7 @@ class EnsembleIntervalMetrics(Metric):
         mean = stats["mean"]
         total_var = _variance_floor(stats["total_uncertainty"], self.min_variance)
         sd = torch.sqrt(total_var)
-        z = Normal(0, 1).icdf(torch.tensor(1 - self.alpha / 2, device=mean.device))
+        z = _standard_normal_icdf(1 - self.alpha / 2, mean)
         lower = mean - z * sd
         upper = mean + z * sd
         return lower, upper
@@ -224,8 +233,13 @@ def gaussian_nll_ensemble(
     ``min_variance`` bounds the total variance below (default
     ``torch.finfo(dtype).tiny``; see :class:`GaussianNLLEnsemble`).
     """
-    metric = GaussianNLLEnsemble(dim=dim, min_variance=min_variance)
-    metric.update(convert_to_tensor(means), convert_to_tensor(variances), convert_to_tensor(y_true))  # ty: ignore[invalid-argument-type]  # torchmetrics update/compute overrides confuse ty
+    means_t = convert_to_tensor(means)
+    variances_t = convert_to_tensor(variances)
+    y_true_t = convert_to_tensor(y_true)
+    metric = prepare_functional_metric(
+        GaussianNLLEnsemble(dim=dim, min_variance=min_variance), means_t, variances_t, y_true_t
+    )
+    metric.update(means_t, variances_t, y_true_t)  # ty: ignore[invalid-argument-type]  # torchmetrics update/compute overrides confuse ty
     return metric.compute()  # ty: ignore[missing-argument]  # torchmetrics update/compute overrides confuse ty
 
 
@@ -246,7 +260,7 @@ def ensemble_interval_bounds(
     mean = stats["mean"]
     total_var = _variance_floor(stats["total_uncertainty"], min_variance)
     sd = torch.sqrt(total_var)
-    z = Normal(0, 1).icdf(torch.tensor(1 - alpha / 2, device=mean.device))
+    z = _standard_normal_icdf(1 - alpha / 2, mean)
     return mean - z * sd, mean + z * sd
 
 
@@ -260,6 +274,14 @@ def ensemble_interval_metrics(
     """
     Functional interval score + coverage for ensemble predictions.
     """
-    metric = EnsembleIntervalMetrics(alpha=alpha, min_variance=min_variance)
-    metric.update(convert_to_tensor(means), convert_to_tensor(variances), convert_to_tensor(y_true))  # ty: ignore[invalid-argument-type]  # torchmetrics update/compute overrides confuse ty
+    means_t = convert_to_tensor(means)
+    variances_t = convert_to_tensor(variances)
+    y_true_t = convert_to_tensor(y_true)
+    metric = prepare_functional_metric(
+        EnsembleIntervalMetrics(alpha=alpha, min_variance=min_variance),
+        means_t,
+        variances_t,
+        y_true_t,
+    )
+    metric.update(means_t, variances_t, y_true_t)  # ty: ignore[invalid-argument-type]  # torchmetrics update/compute overrides confuse ty
     return metric.compute()  # ty: ignore[missing-argument]  # torchmetrics update/compute overrides confuse ty

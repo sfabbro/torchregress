@@ -16,6 +16,7 @@ from torchregress.metrics.utils import (
     create_metric_result,
     metric_state_list,
     metric_state_tensor,
+    prepare_functional_metric,
     validate_inputs,
     validate_sample_weight,
 )
@@ -332,7 +333,7 @@ class OutlierFraction(Metric):
         var = (metric_state_tensor(self.sum_y_sq) - n * mean**2) / (n - 1)
         if n < 2 or var <= 0:
             # Zero-variance targets: no meaningful scale — define outliers empty.
-            return torch.zeros((), device=total.device, dtype=torch.float32)
+            return torch.zeros((), device=total.device, dtype=metric_state_tensor(self.sum_y).dtype)
         std = torch.sqrt(var)
         outlier_count = torch.sum(torch.cat(errors) > self.threshold * std.to(errors[0].device))
         return outlier_count / total
@@ -800,15 +801,15 @@ def regression_metrics_report(
     rmse = torch.sqrt(mse)
     mae = torch.mean(per_sample_mae)
 
-    r2 = R2Score()(y_pred_t, y_true_t)
+    r2 = prepare_functional_metric(R2Score(), y_pred_t, y_true_t)(y_pred_t, y_true_t)
     huber = huber_loss(y_pred_t, y_true_t, reduction="mean")
     mad = median_absolute_deviation(y_pred_t, y_true_t)
 
-    nmad_metric = NormalizedMedianAbsoluteDeviation()
+    nmad_metric = prepare_functional_metric(NormalizedMedianAbsoluteDeviation(), y_pred_t, y_true_t)
     nmad_metric.update(y_pred_t, y_true_t)  # ty: ignore[invalid-argument-type]  # torchmetrics update/compute overrides confuse ty's union resolution
     nmad = nmad_metric.compute()  # ty: ignore[missing-argument]
 
-    outlier_metric = OutlierFraction()
+    outlier_metric = prepare_functional_metric(OutlierFraction(), y_pred_t, y_true_t)
     outlier_metric.update(y_pred_t, y_true_t)  # ty: ignore[invalid-argument-type]  # torchmetrics update/compute overrides confuse ty's union resolution
     outlier_fraction = outlier_metric.compute()  # ty: ignore[missing-argument]
 
@@ -843,5 +844,5 @@ def r2_score(
     y_pred_t = convert_to_tensor(y_pred)
     y_true_t = convert_to_tensor(y_true)
     validate_inputs(y_pred_t, y_true_t)
-    result = R2Score()(y_pred_t, y_true_t)
+    result = prepare_functional_metric(R2Score(), y_pred_t, y_true_t)(y_pred_t, y_true_t)
     return cast(MetricValue, create_metric_result(result, as_numpy=as_numpy))

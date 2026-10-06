@@ -9,7 +9,12 @@ import torch
 from torch.distributions import Normal
 from torchmetrics import Metric
 
-from torchregress.metrics.utils import convert_to_tensor, ensure_batch_dim, metric_state_list
+from torchregress.metrics.utils import (
+    convert_to_tensor,
+    ensure_batch_dim,
+    float_dtype,
+    metric_state_list,
+)
 
 
 def _mahalanobis(
@@ -368,7 +373,7 @@ def _batched_entropy(samples: torch.Tensor, n_bins: int) -> torch.Tensor:
 
     # Compute counts using bincount
     # Result size: M * n_bins
-    counts_flat = torch.bincount(global_bin_idx_flat, minlength=M * n_bins).float()
+    counts_flat = torch.bincount(global_bin_idx_flat, minlength=M * n_bins).to(float_dtype(samples))
 
     # Reshape back to [batch_size, output_dim, n_bins]
     counts = counts_flat.reshape(batch_size, output_dim, n_bins)

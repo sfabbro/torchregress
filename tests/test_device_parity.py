@@ -1142,67 +1142,7 @@ METRIC_CASES: dict[str, Builder] = {
 }
 
 XFAIL_METRICS_PARITY: dict[str, str] = {}
-XFAIL_METRICS_DTYPE: dict[str, str] = {
-    "ExpectedCalibrationError": (
-        "calibration/metrics.py:96 `(y_true <= preds).float()` returns float32 for float64 inputs"
-    ),
-    "MarginalCalibrationError": (
-        "calibration/metrics.py:160 `y_true.float()` and :37 `.float()` histogram counts "
-        "return float32 for float64 inputs"
-    ),
-    "prediction_interval_coverage_probability": (
-        "metrics/interval.py:188 `coverage_mask.float()` returns float32 for float64 inputs"
-    ),
-    "prediction_interval_coverage": (
-        "metrics/interval.py:188 `coverage_mask.float()` returns float32 for float64 inputs"
-    ),
-    "interval_metrics_report": (
-        "metrics/interval.py:188 `coverage_mask.float()`: report['picp'] is float32 for "
-        "float64 inputs"
-    ),
-    "gaussian_nll_ensemble": (
-        "metrics/ensemble.py:116 functional wrapper builds GaussianNLLEnsemble with a default "
-        "float32 `torch.tensor(0.0)` state on CPU; result is float32 (and the state is not "
-        "moved to the input device)"
-    ),
-    "ensemble_interval_metrics": (
-        "metrics/interval.py:26,70,71 default float32 `torch.tensor(0.0)` states on CPU in the "
-        "functional wrapper (metrics/ensemble.py:208); interval_score/picp are float32"
-    ),
-    "risk_coverage_curve": (
-        "metrics/decision.py:120 `torch.linspace(..., device=...)` has no dtype; "
-        "coverage is float32 for float64 inputs"
-    ),
-    "RiskCoverageCurve": (
-        "metrics/decision.py:120 `torch.linspace(..., device=...)` has no dtype; "
-        "coverage is float32 for float64 inputs"
-    ),
-    "RejectionPolicy": (
-        "metrics/decision.py:225,231 `keep_mask.float()` / `n_rejected.float()` return "
-        "float32 for float64 inputs"
-    ),
-    "entropy_score": "metrics/ood.py:371 histogram counts `.float()` -> float32 entropy",
-    "EntropyScore": "metrics/ood.py:371 histogram counts `.float()` -> float32 entropy",
-    "ood_metrics_report": "metrics/ood.py:371 histogram counts `.float()` -> float32 'entropy'",
-    "task_agnostic_correlations": (
-        "metrics/tac.py:48 functional wrapper (tac.py:117) builds TaskAgnosticCorrelations with "
-        "a default float32 `torch.tensor(0.0)` state on CPU; result is float32 (and the state "
-        "is not moved to the input device)"
-    ),
-    "ordinal_accuracy[cumulative_logits]": (
-        "metrics/ordinal.py:41 `(pred == true).float().mean()` returns float32 for float64 logits"
-    ),
-    "concordance_index": (
-        "metrics/censored.py:83-86 `.sum(dtype=torch.float32)` returns float32 for float64 inputs"
-    ),
-    "pseudo_label_acceptance_rate": (
-        "metrics/uncertain.py:56 `(conf >= thr).float().mean()` returns float32 for float64 inputs"
-    ),
-    "uncertain_gt_metrics_report": (
-        "metrics/uncertain.py:56 `.float().mean()`: report['PseudoAcceptanceRate'] is float32 "
-        "for float64 inputs"
-    ),
-}
+XFAIL_METRICS_DTYPE: dict[str, str] = {}
 
 
 # --------------------------------------------------------------------------- #

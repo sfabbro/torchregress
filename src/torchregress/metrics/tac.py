@@ -13,7 +13,12 @@ import numpy as np
 import torch
 from torchmetrics import Metric
 
-from .utils import convert_to_tensor, metric_state_tensor, validate_inputs
+from .utils import (
+    convert_to_tensor,
+    metric_state_tensor,
+    prepare_functional_metric,
+    validate_inputs,
+)
 
 
 class TaskAgnosticCorrelations(Metric):
@@ -114,9 +119,12 @@ def task_agnostic_correlations(
     jitter: float = 1e-6,
 ) -> torch.Tensor:
     """Functional wrapper for :class:`TaskAgnosticCorrelations`."""
-    metric = TaskAgnosticCorrelations(jitter=jitter)
+    y_pred_t = convert_to_tensor(y_pred)
+    # ``update`` aligns the other operands to ``y_pred``'s device/dtype, so the
+    # metric states follow ``y_pred`` too.
+    metric = prepare_functional_metric(TaskAgnosticCorrelations(jitter=jitter), y_pred_t)
     metric.update(
-        convert_to_tensor(y_pred),  # ty: ignore[invalid-argument-type]  # torchmetrics update/compute overrides confuse ty
+        y_pred_t,  # ty: ignore[invalid-argument-type]  # torchmetrics update/compute overrides confuse ty
         convert_to_tensor(y_true),
         convert_to_tensor(covariance),
     )

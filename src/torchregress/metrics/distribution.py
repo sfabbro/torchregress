@@ -10,7 +10,11 @@ import numpy as np
 import torch
 from torchmetrics import Metric
 
-from torchregress.metrics.utils import convert_to_tensor, metric_state_tensor
+from torchregress.metrics.utils import (
+    convert_to_tensor,
+    metric_state_tensor,
+    prepare_functional_metric,
+)
 
 _INV_SQRT_PI = 1.0 / math.sqrt(math.pi)
 
@@ -1175,12 +1179,11 @@ def dss_score(
     """
     Functional Dawid-Sebastiani score: ``(y - mu)^2 / sigma^2 + 2 * ln(sigma)``.
     """
-    metric = DawidSebastianiScore()
-    metric.update(
-        convert_to_tensor(y_pred_mean),  # ty: ignore[invalid-argument-type]  # torchmetrics update/compute overrides confuse ty
-        convert_to_tensor(y_pred_std),
-        convert_to_tensor(y_true),
-    )
+    mean_t = convert_to_tensor(y_pred_mean)
+    std_t = convert_to_tensor(y_pred_std)
+    y_true_t = convert_to_tensor(y_true)
+    metric = prepare_functional_metric(DawidSebastianiScore(), mean_t, std_t, y_true_t)
+    metric.update(mean_t, std_t, y_true_t)  # ty: ignore[invalid-argument-type]  # torchmetrics update/compute overrides confuse ty
     return float(metric.compute().item())  # ty: ignore[missing-argument]  # torchmetrics update/compute overrides confuse ty
 
 
@@ -1255,8 +1258,10 @@ def vario_score(
     """
     Functional vario score: ``0.5 * E|X - X'|^rho - E|X - y|^rho`` (higher is better).
     """
-    metric = VarioScore(rho=rho)
-    metric.update(convert_to_tensor(y_samples), convert_to_tensor(y_true))  # ty: ignore[invalid-argument-type]  # torchmetrics update/compute overrides confuse ty
+    samples_t = convert_to_tensor(y_samples)
+    y_true_t = convert_to_tensor(y_true)
+    metric = prepare_functional_metric(VarioScore(rho=rho), samples_t, y_true_t)
+    metric.update(samples_t, y_true_t)  # ty: ignore[invalid-argument-type]  # torchmetrics update/compute overrides confuse ty
     return float(metric.compute().item())  # ty: ignore[missing-argument]  # torchmetrics update/compute overrides confuse ty
 
 
@@ -1306,11 +1311,10 @@ def pinball_metric(
     """
     Functional mean pinball across quantile levels.
     """
-    metric = PinballMetric()
-    metric.update(
-        {level: convert_to_tensor(q) for level, q in quantiles_dict.items()},  # ty: ignore[invalid-argument-type]  # torchmetrics update/compute overrides confuse ty
-        convert_to_tensor(y_true),
-    )
+    quantiles_t = {level: convert_to_tensor(q) for level, q in quantiles_dict.items()}
+    y_true_t = convert_to_tensor(y_true)
+    metric = prepare_functional_metric(PinballMetric(), y_true_t, quantiles_t)
+    metric.update(quantiles_t, y_true_t)  # ty: ignore[invalid-argument-type]  # torchmetrics update/compute overrides confuse ty
     return float(metric.compute().item())  # ty: ignore[missing-argument]  # torchmetrics update/compute overrides confuse ty
 
 

@@ -49,6 +49,21 @@ def convert_to_tensor(
     return tensor
 
 
+def float_dtype(*tensors: object) -> torch.dtype:
+    """Floating dtype that boolean/integer intermediates should adopt.
+
+    Returns the promoted dtype of all floating-point tensors among ``tensors``
+    (so float64 inputs keep float64), falling back to
+    :func:`torch.get_default_dtype` when none is floating.  Never hard-codes
+    float32.
+    """
+    dtype: Optional[torch.dtype] = None
+    for t in tensors:
+        if isinstance(t, torch.Tensor) and t.is_floating_point():
+            dtype = t.dtype if dtype is None else torch.promote_types(dtype, t.dtype)
+    return dtype if dtype is not None else torch.get_default_dtype()
+
+
 def ensure_batch_dim(x: torch.Tensor) -> torch.Tensor:
     """Ensure tensor has a batch dimension."""
     if x.dim() == 1:
