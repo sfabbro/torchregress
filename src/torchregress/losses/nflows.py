@@ -22,7 +22,6 @@ except ImportError:
 
     MAF = NSF = RealNVP = None  # zuko is optional; call sites are guarded by HAS_ZUKO
 
-from ..utils.tensor_ops import masked_reduction
 from .base import DistributionLoss
 from .loss_registry import register_regression_loss
 
@@ -510,16 +509,10 @@ class NormalizingFlowLoss(DistributionLoss):
         # Calculate negative log-likelihood
         nll = self._calculate_nll(target_eval, context, sample_mask)
 
-        # Apply weights if provided
-        if weights is not None:
-            # Handle different weight shapes
-            if weights.dim() > 1 and weights.shape[1] > 1:
-                # Average across features if weights are per-feature
-                weights = weights.mean(dim=1)
-            nll = nll * weights
-
-        # Apply reduction
-        return masked_reduction(nll, sample_mask, self.reduction)
+        # Unified BaseLoss policy (A9): masked samples are zero-filled under
+        # 'none', the weighted mean is normalised by the sum of the weights,
+        # and per-feature [B, D] weights are averaged to one weight per sample.
+        return self._reduce(nll, sample_mask, weights)
 
     def sample(self, y_pred: Tensor, n_samples: int = 1) -> Tensor:
         """
@@ -744,9 +737,4 @@ class ContrastiveFlowLoss(NormalizingFlowLoss):
         logits = torch.cat([pos_score.unsqueeze(1), neg_score], dim=1)
         loss = -pos_score + torch.logsumexp(logits, dim=1)
 
-        if weights is not None:
-            if weights.dim() > 1 and weights.shape[1] > 1:
-                weights = weights.mean(dim=1)
-            loss = loss * weights
-
-        return masked_reduction(loss, sample_mask, self.reduction)
+        return self._reduce(loss, sample_mask, weights)

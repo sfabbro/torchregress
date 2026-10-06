@@ -150,7 +150,7 @@ loss_fn = MultiExpectileLoss(
 
 ### ExpectileCrossoverLoss
 
-Non-crossing constraint for expectiles (analogous to `QuantileCrossoverLoss`):
+Non-crossing constraint for expectiles (analogous to `QuantileCrossoverLoss`). As for `QuantileCrossoverLoss` and `MultiExpectileLoss`, the levels must be strictly ascending (a `ValueError` is raised otherwise), and `y_pred[:, k]` is trained against `expectiles[k]`:
 
 ```python
 from torchregress.losses import ExpectileCrossoverLoss

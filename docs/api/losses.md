@@ -80,6 +80,7 @@ $$\\mathcal{L}_{\\beta\\text{-NLL}} = (\\sigma^2 + \\varepsilon)^{-\\beta} \\cdo
 | `LogCoshLoss` | `LogCoshLoss(reduction="mean")` | tanh(r), linear tail |
 | `CharbonnierLoss` | `CharbonnierLoss(eps=1e-3, reduction="mean")` | r / √(r² + ε²) |
 | `CauchyLoss` | `CauchyLoss(c=1.0, reduction="mean")` | Logarithmic tail |
+| `StudentTLoss` | `StudentTLoss(nu=1.0, scale=1.0, reduction="mean")` | Student-t NLL; Cauchy at ν=1, Gaussian as ν→∞ |
 | `TukeyBiweightLoss` | `TukeyBiweightLoss(c=4.685, reduction="mean")` | Redescending (zero for |r| > c) |
 | `AdaptiveRobustLoss` | `AdaptiveRobustLoss(...)` | Trainable α + scale |
 | `BarronLoss` | `BarronLoss(alpha=1.0, c=1.0, ...)` | Continuous L1 ↔ L2 family |
@@ -103,7 +104,8 @@ $$\\mathcal{L}_{\\text{Huber}}(r;\\delta) = \\begin{cases} \\frac{1}{2}r^2 & |r|
 | `QuantileCrossoverLoss` | `QuantileCrossoverLoss(quantiles=[...])` | + non-crossing penalty |
 | `ExpectileLoss` | `ExpectileLoss(expectile=0.5, reduction="mean")` | Asymmetric L2 |
 | `MultiExpectileLoss` | `MultiExpectileLoss(expectiles=[...])` | Joint expectile |
-| `ExpectileCrossoverLoss` | `ExpectileCrossoverLoss(expectiles=[...])` | + non-crossing penalty |
+| `ExpectileCrossoverLoss` | `ExpectileCrossoverLoss(expectiles=[...])` | + non-crossing penalty (levels must be strictly ascending) |
+| `ExpectileCrossover` | `ExpectileCrossover(expectiles=[...])` | Alias for `ExpectileCrossoverLoss` |
 | `AsymmetricLeastSquaresLoss` | `AsymmetricLeastSquaresLoss(tau=0.5)` | Alias for ExpectileLoss |
 | `QuantileCrossover` | `QuantileCrossover(quantiles=[...])` | Non-crossing penalty helper dataclass |
 | `quantile_loss` | `quantile_loss(y_pred, y, tau)` | Functional pinball loss |
