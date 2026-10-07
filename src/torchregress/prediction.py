@@ -27,6 +27,51 @@ def quantiles_to_density_grid(
     n_support: int = 200,
     range_margin: float = 0.05,
 ) -> tuple[Tensor, Tensor]:
+    """Convert quantile predictions to a per-row density on a regular support grid.
+
+    The quantile function is linearly interpolated between the knots
+    ``(tau_k, q_k)``, which gives a piecewise-constant density
+    ``(tau_{k+1} - tau_k) / (q_{k+1} - q_k)`` on ``[q_k, q_{k+1}]``.
+
+    .. note::
+       **Truncation semantics.**  Tail mass outside ``[q_0, q_K]`` (``tau_0`` below
+       and ``1 - tau_K`` above) is *not* represented: the density is zero on the
+       ``range_margin`` margins and the grid is renormalised to integrate to one.
+       The grid therefore encodes the predictive law *truncated to* ``[q_0, q_K]``
+       and renormalised, so its CDF at knot ``k`` is
+       ``(tau_k - tau_0) / (tau_K - tau_0)`` rather than ``tau_k``, and densities are
+       inflated by ``1 / (tau_K - tau_0)`` relative to the original law.  For
+       example, for levels ``(0.05, 0.5, 0.75)`` the grid median sits at the
+       ``(0.5 - 0.05) / 0.7 ~= 64``-th percentile of the grid.  Use wide outer
+       levels (e.g. 0.01 / 0.99) when the tails matter.  This behaviour is kept
+       pending a maintainer decision.
+
+    Parameters
+    ----------
+    quantiles : Tensor
+        Quantile predictions, shape ``[batch, n_quantiles]``.  Crossing quantiles
+        are repaired by sorting each row (monotone rearrangement, as in
+        ``constraints.NonCrossingSort``).
+    quantile_levels : sequence of float
+        Strictly increasing levels ``tau_k``, one per column.
+    n_support : int, default 200
+        Number of grid points per row (>= 2).
+    range_margin : float, default 0.05
+        Fraction of ``q_K - q_0`` added on each side of the quantile range.
+
+    Returns
+    -------
+    support : Tensor
+        Grid of shape ``[batch, n_support]``.
+    density : Tensor
+        Density on the grid, same shape, trapezoid-normalised to integrate to one.
+
+    Raises
+    ------
+    ValueError
+        If the quantiles are non-finite or not 2-D, the levels do not match the
+        columns or are not strictly increasing, or ``n_support < 2``.
+    """
     q = torch.as_tensor(quantiles)
     if torch.is_grad_enabled():
         q = q.detach()
@@ -47,7 +92,8 @@ def quantiles_to_density_grid(
     if not (levels[1:] > levels[:-1]).all():
         raise ValueError("quantile levels must be strictly increasing")
 
-    q = q.cummax(dim=1).values
+    # Monotone rearrangement (sort), not cummax: cummax creates ties whose mass is dropped.
+    q = torch.sort(q, dim=1).values
     q_lo = q[:, 0:1]
     q_hi = q[:, -1:]
     width = (q_hi - q_lo).clamp(min=1.0e-6)

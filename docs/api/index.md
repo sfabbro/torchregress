@@ -23,8 +23,10 @@ For conceptual guides, derivations, and worked examples, see
 | `torchregress.test_time` | Bayesian linear heads, OT shift conformal, BLR predictive adapters | [Test-time API](test_time.md) |
 | `torchregress.semi_supervised` | Teacher–student semi-supervised trainer, consensus/agreement, pseudo-loss, trust weighting | [Semi-supervised API](semi_supervised.md) |
 | `torchregress.comparison` | Reproducible comparison-example helpers (seeds, timing, metrics, JSON summaries, fairness notes) | [Comparison API](comparison.md) |
-| `torchregress.prediction` | Predictive batch containers (`PredictiveBatch`) | [Inference API](inference.md) |
-| `torchregress.utils` | Tensor ops, validation, augment, labels, propensity, transforms | [Utilities API](utils.md) |
+| `torchregress.prediction` | Predictive batch containers (`PredictiveBatch`) and quantile / bar / sample → density-grid conversion | [Utilities API](utils.md#predictive-containers-prediction) |
+| `torchregress.utils` | Tensor ops, validation, augment, ordinal, propensity, transforms | [Utilities API](utils.md) |
+| `torchregress.method_catalog` | Scriptable method metadata (`list_methods`, `get_method_metadata`, …) | [Utilities API](utils.md#method-catalog-method_catalog) |
+| `torchregress.health` | `check_health()` installation smoke test | [Utilities API](utils.md#health-check-health) |
 
 ## Top-level exports
 
@@ -44,7 +46,7 @@ For conceptual guides, derivations, and worked examples, see
 | `prediction` | Lazy submodule of predictive batch containers (`PredictiveBatch`). |
 | `viz` | Lazy submodule of diagnostic, monitoring, results, and utility plotting. |
 | `comparison` | Lazy submodule of reproducible comparison-example helpers (seeds, timing, metrics, JSON summaries). |
-| `utils` | Lazy submodule of tensor ops, validation, augmentations, labels, propensity, and transforms. |
+| `utils` | Lazy submodule of tensor ops, validation, augmentations, ordinal helpers, propensity, and transforms. |
 | `__version__` | Installed **torchregress** version string. |
 
 ## Package structure
@@ -98,7 +100,7 @@ torchregress/
 ├── prediction.py          # Predictive batch containers
 ├── viz/                   # Diagnostic, monitoring, results, utils plots
 ├── semi_supervised.py     # TeacherStudentTrainer
-└── utils/                 # tensor_ops, validation, augment, labels, propensity, transforms
+└── utils/                 # tensor_ops, validation, augment, ordinal, propensity, transforms
 ```
 
 ## Core imports

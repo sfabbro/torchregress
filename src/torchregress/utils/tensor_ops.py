@@ -158,8 +158,10 @@ def masked_mean(
     if mask is None:
         return torch.mean(tensor, dim=dim, keepdim=keepdim)
 
-    valid_count = mask.sum(dim=dim, keepdim=keepdim).clamp(min=1)
-    return (tensor * mask).sum(dim=dim, keepdim=keepdim) / valid_count
+    # torch.where (not ``tensor * mask``) so NaN/Inf at masked-out positions cannot leak.
+    mask_b, tensor_b = torch.broadcast_tensors(mask.to(torch.bool), tensor)
+    valid_count = mask_b.sum(dim=dim, keepdim=keepdim).clamp(min=1)
+    return apply_mask(tensor_b, mask_b).sum(dim=dim, keepdim=keepdim) / valid_count
 
 
 def masked_sum(
@@ -174,7 +176,7 @@ def masked_sum(
     if mask is None:
         return torch.sum(tensor, dim=dim, keepdim=keepdim)
 
-    return (tensor * mask).sum(dim=dim, keepdim=keepdim)
+    return apply_mask(tensor, mask.to(torch.bool)).sum(dim=dim, keepdim=keepdim)
 
 
 def prepare_cross_covariance(
@@ -295,7 +297,10 @@ def calculate_gaussian_nll(
     full_covariance = var.dim() == residuals.dim() + 1
 
     if elementwise_diagonal:
-        # Diagonal covariance case
+        # Diagonal covariance case.  A per-sample variance (dim == residuals.dim() - 1,
+        # leading axis = batch) is broadcast over the trailing feature axis.
+        if var.shape != residuals.shape and var.dim() >= 1 and var.shape[0] == residuals.shape[0]:
+            var = var.unsqueeze(-1)
         nll = 0.5 * (torch.log(var + eps) + (residuals**2) / (var + eps))
         nll = torch.sum(nll, dim=1)
         nll = nll + 0.5 * residuals.shape[1] * math.log(2 * math.pi)

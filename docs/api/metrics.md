@@ -219,4 +219,6 @@ Complete reference for `torchregress.metrics`. Every metric, class, and report f
 | `create_metric_result` | `create_metric_result(result, as_numpy=False)` | Recursively convert metric outputs: scalar tensors → floats, tensors → NumPy when requested |
 | `metric_state_tensor` | `metric_state_tensor(state)` | Cast a TorchMetrics state attribute to a tensor for typing-friendly arithmetic |
 | `metric_state_list` | `metric_state_list` | Runtime-safe caster for metric state list attributes |
+| `prepare_functional_metric` | `prepare_functional_metric(metric, *inputs)` | Move a stateful metric to the device of its inputs before a functional call |
+| `float_dtype` | `float_dtype(*tensors)` | Floating dtype for integer / boolean intermediates (promoted dtype of the floating inputs, else the default dtype); same helper as `torchregress.utils.tensor_ops.float_dtype` |
 | `validate_inputs` | `validate_inputs(y_pred, y)` | Alias of `validate_metric_inputs`: broadcast-tolerant metric input checks |
