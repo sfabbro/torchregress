@@ -110,7 +110,7 @@ and uncertainty under delayed label observations.
 
 | Symbol | Description |
 |:-------|:------------|
-| `DelayedLabelResidualAdapter` | `(base_model, *, ema_beta=0.1, scale_ema_beta=0.1)` — Tracks running EMA of residuals and variance inflation factors to adjust point, mean, std, and quantiles at test time. `.partial_fit(X, y)` updates state, `.predict_distribution(X)` returns adapted PredictiveBatch. |
+| `DelayedLabelResidualAdapter` | `(base_model, *, ema_beta=0.1, scale_ema_beta=0.1)` — Tracks running EMA of residuals and variance inflation factors to adjust point, mean, std, and quantiles at test time. `.partial_fit(X, y)` updates state (the first update measures residuals against the uncorrected base predictions), `.predict_distribution(X)` returns adapted PredictiveBatch. |
 
 ```python
 from torchregress.test_time import DelayedLabelResidualAdapter
@@ -135,7 +135,7 @@ scores** under non-exchangeable target shift, and weighted split-conformal regre
 | `OptimalTransportCoverageGap(n_grid=129)` | Diagnostics: `l2_cdf_gap`, `ks_max_abs` between uniform-weight calibration and target ECDFs. |
 | `ScoreCDFReweighter(...)` | Learns simplex weights over calibration points by minimising the L₂ gap on a 1-D score grid. |
 | `WeightedSplitConformalAdapter(alpha=0.1)` | Weighted split-conformal threshold for classification-style nonconformity scores. |
-| `WeightedConformalRegressionAdapter` | `(alpha=0.1, classifier=None)` — Weighted split-conformal regression using classifier-based density ratio estimation. `.fit_density_ratio(X_cal, X_tgt)`, `.compute_density_ratios(X)`, `.calibrate(y_pred_cal, y_cal, X_cal, X_tgt)`, `.predict_interval(y_pred, X)`. |
+| `WeightedConformalRegressionAdapter` | `(alpha=0.1, classifier=None)` — Weighted split-conformal regression using classifier-based density ratio estimation. `.fit_density_ratio(X_cal, X_tgt)`, `.compute_density_ratios(X)`, `.calibrate(y_pred_cal, y_cal, X_cal, X_tgt)`, `.predict_interval(y_pred, X)` (returns infinite intervals when the calibration mass is too small for the requested `alpha`, per Tibshirani et al. 2019). |
 | `weighted_split_classification_predictive_batch(...)` | Build a `PredictiveBatch` from a calibrated WeightedSplitConformalAdapter. |
 
 ```python
@@ -155,7 +155,7 @@ lower, upper = adapter.predict_interval(y_pred_test, X_test)
 
 | Symbol | Description |
 |:-------|:------------|
-| `DomainClassifierRatioEstimator` | Density-ratio `w(x) = p_target(x) / p_source(x)` estimated via a probabilistic domain classifier. `.fit(X_source, X_target)`, then `.weights(X)` / `.weights_for(X)`. |
+| `DomainClassifierRatioEstimator` | Density-ratio `w(x) = p_target(x) / p_source(x)` estimated via a probabilistic domain classifier. `.fit(X_source, X_target)`, then `.weights(X)` / `.weights_for(X)`. The classifier odds are corrected by `n_source / n_target` before clipping, so the weights are normalised for unequal pool sizes. |
 | `estimate_label_shift_weights` | Per-point importance weights under label shift via the BBSE-per-point identity from source/target posterior probabilities. |
 | `JointTTAResult` | Frozen outcome of `JointDistributionalTTA.adapt_and_calibrate`: the adapted model, the fitted conformal calibrator, and a diagnostics dict. |
 | `JointDistributionalTTA` | Adapt a distributional regressor at test time (feature alignment + filtered pseudo-label rounds), freeze, then recalibrate once with fixed importance weights. `.adapt_and_calibrate(model, X_cal_src, y_cal_src, X_target)`, `.predict_intervals(result, X_test)`. |
@@ -265,7 +265,10 @@ under target shift.
 
 The transport supports PPI (`mean` / `quantile` / `ols` estimands) and
 dispatches conformal calibration to `cqr` / `cti` / `interval` / `split`
-based on the predictive family.
+based on the predictive family. The conformal threshold is the exact split-conformal
+order statistic `k = ceil((n + 1)(1 - alpha))` of the calibration scores (`+inf`, i.e. an
+unbounded interval, when `k > n`). Outputs keep the floating dtype of the predictions
+(float64 predictions stay float64).
 
 ```python
 import numpy as np

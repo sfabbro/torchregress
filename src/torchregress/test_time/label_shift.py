@@ -291,14 +291,16 @@ def gaussian_moments_from_binned_probabilities(
     Returns
     -------
     tuple[np.ndarray, np.ndarray]
-        Reconstructed mean and standard deviation.
+        Reconstructed mean and standard deviation, in the promoted dtype of
+        ``probabilities`` and ``bin_edges`` (float64 for float64 edges; never
+        down-cast to float32, which loses sub-0.03 resolution at offsets ~3e5).
     """
     probs = _normalize_rows(probabilities, eps)
     centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
     mean = probs @ centers
     second = probs @ (centers**2)
     var = np.clip(second - mean**2, eps, None)
-    return mean.astype(np.float32), np.sqrt(var).astype(np.float32)
+    return mean, np.sqrt(var)
 
 
 @dataclass(frozen=True)
@@ -404,6 +406,11 @@ def correct_gaussian_predictions_for_label_shift(
     corrected_mean, corrected_std = gaussian_moments_from_binned_probabilities(
         corrected, bin_edges, eps=cfg.eps
     )
+    # Return in the dtype of the supplied predictions (float64 stays float64).
+    out_dtype = np.result_type(np.asarray(mean).dtype, np.asarray(std).dtype)
+    if np.issubdtype(out_dtype, np.floating):
+        corrected_mean = corrected_mean.astype(out_dtype, copy=False)
+        corrected_std = corrected_std.astype(out_dtype, copy=False)
     metadata: dict[str, object] = {
         "target_prior": estimate.target_prior.tolist(),
         "source_prior": estimate.source_prior.tolist(),

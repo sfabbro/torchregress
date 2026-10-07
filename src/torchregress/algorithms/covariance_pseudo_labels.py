@@ -15,6 +15,8 @@ from typing import Any, Literal
 
 import torch
 
+from ..utils.tensor_ops import float_dtype
+
 Metric = Literal["mahalanobis", "euclidean"]
 Weighting = Literal["softmax"]
 
@@ -41,9 +43,11 @@ class NeighborhoodCovarianceConfig:
 
 
 def _as_tensor_2d(x: torch.Tensor | Any, *, name: str) -> torch.Tensor:
-    if not torch.is_tensor(x):
-        x = torch.as_tensor(x, dtype=torch.float32)
-    t = x.float()
+    # Keep a floating input dtype (float64 stays float64); integers/bools and python
+    # sequences use the default dtype.
+    t = torch.as_tensor(x)
+    if not t.is_floating_point():
+        t = t.to(torch.get_default_dtype())
     if t.dim() != 2:
         raise ValueError(f"{name} must be 2D [n, dim], got shape {tuple(t.shape)}")
     return t
@@ -119,6 +123,8 @@ class NeighborhoodCovariancePseudoLabeler:
         y0 = _as_tensor_2d(y, name="y")
         if x0.shape[0] != y0.shape[0]:
             raise ValueError("x and y must have the same number of rows")
+        dtype = float_dtype(x0, y0)
+        x0, y0 = x0.to(dtype), y0.to(dtype)
         n = x0.shape[0]
         if n < self.config.n_neighbors + 1:
             raise ValueError(
@@ -140,6 +146,8 @@ class NeighborhoodCovariancePseudoLabeler:
         yr = _as_tensor_2d(y_reference, name="y_reference")
         if xr.shape[0] != yr.shape[0]:
             raise ValueError("x_reference and y_reference must have the same number of rows")
+        dtype = float_dtype(xq, xr, yr)
+        xq, xr, yr = xq.to(dtype), xr.to(dtype), yr.to(dtype)
         n_ref = xr.shape[0]
         if n_ref < self.config.n_neighbors:
             raise ValueError(
