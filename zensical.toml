@@ -169,6 +169,7 @@ nav = [
       { "Real-Data Recommendation Guide" = "reports/real_data_recommendation_guide.md" },
       { "Docs Quality Audit" = "reports/docs_quality_audit.md" },
       { "0.3.0 Release Audit" = "reports/audit_0.3.0.md" },
+      { "0.3.0 API Review" = "reports/api_review_0.3.0.md" },
     ] },
   ] },
   { "Loss Functions" = [
