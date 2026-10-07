@@ -11,6 +11,22 @@ until 0.3.0 ships; only fixes, tests, docs and packaging. Methods to add or
 remove are decided for 0.4.0.
 
 ### Changed
+- 28 plumbing helpers are no longer re-exported from `torchregress.utils` (and
+  dropped from its `__all__`); they remain importable from their submodules, for
+  example `from torchregress.utils.tensor_ops import convert_to_tensor`.
+  `distributions`: `normal_cdf`. `gaussian_output`: `parse_heteroscedastic_output`,
+  `low_rank_output_dim`, `split_low_rank_gaussian_output`. `numpy_stats`:
+  `subsample_rows`, `winsorize`. `ordinal`: `labels_to_levels`,
+  `normalize_class_probs`, `class_probs_to_levels`. `pytorch_compat`: `get_device`.
+  `quantile`: `quantile_loss`, `multi_quantile_loss`. `tensor_ops`: `apply_mask`,
+  `convert_to_tensor`, `ensure_batch_dim`, `prepare_cross_covariance`,
+  `prepare_model_input_for_gradients`, `compute_model_gradients`,
+  `calculate_gaussian_nll`, `calculate_propagated_variance`. `validation`:
+  `validate_reduction`, `validate_range`, `validate_quantile`, `validate_weights`,
+  `validate_metric_inputs`, `validate_sample_weight`, `check_tensor`. `security`:
+  `validate_url`. `parse_heteroscedastic_output`, `low_rank_output_dim` and
+  `split_low_rank_gaussian_output` stay public in `torchregress.ensemble` /
+  `torchregress.losses`.
 - Dependency floors raised to the newest releases resolvable from conda-forge:
   `torch>=2.13`, `numpy>=2.5`, `scipy>=1.18`, `torchmetrics>=1.9`; extras
   `matplotlib>=3.11`, `zuko>=1.6`, `scikit-learn>=1.9`, `pandas>=3.0`,

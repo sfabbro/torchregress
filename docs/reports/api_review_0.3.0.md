@@ -574,7 +574,7 @@ for any caller in `src`, the tests, the examples or the harness.
 4. **Delete the `CORALLoss.__doc__ = ...` assignment** at
    `losses/ordinal.py:214`, so that `CumulativeLinkLoss` keeps its own
    docstring. This changes only the docstring.
-5. **Optional, but recommended:** take the 28 names in section 2.1 out of the
+5. **Done (2026-10-07, maintainer approved).** Optional item: take the 28 names in section 2.1 out of the
    `torchregress.utils` namespace. They stay importable from their
    submodules. The edits are:
    - `src/torchregress/utils/__init__.py`;
@@ -605,6 +605,22 @@ for any caller in `src`, the tests, the examples or the harness.
      which do not change.
    - The full harness suite was not run: its network-bound tests exceed
      10 minutes.
+
+   **Applied.** The 28 names are out of `utils/__init__.py` (53 to 25
+   exports). The functions stay in their submodules. The imports in
+   `tests/test_utils_ordinal.py` and `tests/audit/test_audit_batch5.py` were
+   redirected to the submodules. `test_utils_exports_coherence_helpers` now pins
+   only the kept names, and a new test pins that the plumbing is not
+   re-exported. `test_UTL_009_no_phantom_symbols_in_utils_md` also resolves
+   names against the submodules. `docs/api/utils.md` lists the 28 under
+   "Internal helpers (not re-exported)". A CHANGELOG bullet is under
+   [Unreleased] / Changed. The harness allowlist needed no change: its entries
+   for `low_rank_output_dim`, `split_low_rank_gaussian_output`,
+   `quantile_loss` and `parse_heteroscedastic_output` are keyed to the
+   `losses` and `ensemble` exports, which stay.
+
+   **Decision recorded:** the `TeacherStudentTrainer` `tau` default stays
+   `0.2` (`semi_supervised.py`); no default change in 0.3.0.
 
    **Why now:** once 0.3.0 is on PyPI, each of these 28 names needs a full
    deprecation cycle, and the earliest removal is 0.6. **Why not:** the

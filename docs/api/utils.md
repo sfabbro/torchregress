@@ -58,23 +58,12 @@ density_batch = batch.with_density(n_support=256)
 
 ---
 
-## Distributions (`utils.distributions`)
-
-| Symbol | Description |
-|:-------|:------------|
-| `normal_cdf` | `(z)` — Standard-normal CDF `0.5 * erfc(-z / √2)`; keeps full relative precision in the lower tail. |
-
----
-
 ## Gaussian output helpers (`utils.gaussian_output`)
 
 | Symbol | Description |
 |:-------|:------------|
 | `split_mean_log_variance` | `(y_pred, *, split_dim=-1, mean_only_log_var="error")` — Split a `(…, 2D)` output (or tuple / dict) into `(mean, log_var)`. |
 | `variance_from_logvar` | `(log_var, *, min_logvar=-8.0, max_logvar=6.0, eps=1e-8)` — Numerically-stable `exp(log_var)` with clipping. |
-| `parse_heteroscedastic_output` | `(output)` — Accepts tuple / dict / concatenated-tensor layouts; returns `(mean, log_var)`. A 2-D `[batch, 2 * n_outputs]` tensor is split along dim 1; higher-rank tensors are split along the last dim, like `split_mean_log_variance`. |
-| `low_rank_output_dim` | `(n_features, rank)` — Total output dim of a low-rank Gaussian head `(mean, cov_factor, cov_diag)`. |
-| `split_low_rank_gaussian_output` | `(y_pred, n_features, rank)` — Split a low-rank output into `(mean, cov_factor, cov_diag)`. |
 
 ---
 
@@ -82,11 +71,8 @@ density_batch = batch.with_density(n_support=256)
 
 | Symbol | Description |
 |:-------|:------------|
-| `labels_to_levels` | `(target, num_classes)` — Convert class-index labels to cumulative binary levels `1[y > k]`; the dtype follows `float_dtype(target)`. |
-| `class_probs_to_levels` | `(target_probs, *, class_dim=-1, eps=1e-8)` — Convert per-class PMF targets to cumulative levels `P(y > k)`. |
 | `cumulative_probs_to_pmf` | `(cumulative_probs, eps=1e-8)` — Convert cumulative probabilities to a class PMF. |
 | `cumulative_logits_to_pmf` | `(logits)` — Convert cumulative logits to a class PMF. |
-| `normalize_class_probs` | `(target_probs, *, class_dim=-1, eps=1e-8)` — Normalise non-negative class probabilities along `class_dim`. |
 | `ordinal_predict` | `(y_pred, *, encoding="cumulative_logits", threshold=0.5, strategy="argmax", num_classes=None, return_pmf=False)` — Decode ordinal outputs into class-index predictions. |
 | `CORALHead` | `(in_features, num_classes)` — Shared-weight ordinal output head with monotonic bias constraints; maps features to cumulative logits. |
 
@@ -105,16 +91,6 @@ density_batch = batch.with_density(n_support=256)
 | Symbol | Description |
 |:-------|:------------|
 | `set_all_seeds` | `(seed)` — Seed Python + NumPy + PyTorch (CPU + CUDA). |
-| `get_device` | `(device_str=None)` — Resolve the requested device, falling back to the best available one. |
-
----
-
-## Quantile utilities (`utils.quantile`)
-
-| Symbol | Description |
-|:-------|:------------|
-| `quantile_loss` | `(y_pred, y_true, quantile)` — Functional pinball loss for a single quantile. |
-| `multi_quantile_loss` | `(y_pred, y_true, quantiles, quantile_weights=None)` — Functional pinball loss averaged over multiple quantiles. |
 
 ---
 
@@ -140,17 +116,9 @@ density_batch = batch.with_density(n_support=256)
 | Symbol | Description |
 |:-------|:------------|
 | `float_dtype` | `(*tensors)` — Floating dtype that boolean / integer intermediates should adopt: the promoted dtype of the floating tensors among `tensors` (float64 inputs keep float64), else `torch.get_default_dtype()`. Never hard-codes float32. |
-| `apply_mask` | `(tensor, mask)` — Zero out entries where `mask` is `False` (`torch.where`, so NaN / Inf at masked positions is dropped). |
-| `convert_to_tensor` | `(x, *, dtype=None, device=None)` — Cast list / ndarray / tensor to `torch.Tensor`. |
-| `ensure_batch_dim` | `(x)` — Add a leading batch dim if absent. |
 | `masked_reduction` | `(tensor, mask, reduction="mean")` — `mean` / `sum` / `max` / `min` / `none` ignoring `mask == False`; NaN at masked positions never leaks. |
 | `masked_mean` | `(tensor, mask, dim=None, keepdim=False)` — Mean over the `True` entries of `mask`; masked NaN / Inf are ignored. |
 | `masked_sum` | `(tensor, mask, dim=None, keepdim=False)` — Sum over the `True` entries of `mask`; masked NaN / Inf are ignored. |
-| `prepare_cross_covariance` | `(cov_xy, n_dims_x, n_dims_y, device, dtype=None)` — Validate / build a `[Dy, Dx]` cross-covariance. |
-| `prepare_model_input_for_gradients` | `(x)` — Enable autograd on inputs for Jacobian / Hessian computations. |
-| `compute_model_gradients` | `(y_pred, x, n_features_y, create_graph=None)` — Per-sample Jacobian of predictions with respect to inputs. |
-| `calculate_gaussian_nll` | `(residuals, var, eps=1e-8)` — Gaussian NLL per sample. `var` may match `residuals` (elementwise diagonal), be a per-sample variance `[B]` that is broadcast over the feature axis, or be a full covariance `[B, D, D]`. |
-| `calculate_propagated_variance` | `(grad, sigma_x, sigma_y=None, sigma_xy=None)` — Propagate input uncertainty through the Jacobian: `J Σₓ Jᵀ (+ Σ_y + cross terms)`. |
 
 ---
 
@@ -170,36 +138,54 @@ density_batch = batch.with_density(n_support=256)
 
 ## Validation (`utils.validation`)
 
-NaN is rejected by `validate_positive`, `validate_range`, and `validate_quantile`
-(`ValueError`).
+NaN is rejected by `validate_positive` (`ValueError`). The other validators
+(`validate_range`, `validate_quantile`, ...) are internal; see
+[Internal helpers](#internal-helpers-not-re-exported).
 
 | Symbol | Description |
 |:-------|:------------|
-| `check_tensor` | `(tensor, name="tensor", max_elements=200_000_000)` — Validate a tensor (type, size, NaN / Inf) and raise an informative error. |
-| `validate_metric_inputs` | `(y_pred, y_true)` — Standard point-metric input checks. |
 | `validate_positive` | `(value, param_name, allow_zero=False)` — Assert `value > 0` (or `≥ 0`); NaN is rejected. |
-| `validate_quantile` | `(q)` — Assert `0 ≤ q ≤ 1` and return a tensor; NaN is rejected. |
-| `validate_range` | `(value, min_value, max_value, param_name)` — Assert `min_value ≤ value ≤ max_value`; NaN is rejected. |
-| `validate_reduction` | `(reduction, valid_reductions=None)` — Assert `mean` / `sum` / `none`. |
-| `validate_sample_weight` | `(sample_weight, batch_size)` — Validate and flatten per-sample metric weights. |
-| `validate_weights` | `(weights, batch_size, allow_none=True, *, flatten=False)` — Validate per-sample loss weights. |
 
 ---
 
-## Security (`utils.security`)
+## Internal helpers (not re-exported)
 
-| Symbol | Description |
-|:-------|:------------|
-| `validate_url` | `(url, allowed_schemes=("http", "https"))` — URL scheme allowlist for downloads (used by example loaders). |
+These helpers are internal plumbing. They are **not** re-exported from
+`torchregress.utils` and are not part of the public API. Import them from their
+submodule if needed, for example `from torchregress.utils.tensor_ops import convert_to_tensor`.
+Some have a public equivalent elsewhere: `parse_heteroscedastic_output` in `torchregress.ensemble`,
+`low_rank_output_dim` and `split_low_rank_gaussian_output` in `torchregress.losses`.
 
----
-
-## NumPy stats (`utils.numpy_stats`)
-
-| Symbol | Description |
-|:-------|:------------|
-| `subsample_rows` | `(X, max_rows, *, random_state)` — Deterministic row subsampling to at most `max_rows` rows. |
-| `winsorize` | `(X, clip_quantile)` — Clip values along axis 0 to the lower / upper quantiles. |
+| Symbol | Submodule | Description |
+|:-------|:----------|:------------|
+| `normal_cdf` | `utils.distributions` | `(z)` — Standard-normal CDF `0.5 * erfc(-z / √2)`; keeps full relative precision in the lower tail. |
+| `parse_heteroscedastic_output` | `utils.gaussian_output` | `(output)` — Accepts tuple / dict / concatenated-tensor layouts; returns `(mean, log_var)`. A 2-D `[batch, 2 * n_outputs]` tensor is split along dim 1; higher-rank tensors are split along the last dim, like `split_mean_log_variance`. |
+| `low_rank_output_dim` | `utils.gaussian_output` | `(n_features, rank)` — Total output dim of a low-rank Gaussian head `(mean, cov_factor, cov_diag)`. |
+| `split_low_rank_gaussian_output` | `utils.gaussian_output` | `(y_pred, n_features, rank)` — Split a low-rank output into `(mean, cov_factor, cov_diag)`. |
+| `labels_to_levels` | `utils.ordinal` | `(target, num_classes)` — Convert class-index labels to cumulative binary levels `1[y > k]`; the dtype follows `float_dtype(target)`. |
+| `class_probs_to_levels` | `utils.ordinal` | `(target_probs, *, class_dim=-1, eps=1e-8)` — Convert per-class PMF targets to cumulative levels `P(y > k)`. |
+| `normalize_class_probs` | `utils.ordinal` | `(target_probs, *, class_dim=-1, eps=1e-8)` — Normalise non-negative class probabilities along `class_dim`. |
+| `get_device` | `utils.pytorch_compat` | `(device_str=None)` — Resolve the requested device, falling back to the best available one. |
+| `quantile_loss` | `utils.quantile` | `(y_pred, y_true, quantile)` — Functional pinball loss for a single quantile. |
+| `multi_quantile_loss` | `utils.quantile` | `(y_pred, y_true, quantiles, quantile_weights=None)` — Functional pinball loss averaged over multiple quantiles. |
+| `apply_mask` | `utils.tensor_ops` | `(tensor, mask)` — Zero out entries where `mask` is `False` (`torch.where`, so NaN / Inf at masked positions is dropped). |
+| `convert_to_tensor` | `utils.tensor_ops` | `(x, *, dtype=None, device=None)` — Cast list / ndarray / tensor to `torch.Tensor`. |
+| `ensure_batch_dim` | `utils.tensor_ops` | `(x)` — Add a leading batch dim if absent. |
+| `prepare_cross_covariance` | `utils.tensor_ops` | `(cov_xy, n_dims_x, n_dims_y, device, dtype=None)` — Validate / build a `[Dy, Dx]` cross-covariance. |
+| `prepare_model_input_for_gradients` | `utils.tensor_ops` | `(x)` — Enable autograd on inputs for Jacobian / Hessian computations. |
+| `compute_model_gradients` | `utils.tensor_ops` | `(y_pred, x, n_features_y, create_graph=None)` — Per-sample Jacobian of predictions with respect to inputs. |
+| `calculate_gaussian_nll` | `utils.tensor_ops` | `(residuals, var, eps=1e-8)` — Gaussian NLL per sample. `var` may match `residuals` (elementwise diagonal), be a per-sample variance `[B]` that is broadcast over the feature axis, or be a full covariance `[B, D, D]`. |
+| `calculate_propagated_variance` | `utils.tensor_ops` | `(grad, sigma_x, sigma_y=None, sigma_xy=None)` — Propagate input uncertainty through the Jacobian: `J Σₓ Jᵀ (+ Σ_y + cross terms)`. |
+| `check_tensor` | `utils.validation` | `(tensor, name="tensor", max_elements=200_000_000)` — Validate a tensor (type, size, NaN / Inf) and raise an informative error. |
+| `validate_metric_inputs` | `utils.validation` | `(y_pred, y_true)` — Standard point-metric input checks. |
+| `validate_quantile` | `utils.validation` | `(q)` — Assert `0 ≤ q ≤ 1` and return a tensor; NaN is rejected. |
+| `validate_range` | `utils.validation` | `(value, min_value, max_value, param_name)` — Assert `min_value ≤ value ≤ max_value`; NaN is rejected. |
+| `validate_reduction` | `utils.validation` | `(reduction, valid_reductions=None)` — Assert `mean` / `sum` / `none`. |
+| `validate_sample_weight` | `utils.validation` | `(sample_weight, batch_size)` — Validate and flatten per-sample metric weights. |
+| `validate_weights` | `utils.validation` | `(weights, batch_size, allow_none=True, *, flatten=False)` — Validate per-sample loss weights. |
+| `validate_url` | `utils.security` | `(url, allowed_schemes=("http", "https"))` — URL scheme allowlist for downloads (used by example loaders). |
+| `subsample_rows` | `utils.numpy_stats` | `(X, max_rows, *, random_state)` — Deterministic row subsampling to at most `max_rows` rows. |
+| `winsorize` | `utils.numpy_stats` | `(X, clip_quantile)` — Clip values along axis 0 to the lower / upper quantiles. |
 
 ---
 

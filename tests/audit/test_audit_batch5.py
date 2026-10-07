@@ -29,20 +29,19 @@ from torchregress.utils import (  # noqa: E402
     BoxCoxTransform,
     BSplineDensityBasis,
     YeoJohnsonTransform,
-    calculate_gaussian_nll,
     ipw_weights,
-    labels_to_levels,
     masked_mean,
     masked_reduction,
     masked_sum,
-    normal_cdf,
-    parse_heteroscedastic_output,
     split_mean_log_variance,
     validate_positive,
-    validate_quantile,
-    validate_range,
 )
 from torchregress.utils import openml_relaxed as om  # noqa: E402
+from torchregress.utils.distributions import normal_cdf  # noqa: E402
+from torchregress.utils.gaussian_output import parse_heteroscedastic_output  # noqa: E402
+from torchregress.utils.ordinal import labels_to_levels  # noqa: E402
+from torchregress.utils.tensor_ops import calculate_gaussian_nll  # noqa: E402
+from torchregress.utils.validation import validate_quantile, validate_range  # noqa: E402
 from torchregress.viz import (  # noqa: E402
     plot_calibration_curve,
     plot_causal_uplift_qini,
@@ -371,6 +370,15 @@ def test_UTL_009_no_phantom_symbols_in_utils_md():
             "torchregress.utils.augment",
             "torchregress.utils.openml_relaxed",
             "torchregress.utils.reduction",
+            # utils.md lists the internal helpers (not re-exported) under their submodules.
+            "torchregress.utils.distributions",
+            "torchregress.utils.gaussian_output",
+            "torchregress.utils.numpy_stats",
+            "torchregress.utils.ordinal",
+            "torchregress.utils.pytorch_compat",
+            "torchregress.utils.quantile",
+            "torchregress.utils.security",
+            "torchregress.utils.validation",
             # utils.md also documents these two modules (method catalog API, health check).
             "torchregress.method_catalog",
             "torchregress.health",
