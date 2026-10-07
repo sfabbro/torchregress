@@ -316,9 +316,15 @@ def fit_tabular(
     steps_per_epoch = math.ceil(len(Xtr) / batch_size)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     sched: Optional[torch.optim.lr_scheduler.LRScheduler]
-    if scheduler == "onecycle":
+    total_steps = epochs * steps_per_epoch
+    if scheduler == "onecycle" and total_steps < 4:
+        sched = None  # too few steps for a warm-up and an annealing phase
+    elif scheduler == "onecycle":
+        # OneCycleLR needs at least one full step in its warm-up phase
+        # (pct_start * total_steps > 1), else it divides by zero.
+        pct_start = min(0.5, max(0.1, 2.0 / total_steps))
         sched = torch.optim.lr_scheduler.OneCycleLR(
-            opt, max_lr=lr, total_steps=epochs * steps_per_epoch, pct_start=0.1
+            opt, max_lr=lr, total_steps=total_steps, pct_start=pct_start
         )
     elif scheduler == "cosine":
         sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs * steps_per_epoch)

@@ -298,3 +298,17 @@ def test_beats_plain_mlp_on_friedman1_with_same_epoch_budget():
 def test_models_is_lazy_top_level_submodule():
     assert "models" in tr.__all__
     assert tr.models.TabularMLP is TabularMLP
+
+
+@pytest.mark.parametrize("epochs", [1, 2, 5, 10])
+def test_onecycle_short_schedules(epochs: int) -> None:
+    """epochs * steps_per_epoch around 10 used to divide by zero in OneCycleLR."""
+    from torchregress.losses import WeightedMSELoss
+    from torchregress.models import TabularMLP, fit_tabular
+
+    gen = torch.Generator().manual_seed(0)
+    X = torch.randn(40, 3, generator=gen)
+    y = X[:, :1] + 0.1 * torch.randn(40, 1, generator=gen)
+    model = TabularMLP(3, 1, hidden=(16,))
+    fit = fit_tabular(model, WeightedMSELoss(), X, y, epochs=epochs, batch_size=32, patience=50)
+    assert torch.isfinite(fit.predict(X)).all()
