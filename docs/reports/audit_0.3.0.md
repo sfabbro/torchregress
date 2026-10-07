@@ -1,7 +1,8 @@
 # 0.3.0 release audit
 
-Audit of the highest-risk modules before the first PyPI release (release plan
-Phase 2.2, batches 1–3), run 2026-10-06 at commit `5a334d3`.
+Audit of the library before the first PyPI release (release plan Phase 2.2,
+all five batches), run 2026-10-06: batches 1–3 at commit `5a334d3`, batches
+4–5 at `d61ebb2`. **99 defects found, 98 fixed, 1 open (PRD-001).**
 
 **Evidence rule.** A finding counts only when a test reproduces it: every row
 below had a test that failed on `5a334d3`, and that test now lives in
@@ -19,6 +20,8 @@ dtype/device hygiene.
 | B | `losses/conformal.py`, EIV, imbalanced, SLS, uncertain GT, `calibration/semicp.py` | 14 | `6c63316` | `tests/audit/test_audit_conformal_losses_b.py` |
 | M | `metrics`, `calibration` (post-hoc) | 14 | `4f102ac` | `tests/audit/test_audit_metrics.py` |
 | I | `inference`, `causal`, `ensemble`, `semi_supervised`, `prediction` | 13 | `39a8879` | `tests/audit/test_audit_inference.py` |
+| 4 | `algorithms`, `test_time` | 19 | see below | `tests/audit/test_audit_batch4.py` |
+| 5 | `utils`, `prediction`, `comparison`, `viz` | 19 | see below | `tests/audit/test_audit_batch5.py` |
 
 Severity: **High** = wrong numbers or a broken guarantee in normal use;
 **Medium** = edge cases or an API-contract violation; **Low** = minor.
@@ -120,8 +123,66 @@ DML (0.951 coverage at n = 500), AIPW; ensemble variance decomposition,
 against scoringrules, properscoring, scipy, scikit-learn or a closed form,
 and fails when a new export has neither a test nor a stated reason.
 
-## Not yet audited
+## Batch 4: algorithms and test-time adaptation
 
-Batches 4–5 of the plan: `algorithms`, `test_time`, `constraints` (spot
-checked), `utils`, `viz`. Known item: `test_time.transport.ppi_target_ci`
-still casts its inputs to float32 before calling the PPI functions.
+Tests: `tests/audit/test_audit_batch4.py`.
+
+| ID | Sev | Export | Finding |
+|:--|:--|:--|:--|
+| ALG-001 | High | `iteratively_reweighted_least_squares` | weights compounded every iteration (ψ^n instead of ψ; 0.001 instead of 0.5) |
+| ALG-002 | High | IRLS `variance_type="robust"` | MAD over the output axis: zero for `(N, 1)` targets |
+| ALG-004 | High | `SIMEX` | float64 inputs with scalar `sigma_u` raised |
+| ALG-005 | High | `SIMEX` | absolute 1e-6 jitter: not scale-equivariant |
+| ALG-006 | High | `SIMEX.predict` | one noise draw shared by all models |
+| ALG-007 | High | `RegressionCalibration.posterior` | `sigma_u=` override ignored |
+| TT-002 | High | `WeightedConformalRegressionAdapter` | clamped instead of infinite intervals: coverage 0.83 vs ≥ 0.90 |
+| TT-004 | High | `DelayedLabelResidualAdapter` | first batch centred on itself: inflation collapsed to 1e-5 |
+| TT-005 | High | transport conformal threshold | one order statistic too high; never infinite |
+| ALG-003 | Medium | IRLS | `[mean, log_sigma]` outputs raised with the default config |
+| ALG-008 | Medium | `RegressionCalibration` | absolute eigenvalue floors |
+| ALG-009 | Medium | `HeteroscedasticLaplaceRegressor` | plain linear head failed in `fit` |
+| ALG-011 | Medium | `IVON` | step count not checkpointed |
+| TT-003 | Medium | `DomainClassifierRatioEstimator` | missing n_s/n_t prior correction (E[w] = 0.1 under no shift) |
+| TT-006 | Medium | `BayesianLinearHead` | RBF bandwidth subsample ignored `generator=` |
+| TT-007 | Medium | `ShiftFactoredPredictiveTransport` | outputs cast to float32 |
+| ALG-010 | Low | `HeteroscedasticLaplaceRegressor` | NaN std with `n_samples=1` |
+| ALG-012 | Low | `NeighborhoodCovariancePseudoLabeler` | float32 cast |
+| TT-001 | Low | label-shift Gaussian moments | float32 output |
+
+## Batch 5: utilities, prediction containers, comparison, viz
+
+Tests: `tests/audit/test_audit_batch5.py`.
+
+| ID | Sev | Export | Finding |
+|:--|:--|:--|:--|
+| PRD-003 | High | `comparison.compute_point_metrics` | `[N, 1]` vs `[N]` broadcast to N×N (MSE 2.24 vs 0.009) |
+| VIZ-002 | High | `plot_causal_uplift_qini` | Qini area always NaN |
+| VIZ-004 | High | `plot_qq_plot`, `plot_residual_histogram` | `[N, 1]` vs `[N]` gave N² residuals |
+| PRD-004 | Medium | `compute_point_metrics` | multi-output R² pooled (0.9996 for a constant model) |
+| UTL-001 | Medium | `masked_mean`, `masked_sum` | NaN at masked positions leaked |
+| UTL-003 | Medium | `calculate_gaussian_nll` | per-sample variance misapplied |
+| UTL-004 | Medium | `parse_heteroscedastic_output` | 3-D tensors split on the wrong axis |
+| UTL-005 | Medium | Box-Cox, Yeo-Johnson | float32 cancellation at small λ |
+| UTL-010 | Medium | OpenML relaxed loader | numeric nominal columns became NaN |
+| VIZ-001 | Medium | PIT histogram | bins not on [0, 1] |
+| VIZ-003 | Medium | calibration curve | RMSCE averaged empty bins |
+| VIZ-005 | Medium | `plot_performance_comparison` | highlighted the worst model for several metrics |
+| PRD-002 | Low | `quantiles_to_density_grid` | crossing quantiles fixed with `cummax` instead of sorting |
+| UTL-002 | Low | `ipw_weights`, `labels_to_levels` | float32 hard-coded |
+| UTL-006 | Low | `normal_cdf` | underflow in the lower tail |
+| UTL-007 | Low | validators | NaN accepted |
+| UTL-008 | Low | `BSplineDensityBasis.bin_integrals` | returned the shared float64 cache |
+| UTL-009 | Low | `docs/api/utils.md` | 31 documented names did not exist; public names missing |
+
+**Open: PRD-001.** `quantiles_to_density_grid` drops the mass below the first
+and above the last quantile and renormalises, so the CDF at knot k is
+(τ_k − τ_0)/(τ_K − τ_0) rather than τ_k. This is now documented; whether to
+spread the tail mass instead (which changes `test_time.transport`) is a
+maintainer decision. The two audit tests are strict xfails.
+
+## Also fixed after the audit
+
+The CPU-vs-device parity suite (`tests/test_device_parity.py`) found 18 metrics
+returning float32 for float64 inputs, and functional metric wrappers keeping
+their state on the CPU; `import torchregress.test_time` needed scikit-learn.
+All fixed (see CHANGELOG).

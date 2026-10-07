@@ -68,6 +68,58 @@ remove are decided for 0.4.0.
     `batch_trust_top_k`) take effect; `TeacherStudentTrainer(tau=)` defaults
     to 0.2, the value the code always used. Unknown options raise.
 - `test_time.ShiftFactoredPredictiveTransport.ppi_target_ci` keeps float64 inputs.
+- **Audit batches 4–5** (`algorithms`, `test_time`, `utils`, `prediction`,
+  `comparison`, `viz`): 37 more defects fixed (one documented, decision
+  pending), tests in `tests/audit/test_audit_batch4.py`
+  and `test_audit_batch5.py`.
+  - *IRLS* weights are `w(r/sigma)` times the initial precision; they used to
+    compound over iterations (`w^n_iter`). `variance_type="robust"` takes the
+    MAD over samples (it was zero for `(N, 1)` targets). Concatenated
+    `[mean, log_sigma]` outputs work with the default config.
+  - *SIMEX* accepts float64, is scale-equivariant (no absolute jitter), and
+    `predict` averages independent remeasurements. *Regression calibration*
+    honours `posterior(sigma_u=)` and uses relative eigenvalue floors.
+  - *Weighted / OT conformal and transport conformal* return infinite
+    intervals when the finite-sample guarantee needs them, and the transport
+    threshold is the exact order statistic (it was one too high).
+  - `DomainClassifierRatioEstimator` corrects for unequal pool sizes;
+    `DelayedLabelResidualAdapter` no longer deflates the first batch;
+    `IVON.state_dict()` stores the step count; `HeteroscedasticLaplaceRegressor`
+    accepts a plain linear head and `n_samples=1`; `BayesianLinearHead`
+    honours `generator=`; transport, label-shift and pseudo-label helpers keep
+    float64.
+  - `comparison.compute_point_metrics` no longer broadcasts `[N, 1]` against
+    `[N]` (N×N errors) and averages R² per output (scikit-learn).
+  - `masked_mean`/`masked_sum` ignore NaN at masked positions; Box-Cox and
+    Yeo-Johnson are accurate for small lambda; `normal_cdf` is accurate in the
+    lower tail; validators reject NaN; `quantiles_to_density_grid` sorts
+    crossing quantiles (its truncation to `[q_0, q_K]` is now documented);
+    numeric-coded nominal OpenML columns load.
+  - Viz: residual histogram and QQ plot handle `[N, 1]` predictions, the PIT
+    histogram spans [0, 1], the Qini area is finite, RMSCE ignores empty bins,
+    `plot_performance_comparison` knows more lower-is-better metrics, and
+    plots that create their own figure close it.
+- Metrics return float64 for float64 inputs (18 metrics used to return
+  float32), and functional metric wrappers move their internal torchmetrics
+  state to the input device. Calibration-error histograms no longer use
+  `torch.histogram`, which has no CUDA kernel.
+- `import torchregress.test_time` works without scikit-learn (only the default
+  classifier of `WeightedConformalRegressionAdapter` needs it).
+- Examples: every script runs against the current API; external comparisons
+  use MAPIE 1.x, torchcp 1.2 and scikit-learn's `TweedieRegressor`; the
+  Tweedie examples no longer apply `exp` twice.
+
+### Packaging and CI
+- SPDX licence metadata (`setuptools>=77`), project URLs, typed classifier;
+  the sdist ships the test suite and CHANGELOG.
+- CI `package` job and release `install-smoke` matrix (Linux/macOS, Python
+  3.12–3.14): build, check contents (`scripts/release/check_dist.py`),
+  `twine check --strict`, install with core dependencies only and import every
+  submodule (`scripts/release/smoke_install.py`).
+- `docs.yml` publishes the documentation to GitHub Pages.
+- Local CUDA testing: `cuda` marker, CPU-vs-device parity suite for 77 losses
+  and 94 metrics (`tests/test_device_parity.py`), `pixi run test-cuda`
+  writing `reports/cuda/<date>_<sha>.txt`.
 
 ### Tests
 - `tests/metrics/test_reference_parity.py` checks all 97 `metrics` exports

@@ -31,7 +31,7 @@ torchregress is built for regression problems that are messy. In plain terms, it
 
 Every loss and metric drops into a normal PyTorch training loop. For method names, API details, and worked examples, see the [documentation](https://astroai.github.io/torchregress/).
 
-Metrics are tested against reference implementations (scoringrules, properscoring, scipy, scikit-learn), and before 0.3.0 the losses, conformal predictors, metrics, calibration, inference and ensemble modules went through an [audit](https://github.com/astroai/torchregress/blob/main/docs/reports/audit_0.3.0.md) in which every defect found got a regression test.
+Metrics are tested against reference implementations (scoringrules, properscoring, scipy, scikit-learn), and before 0.3.0 the whole library went through an [audit](https://github.com/astroai/torchregress/blob/main/docs/reports/audit_0.3.0.md) in which every defect found got a regression test.
 
 ## Installation
 
