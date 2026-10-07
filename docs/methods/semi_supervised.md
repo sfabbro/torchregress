@@ -166,16 +166,6 @@ disagreement = predictive_agreement_score(
 )
 ```
 
-### `perturbation_instability_score`
-
-Measure prediction stability under input augmentations (identical to `predictive_agreement_score`, with augmentation-focused naming):
-
-```python
-from torchregress.semi_supervised import perturbation_instability_score
-
-instability = perturbation_instability_score(augmented_views)
-```
-
 ### `build_consensus_predictive_batch`
 
 Build a single consensus distribution from multiple predictive views:

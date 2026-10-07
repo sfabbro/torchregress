@@ -2278,3 +2278,17 @@ def list_decision_workflow_steps() -> List[Dict[str, Any]]:
 def list_comparative_evidence_rows() -> List[Dict[str, Any]]:
     """Return comparative example evidence coverage rows used for docs/audit reporting."""
     return [asdict(row) for row in _COMPARATIVE_EVIDENCE_ROWS]
+
+
+__all__ = [
+    "CapabilityValue",
+    "ComparativeEvidenceRow",
+    "DecisionWorkflowStep",
+    "MethodMetadata",
+    "TaskRecommendation",
+    "get_method_metadata",
+    "list_comparative_evidence_rows",
+    "list_decision_workflow_steps",
+    "list_methods",
+    "list_task_recommendations",
+]

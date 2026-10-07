@@ -16,12 +16,15 @@ $$
 \text{MSE}(y, \hat{y}) = \frac{1}{\sum_{i=1}^N w_i m_i} \sum_{i=1}^N w_i m_i (y_i - \hat{y}_i)^2
 $$
 
-where $m_i \in \{0, 1\}$ is a boolean mask ($1$ for valid, $0$ for missing data) and $w_i > 0$ represents sample weights.
+where $m_i \in \{0, 1\}$ marks valid entries and $w_i > 0$ are the optional `sample_weight` values (all ones when omitted).
+
+!!! note "No `mask` argument"
+    The functional point metrics take `sample_weight`, not `mask` or `weights`. To exclude missing entries, index them out before the call, e.g. `y_pred[mask]`, `y_true[mask]`. `r2_score` accepts neither a mask nor weights.
 
 ```python
 from torchregress.metrics.point import mean_squared_error
 
-mse = mean_squared_error(y_pred, y_true, mask=mask, weights=weights)
+mse = mean_squared_error(y_pred, y_true, sample_weight=weights)
 ```
 See also: [mean_squared_error](../api/metrics.md).
 
@@ -36,7 +39,7 @@ $$
 ```python
 from torchregress.metrics.point import mean_absolute_error
 
-mae = mean_absolute_error(y_pred, y_true, mask=mask, weights=weights)
+mae = mean_absolute_error(y_pred, y_true, sample_weight=weights)
 ```
 See also: [mean_absolute_error](../api/metrics.md).
 
@@ -51,74 +54,44 @@ $$
 ```python
 from torchregress.metrics.point import rmse
 
-y_rmse = rmse(y_pred, y_true, mask=mask, weights=weights)
+y_rmse = rmse(y_pred, y_true, sample_weight=weights)
 ```
 See also: [rmse](../api/metrics.md).
-
-### Mean Absolute Percentage Error (MAPE)
-
-The average percentage difference between predictions and targets:
-
-$$
-\text{MAPE}(y, \hat{y}) = \frac{1}{\sum_{i=1}^N w_i m_i} \sum_{i=1}^N w_i m_i \frac{|y_i - \hat{y}_i|}{\max(|y_i|, \varepsilon)}
-$$
-
-```python
-from torchregress.metrics.point import mean_absolute_percentage_error
-
-mape = mean_absolute_percentage_error(y_pred, y_true, mask=mask, weights=weights)
-```
-See also: [mean_absolute_percentage_error](../api/metrics.md).
 
 ### R² (Coefficient of Determination)
 
 Measures the proportion of variance in the target that is predictable from the model:
 
 $$
-R^2(y, \hat{y}) = 1 - \frac{\sum_{i=1}^N w_i m_i (y_i - \hat{y}_i)^2}{\sum_{i=1}^N w_i m_i (y_i - \bar{y}_w)^2}
+R^2(y, \hat{y}) = 1 - \frac{\sum_{i=1}^N (y_i - \hat{y}_i)^2}{\sum_{i=1}^N (y_i - \bar{y})^2}
 $$
 
-where $\bar{y}_w = \frac{\sum_i w_i m_i y_i}{\sum_i w_i m_i}$ is the weighted target mean.
+where $\bar{y}$ is the target mean. `r2_score` is unweighted and has no mask; it wraps `torchmetrics.R2Score`.
 
 ```python
 from torchregress.metrics.point import r2_score
 
-r2 = r2_score(y_pred, y_true, mask=mask, weights=weights)
+r2 = r2_score(y_pred, y_true)
 ```
 See also: [r2_score](../api/metrics.md).
 
-### Explained Variance Score
+### MAPE, MSLE and Explained Variance
 
-Measures the proportion of variance explained by the model:
-
-$$
-\text{ExplainedVariance}(y, \hat{y}) = 1 - \frac{\text{Var}_w(y - \hat{y})}{\text{Var}_w(y)}
-$$
-
-where $\text{Var}_w(x)$ is the weighted sample variance of $x$.
+`torchregress.metrics` does not provide functional forms of mean absolute
+percentage error, mean squared log error or explained variance. Use the
+`torchmetrics` functional equivalents:
 
 ```python
-from torchregress.metrics.point import explained_variance_score
+from torchmetrics.functional import (
+    explained_variance,
+    mean_absolute_percentage_error,
+    mean_squared_log_error,
+)
 
-explained_var = explained_variance_score(y_pred, y_true, mask=mask, weights=weights)
+mape = mean_absolute_percentage_error(y_pred, y_true)
+msle = mean_squared_log_error(y_pred, y_true)  # strictly positive values only
+ev = explained_variance(y_pred, y_true)
 ```
-See also: [explained_variance_score](../api/metrics.md).
-
-### Mean Squared Log Error (MSLE)
-
-Mean squared error after log transformation:
-
-$$
-\text{MSLE}(y, \hat{y}) = \frac{1}{\sum_{i=1}^N w_i m_i} \sum_{i=1}^N w_i m_i \left(\log(1 + y_i) - \log(1 + \hat{y}_i)\right)^2
-$$
-
-```python
-from torchregress.metrics.point import mean_squared_log_error
-
-# Note: Only works with strictly positive values
-msle = mean_squared_log_error(y_pred, y_true, mask=mask, weights=weights)
-```
-See also: [mean_squared_log_error](../api/metrics.md).
 
 ---
 
@@ -251,19 +224,24 @@ See also: [NormalizedMedianAbsoluteDeviation](../api/metrics.md).
 
 ### Outlier Fraction
 
-Fraction of predictions with absolute error exceeding a threshold:
+Fraction of predictions whose scaled absolute error exceeds a threshold. It is
+a stateful metric (`update` / `compute`), not a function:
 
 $$
-\text{OutlierFraction}(y, \hat{y}; \tau) = \frac{1}{\sum_{i=1}^N m_i} \sum_{i=1}^N m_i \mathbb{I}\left(|y_i - \hat{y}_i| > \tau \cdot \text{scale}_i\right)
+\text{OutlierFraction}(y, \hat{y}; \tau) = \frac{1}{N} \sum_{i=1}^N \mathbb{I}\left(\frac{|y_i - \hat{y}_i|}{1 + y_i} > \tau\right)
 $$
+
+With `mode="relative"` (default) the error is scaled by $1 + y_i$, as above.
+Any other `mode` scales by the global standard deviation of the targets seen so far.
 
 ```python
-from torchregress.metrics.point import outlier_fraction
+from torchregress.metrics import OutlierFraction
 
-# Standard outlier detection (scaled by std of y_true)
-of = outlier_fraction(y_pred, y_true, threshold=0.15, mask=mask)
+of = OutlierFraction(threshold=0.15, mode="relative")
+of.update(y_pred, y_true)
+print(of.compute())
 ```
-See also: [outlier_fraction](../api/metrics.md).
+See also: [OutlierFraction](../api/metrics.md).
 
 ### Tail Metrics
 
@@ -283,8 +261,8 @@ where $\mathcal{I}_q$ is the set of indices where targets exceed the $q$-quantil
 from torchregress.metrics import tail_mae, tail_rmse
 
 # Top 10% target values
-mae_tail = tail_mae(y_pred, y_true, quantile=0.9, tail="upper", mask=mask)
-rmse_tail = tail_rmse(y_pred, y_true, quantile=0.9, tail="upper", mask=mask)
+mae_tail = tail_mae(y_pred, y_true, quantile=0.9, tail="upper")
+rmse_tail = tail_rmse(y_pred, y_true, quantile=0.9, tail="upper")
 ```
 See also: [tail_mae](../api/metrics.md) and [tail_rmse](../api/metrics.md).
 
@@ -331,6 +309,6 @@ Generate a comprehensive dictionary report of point metrics.
 ```python
 from torchregress.metrics.point import regression_metrics_report
 
-report = regression_metrics_report(y_pred, y_true, mask=mask, weights=weights)
+report = regression_metrics_report(y_pred, y_true, sample_weight=weights)
 ```
 See also: [regression_metrics_report](../api/metrics.md).

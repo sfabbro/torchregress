@@ -23,8 +23,6 @@ shared `PredictiveBatch` container is documented in the
 |:-------|:------------|
 | `AdaptationBatch` | Frozen dataclass for unlabeled target-time inputs — `x`, `predictions: PredictiveBatch`, `representations`, `sigma_x`. |
 | `SupportsPredictiveBatch` | `Protocol` for models exposing `predict_distribution(X, **kwargs) -> PredictiveBatch`. |
-| `SupportsRepresentation` | `Protocol` for models exposing `representation_dict(x) -> dict[str, Tensor]` (feature access). |
-| `SupportsAdaptationParameters` | `Protocol` for models exposing `adaptation_parameter_groups() -> dict[str, list[Parameter]]` (TTA-targeted params). |
 | `flatten_adaptation_parameters` | `(groups)` — Flatten a `dict[name, Iterable[Parameter]]` into a deduplicated list. |
 
 ```python
@@ -33,7 +31,10 @@ from torchregress.test_time import (
 )
 assert isinstance(my_model, SupportsPredictiveBatch)
 batch = AdaptationBatch(x=x_test, predictions=predictive_batch)
-flat = flatten_adaptation_parameters(my_model.adaptation_parameter_groups())
+# Any dict of name -> iterable of parameters works
+flat = flatten_adaptation_parameters(
+    {"head": my_model.head.parameters(), "norm": my_model.norm.parameters()}
+)
 ```
 
 ---

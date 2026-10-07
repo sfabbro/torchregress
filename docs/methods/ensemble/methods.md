@@ -315,15 +315,6 @@ result = ensemble.predict(x_test)
 !!! abstract "Summary"
     Keep dropout **active** during inference and aggregate multiple stochastic forward passes.
 
-=== "MCDropoutModel"
-
-    ```python
-    from torchregress.ensemble import MCDropoutModel
-
-    mc_model = MCDropoutModel(input_dim=10, hidden_dims=[64, 32], output_dim=1, n_samples=20)
-    mean, std = mc_model.predict_with_uncertainty(x_test)
-    ```
-
 === "MCDropoutWrapper"
 
     ```python
@@ -388,16 +379,16 @@ result = ensemble.predict(x_test)
 
 ## Ensemble Combiners
 
-### BayesianModelAveraging
+### SoftmaxModelCombiner
 
 Learnable softmax weights over member models:
 
 ```python
-from torchregress.ensemble import BayesianModelAveraging
+from torchregress.ensemble import SoftmaxModelCombiner
 
-bma = BayesianModelAveraging(list(ensemble.models))
-combined = bma(x_test)
-mean, variance = bma.predict_with_uncertainty(x_test)
+combiner = SoftmaxModelCombiner(list(ensemble.models))
+combined = combiner(x_test)
+mean, variance = combiner.predict_with_uncertainty(x_test)
 ```
 
 ### StackingEnsemble
@@ -410,17 +401,6 @@ from torchregress.ensemble import StackingEnsemble
 
 stacker = StackingEnsemble(list(ensemble.models), meta_learner=nn.Linear(5, 1))
 combined = stacker(x_test)
-```
-
-### DynamicEnsembleWeighting
-
-**Input-dependent** weighting — different members trusted more in different input regions:
-
-```python
-from torchregress.ensemble import DynamicEnsembleWeighting
-
-dew = DynamicEnsembleWeighting(list(ensemble.models), window_size=100, learning_rate=0.1)
-combined = dew(x_test)
 ```
 
 ---

@@ -107,11 +107,37 @@ To visualise calibration, use the **PIT Histogram** diagnostic from the visualiz
 ```python
 from torchregress.viz import plot_pit_histogram
 
-# Generate a PIT histogram to visualize calibration
-plot_pit_histogram(y_pred_dist, y_true, bins=20)
+# Generate a PIT histogram to visualize calibration for Gaussian predictions
+plot_pit_histogram(y_pred, y_pred_std, y_true, n_bins=20)
 ```
 
 API Reference: [plot_pit_histogram](../api/viz.md).
+
+---
+
+## Highest Posterior Density (HPD) Coverage
+
+For a 1D predictive density $p(y \mid x)$ on a grid, the HPD level of an observation $y$ is the mass of the smallest region that contains $y$ and consists of the highest-density points:
+
+$$\ell(y) = \int_{\{y' \,:\, p(y') \ge p(y)\}} p(y')\, dy'$$
+
+For a calibrated predictive density, $\ell(y)$ is uniform on $[0, 1]$. `highest_posterior_density_level` returns $\ell$ for each target, and `highest_posterior_density_coverage` returns the fraction of targets with $\ell(y) \le \alpha$.
+
+!!! warning "`alpha` is the HPD mass, not the miscoverage"
+    In `highest_posterior_density_coverage(support, density, y_true, alpha=0.1)`, `alpha` is the **nominal probability mass of the HPD region**. Everywhere else in torchregress (conformal classes, `prediction_interval_coverage`, ...) `alpha` is the **miscoverage** rate. For calibrated predictions the returned coverage is approximately `alpha`: `alpha=0.9` returns about 0.90 (the coverage of a 90% region), while the default `alpha=0.1` returns about 0.10 (the coverage of a 10% region), not 0.90. Pass `alpha=0.9` to evaluate a 90% HPD region.
+
+```python
+import torch
+from torchregress.metrics import highest_posterior_density_coverage
+
+support = torch.linspace(-6.0, 6.0, 1201)
+mu = torch.randn(2000)  # predicted means
+density = torch.exp(-0.5 * (support[None, :] - mu[:, None]) ** 2)  # unit-variance Gaussians (unnormalised)
+y_true = mu + torch.randn(2000)  # calibrated: targets drawn from the predictions
+
+cov_90 = highest_posterior_density_coverage(support, density, y_true, alpha=0.9)  # approx. 0.90
+cov_10 = highest_posterior_density_coverage(support, density, y_true)  # alpha=0.1 default: approx. 0.10
+```
 
 ---
 

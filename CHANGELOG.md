@@ -123,6 +123,22 @@ remove are decided for 0.4.0.
 - Examples: every script runs against the current API; external comparisons
   use MAPIE 1.x, torchcp 1.2 and scikit-learn's `TweedieRegressor`; the
   Tweedie examples no longer apply `exp` twice.
+- `CORALLoss` no longer overwrites the `CumulativeLinkLoss` docstring: it is
+  now a thin subclass of `CumulativeLinkLoss` with its own docstring (same
+  computation, same `"coral"` registry key).
+- `torchregress.method_catalog` declares an explicit `__all__` (its 4
+  dataclasses, `CapabilityValue` and 5 functions), so `import *` no longer
+  re-exports `Any`, `Dict`, `dataclass` and the other typing imports.
+- Docs: removed names that do not exist (`PackedEnsembleRegressor`,
+  `MCDropoutModel`, `BayesianModelAveraging`, `mse`, `mean_absolute_percentage_error`,
+  `conformal_loss`, `create_eiv_loss`, ...) and corrected calls the functions
+  do not accept (`mask=`/`weights=` on point metrics, which take `sample_weight`;
+  `AsymmetricLeastSquaresLoss(tau=)`, `create_grid_figure(n_cols=)`,
+  `plot_pit_histogram(bins=)`, `prediction_interval_coverage(confidence=)`).
+  `plot_target_density_error_overlap` is now shown as `(y_true, y_pred)`.
+- `highest_posterior_density_coverage`: the docstring and the metrics guide now
+  state that `alpha` is the nominal HPD mass, not the miscoverage (no
+  behaviour change).
 
 ### Packaging and CI
 - SPDX licence metadata (`setuptools>=77`), project URLs, typed classifier;

@@ -64,17 +64,15 @@ pred = model.predict(x)
 |:-------|:------------|
 | `BatchEnsembleLinear` | Rank-1 perturbation linear layer (shared weight + per-member `r`, `s` vectors). |
 | `BatchEnsembleMLPBackbone` | Shared-backbone MLP using `BatchEnsembleLinear` throughout (TabM-style). |
-| `PackedEnsembleRegressor` | Facade over `HeteroscedasticBatchEnsembleModel` (or mean-only) with `alpha` scaling of fast weights. |
-| `PackedEnsembleOutput` | Structured output: `mean`, `member_means`, `epistemic_variance`, `aleatoric_variance`, `predictive_variance`, `std_epistemic`. |
-| `BatchEnsembleRegressor` | Lightweight facade (pre-PackedEnsembleRegressor API). |
-| `BatchEnsembleOutput` | Structured output for `BatchEnsembleRegressor`. |
+| `BatchEnsembleRegressor` | Facade over `HeteroscedasticBatchEnsembleModel` (or mean-only) with `alpha` scaling of fast weights. |
+| `BatchEnsembleOutput` | Structured output of `BatchEnsembleRegressor.predict_output`: `mean`, `member_means`, `epistemic_variance`, `aleatoric_variance`, `predictive_variance`, `std_epistemic`. |
 
 ```python
 bb = BatchEnsembleMLPBackbone(input_size=10, hidden_size=64, ensemble_size=4,
                              hidden_dims=[64, 64])
-model = PackedEnsembleRegressor(bb, feature_dim=bb.feature_dim, output_dim=1,
-                                ensemble_size=4, alpha=1.0, heteroscedastic=True)
-out: PackedEnsembleOutput = model.predict_output(x)
+model = BatchEnsembleRegressor(bb, feature_dim=bb.feature_dim, output_dim=1,
+                               ensemble_size=4, alpha=1.0, heteroscedastic=True)
+out: BatchEnsembleOutput = model.predict_output(x)
 ```
 
 ---
@@ -83,8 +81,7 @@ out: PackedEnsembleOutput = model.predict_output(x)
 
 | Symbol | Description |
 |:-------|:------------|
-| `MCDropoutWrapper` | Wraps any model with `nn.Dropout` layers; enables dropout at inference time and runs `n_samples` forward passes. |
-| `MCDropoutModel` | MLP with built-in `Dropout` layers and `predict_with_uncertainty` / `predict_interval` methods. |
+| `MCDropoutWrapper` | Wraps any model with `nn.Dropout` layers; enables dropout at inference time and runs `n_samples` forward passes. Provides `mc_forward`, `predict_with_uncertainty` and `predict_interval`. |
 | `enable_dropout` | `(model)` — Set all `nn.Dropout` modules to `train()` mode (for MC-Dropout inference). |
 
 **References:** Gal & Ghahramani, "Dropout as a Bayesian Approximation" (ICML 2016).
@@ -136,10 +133,8 @@ mean, std = torch.stack(preds).mean(0), torch.stack(preds).std(0)
 
 | Symbol | Description |
 |:-------|:------------|
-| `BayesianModelAveraging` | Learns softmax weights over a fixed pool of base models. `predict_with_uncertainty` returns (mean, total_var) via law of total variance. |
 | `StackingEnsemble` | Concatenates base-model predictions and feeds them into a `meta_learner` (e.g. another `nn.Module`). |
-| `SoftmaxModelCombiner` | Learns softmax weights over base models (simpler alternative to `BayesianModelAveraging`). |
-| `DynamicEnsembleWeighting` | Sliding-window performance-based weight updates: lower recent MSE → higher weight. |
+| `SoftmaxModelCombiner` | Learns softmax weights over a fixed pool of base models. `predict_with_uncertainty` returns (mean, total_var) via law of total variance. |
 
 All combiners use `_batched_ensemble_forward`, which uses `torch.func.vmap` /
 `stack_module_state` for fast batched inference when gradients aren't required.

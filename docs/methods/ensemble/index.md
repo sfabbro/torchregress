@@ -69,7 +69,7 @@ This increases computational latency and memory consumption linearly with $S$ ($
 | **`RandomPartitionEnsemble`** | ✅ | ⚠️ | [RandomPartitionEnsembleModel](../../api/ensemble.md) | Members on different bin edges; CDF-averaged PDF |
 | **`MDNEnsemble`** | ✅ | ✅ | [MDNEnsembleModel](../../api/ensemble.md) | Multimodal predictive densities |
 | **`SWAG`** \[2\] | ✅ | ❌ | [SWAG](../../api/ensemble.md) | Large-scale Bayesian |
-| **`MCDropout`** \[3\] | ✅ | ❌ | [MCDropoutModel](../../api/ensemble.md) | Affordable uncertainty baseline |
+| **`MCDropout`** \[3\] | ✅ | ❌ | [MCDropoutWrapper](../../api/ensemble.md) | Affordable uncertainty baseline |
 
 ---
 
@@ -121,16 +121,16 @@ Ensembles excel at detecting when a test point is far from the training data. In
 
 ---
 
-## Advanced: Bayesian Model Averaging (BMA)
+## Advanced: Learned Softmax Weighting
 
-Instead of simple averaging, **torchregress** provides [`BayesianModelAveraging`](../../api/ensemble.md) — a learnable softmax weighting over a **list of trained member models**:
+Instead of simple averaging, **torchregress** provides [`SoftmaxModelCombiner`](../../api/ensemble.md) — a learnable softmax weighting over a **list of trained member models**:
 
 ```python
-from torchregress.ensemble import BayesianModelAveraging
+from torchregress.ensemble import SoftmaxModelCombiner
 
-bma = BayesianModelAveraging(list(ensemble.models))
-mean_pred = bma(x_test)
-mean_pred, variance = bma.predict_with_uncertainty(x_test)
+combiner = SoftmaxModelCombiner(list(ensemble.models))
+mean_pred = combiner(x_test)
+mean_pred, variance = combiner.predict_with_uncertainty(x_test)
 ```
 
 Train the softmax weights with your usual regression loss on a validation set (the combiner is an `nn.Module`).

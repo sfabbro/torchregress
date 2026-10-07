@@ -163,12 +163,12 @@ loss_fn = ExpectileCrossoverLoss(
 
 ### AsymmetricLeastSquaresLoss
 
-Alias for `ExpectileLoss` — uses `tau` instead of `expectile` for compatibility:
+Alias for `ExpectileLoss` — the same class under the name used in the asymmetric least squares literature. It takes the same `expectile` argument:
 
 ```python
 from torchregress.losses import AsymmetricLeastSquaresLoss
 
-loss_fn = AsymmetricLeastSquaresLoss(tau=0.75)  # same as ExpectileLoss(0.75)
+loss_fn = AsymmetricLeastSquaresLoss(expectile=0.75)  # same as ExpectileLoss(0.75)
 ```
 
 ---

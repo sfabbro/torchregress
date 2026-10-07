@@ -4,15 +4,16 @@
 
 This page covers metrics for evaluating multivariate regression models.
 
-## `multivariate_rmse`
+## `MultivariateRMSE`
 
-Computes the root mean squared error over vector outputs.
+Computes the root mean squared error over vector outputs. It is a stateful
+metric: call `update(y_pred, y_true)` for each batch and `compute()` at the end,
+or call the instance on one batch.
 
-**Arguments:**
+**Arguments (`update` and `__call__`):**
 
 - `y_pred` (torch.Tensor or np.ndarray): The predicted values.
 - `y_true` (torch.Tensor or np.ndarray): The ground truth values.
-- `reduction` (str, optional): The reduction to apply to the output. Can be one of `'none'`, `'mean'`, or `'sum'`. Defaults to `'mean'`.
 
 **Returns:**
 
@@ -22,23 +23,24 @@ The root mean squared error of the predictions.
 
 ```python
 import torch
-from torchregress.metrics.multivariate import multivariate_rmse
+from torchregress.metrics import MultivariateRMSE
 
 y_pred = torch.randn(100, 10)
 y_true = torch.randn(100, 10)
 
-rmse = multivariate_rmse(y_pred, y_true)
+metric = MultivariateRMSE()
+rmse = metric(y_pred, y_true)
 ```
 
-## `multivariate_mae`
+## `MultivariateMAE`
 
-Computes the mean absolute error over vector outputs.
+Computes the mean absolute error over vector outputs. It takes the same
+arguments as `MultivariateRMSE`.
 
-**Arguments:**
+**Arguments (`update` and `__call__`):**
 
 - `y_pred` (torch.Tensor or np.ndarray): The predicted values.
 - `y_true` (torch.Tensor or np.ndarray): The ground truth values.
-- `reduction` (str, optional): The reduction to apply to the output. Can be one of `'none'`, `'mean'`, or `'sum'`. Defaults to `'mean'`.
 
 **Returns:**
 

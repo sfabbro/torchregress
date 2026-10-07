@@ -22,7 +22,7 @@ is the most common source of miscommunicated uncertainty claims.
 |:---------|:-----------|:--------------|:--------------|
 | **Predictive spread** | The predictive distribution or interval is wide | The model is "uncertain" in the sense of assigning probability mass to a range | [`GaussianNLLLoss`](../api/losses.md), [`MDNLoss`](../api/losses.md), [`NormalizingFlowLoss`](../api/losses.md), [`QuantileLoss`](../api/losses.md) |
 | **Coverage guarantee** | A calibrated interval contains future labels at a target rate under exchangeability | The intervals have a *finite-sample* probability guarantee, not a Bayesian one | [`ConformalLoss`](../api/losses.md), [`CQR`](../api/losses.md) / [`UACQR`](../api/losses.md) |
-| **Epistemic signal** | Different plausible models disagree | The model would say something different if retrained — a *model-ignorance* signal | `DeepEnsemble`, `PackedEnsembleRegressor`, `MCDropoutWrapper`, `SWAG`, `BayesianNeuralNetwork` |
+| **Epistemic signal** | Different plausible models disagree | The model would say something different if retrained — a *model-ignorance* signal | `DeepEnsemble`, `BatchEnsembleRegressor`, `MCDropoutWrapper`, `SWAG`, `BayesianNeuralNetwork` |
 | **Full variance decomposition** | Total variance is split into model disagreement and expected per-model noise | Aleatoric and epistemic components are reported separately and sum to the total | Heteroscedastic ensembles, heteroscedastic BNNs, ensembles of probabilistic heads |
 
 The contracts are **distinct and not interchangeable**. A method that
@@ -101,7 +101,7 @@ and [Ensemble API](../api/ensemble.md).
 | `HeteroscedasticBNN` | yes | yes | **Full** variance decomposition via `predict_with_decomposition()`. |
 | `MDNEnsembleModel` | yes | yes | Ensemble disagreement plus mixture predictive spread; decomposition reported as a sum of two well-defined terms. |
 | `DeepEnsemble` | yes | partial | **Full only if** members also predict variances or distributions. Plain point ensembles expose *epistemic disagreement* only. |
-| `PackedEnsembleRegressor` | yes | partial | **Full** for heteroscedastic heads; homoscedastic heads expose no aleatoric component. |
+| `BatchEnsembleRegressor` | yes | partial | **Full** for heteroscedastic heads; homoscedastic heads expose no aleatoric component. |
 | `BinnedPDFEnsembleModel`, `CumulativeLinkEnsembleModel` | yes | partial | Ensemble disagreement plus distributional / ordinal spread; decomposition is representation-specific (binned PDF entropy or cumulative-link logits). |
 | `MCDropoutWrapper`, `SWAG`, `MultiSWAG`, `BayesianNeuralNetwork` | yes | partial | Weight / sample uncertainty is *epistemic*; *aleatoric* requires an explicit variance head or likelihood model. |
 | `EvidentialRegressionLoss` | partial | yes | Analytic NIG-derived uncertainty; **validate calibration** before treating the epistemic term as model uncertainty. See [API](../api/losses.md). |

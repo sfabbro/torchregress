@@ -2,7 +2,7 @@
 
 Complete reference for `torchregress.metrics`. Every metric, class, and report function is listed here. For the conceptual guides, see the [Metrics overview](../metrics/index.md) and the per-category pages.
 
-> **Imports.** `MeanSquaredError`, `MeanAbsoluteError`, and `R2Score` are no longer re-exported from torchregress. Import them directly from `torchmetrics` if you want stateful, epoch-accumulating metrics. The torchregress `mse`, `mae`, `r2_score`, etc. are **functional** wrappers with optional **`sample_weight`** (not `mask`). For masked reductions, apply masks before calling or use loss utilities in `torchregress.utils.reduction`.
+> **Imports.** `MeanSquaredError`, `MeanAbsoluteError`, and `R2Score` are no longer re-exported from torchregress. Import them directly from `torchmetrics` if you want stateful, epoch-accumulating metrics. The torchregress `mean_squared_error`, `mean_absolute_error`, `rmse`, `r2_score`, etc. are **functional** wrappers; most take an optional **`sample_weight`** (not `mask`), and `r2_score` takes neither. For masked reductions, apply masks before calling or use loss utilities in `torchregress.utils.reduction`.
 
 ---
 
@@ -14,24 +14,25 @@ Complete reference for `torchregress.metrics`. Every metric, class, and report f
 
 | Symbol | Signature | Description |
 |:-------|:----------|:------------|
-| `mse` | `mse(y_pred, y, sample_weight=None)` | Functional MSE |
-| `rmse` | `rmse(y_pred, y, sample_weight=None)` | Functional RMSE |
-| `mae` | `mae(y_pred, y, sample_weight=None)` | Functional MAE |
-| `r2_score` | `r2_score(y_pred, y, as_numpy=False)` | Functional R² |
-| `huber_loss` | `huber_loss(y_pred, y, delta=1.0)` | Functional Huber loss |
-| `median_absolute_error` | `median_absolute_error(y_pred, y, multioutput="uniform_average")` | MedAE (matches `sklearn.metrics.median_absolute_error`) |
-| `median_absolute_deviation` | `median_absolute_deviation(y_pred, y)` | MAD |
-| `mean_absolute_percentage_error` | `mean_absolute_percentage_error(y_pred, y)` | MAPE |
-| `mean_squared_log_error` | `mean_squared_log_error(y_pred, y)` | MSLE |
-| `normalized_rmse` | `normalized_rmse(y_pred, y, normalization='std')` | NRMSE |
-| `trimmed_mean_squared_error` | `trimmed_mean_squared_error(y_pred, y, proportion=0.1)` | Trimmed MSE (matches `scipy.stats.trim_mean`) |
-| `tail_rmse` | `tail_rmse(y_pred, y, q=0.1, tail='upper')` | Upper-tail RMSE |
-| `tail_mae` | `tail_mae(y_pred, y, q=0.1, tail='upper')` | Upper-tail MAE |
-| `outlier_fraction` | `outlier_fraction(y_pred, y, threshold=0.15)` | Fraction beyond threshold |
-| `mean_squared_error` | `mean_squared_error(y_pred, y, ...)` | Alias for `mse` |
-| `mean_absolute_error` | `mean_absolute_error(y_pred, y, ...)` | Alias for `mae` |
-| `attenuation_factor` | `attenuation_factor(y_pred, y)` | Regression attenuation factor |
-| `regression_metrics_report` | `regression_metrics_report(y_pred, y)` | Aggregate report dict |
+| `mean_squared_error` | `mean_squared_error(y_pred, y_true, sample_weight=None, reduction="mean")` | Functional MSE |
+| `rmse` | `rmse(y_pred, y_true, sample_weight=None, reduction="mean")` | Functional RMSE |
+| `mean_absolute_error` | `mean_absolute_error(y_pred, y_true, sample_weight=None, reduction="mean")` | Functional MAE |
+| `r2_score` | `r2_score(y_pred, y_true, as_numpy=False)` | Functional R² (unweighted) |
+| `huber_loss` | `huber_loss(y_pred, y_true, delta=1.0, sample_weight=None, reduction="mean")` | Functional Huber loss |
+| `median_absolute_error` | `median_absolute_error(y_pred, y_true, multioutput="uniform_average")` | MedAE (matches `sklearn.metrics.median_absolute_error`) |
+| `median_absolute_deviation` | `median_absolute_deviation(y_pred, y_true, scale=1.4826)` | MAD |
+| `normalized_rmse` | `normalized_rmse(y_pred, y_true, normalization="std")` | NRMSE |
+| `trimmed_mean_squared_error` | `trimmed_mean_squared_error(y_pred, y_true, proportion=0.1)` | Trimmed MSE (matches `scipy.stats.trim_mean`) |
+| `tail_rmse` | `tail_rmse(y_pred, y_true, *, quantile=0.9, tail="upper")` | Tail RMSE |
+| `tail_mae` | `tail_mae(y_pred, y_true, *, quantile=0.9, tail="upper")` | Tail MAE |
+| `attenuation_factor` | `attenuation_factor(y_pred, y_true, sample_weight=None)` | Regression attenuation factor |
+| `regression_metrics_report` | `regression_metrics_report(y_pred, y_true, sample_weight=None)` | Aggregate report dict |
+
+MAPE, MSLE and explained variance are not provided here; use
+`torchmetrics.functional.mean_absolute_percentage_error`,
+`torchmetrics.functional.mean_squared_log_error` and
+`torchmetrics.functional.explained_variance`. For the fraction of outliers use
+the stateful `OutlierFraction` below.
 
 **Stateful metric classes** — accumulate over epochs via `update()` / `compute()`:
 
@@ -42,7 +43,7 @@ Complete reference for `torchregress.metrics`. Every metric, class, and report f
 | `MedianAbsoluteDeviation` | `MedianAbsoluteDeviation()` | Stateful MAD accumulator |
 | `NormalizedMedianAbsoluteDeviation` | `NormalizedMedianAbsoluteDeviation()` | Stateful NMAD accumulator |
 | `NormalizedRMSE` | `NormalizedRMSE(normalization="std")` | Stateful NRMSE accumulator |
-| `OutlierFraction` | `OutlierFraction(threshold=0.15)` | Stateful outlier-fraction accumulator |
+| `OutlierFraction` | `OutlierFraction(threshold=0.15, mode="relative")` | Stateful outlier-fraction accumulator |
 | `TrimmedMeanSquaredError` | `TrimmedMeanSquaredError(proportion=0.1)` | Stateful trimmed MSE accumulator |
 
 ---
@@ -62,8 +63,8 @@ Complete reference for `torchregress.metrics`. Every metric, class, and report f
 | `kolmogorov_smirnov_uniform_statistic` | `kolmogorov_smirnov_uniform_statistic(pit)` | KS-uniform on PIT |
 | `distribution_metrics_report` | `distribution_metrics_report(dist, y_true, ..., generator=None)` | Aggregate report (closed-form / fair-sample CRPS; randomised tail PIT for quantile forecasts) |
 | `conditional_density_estimation_loss` | `conditional_density_estimation_loss(...)` | Conditional density estimation loss |
-| `highest_posterior_density_coverage` | `highest_posterior_density_coverage(...)` | HPD coverage metric |
-| `highest_posterior_density_level` | `highest_posterior_density_level(...)` | HPD level computation |
+| `highest_posterior_density_coverage` | `highest_posterior_density_coverage(support, density, y_true, alpha=0.1)` | HPD coverage metric. **`alpha` is the HPD mass (0.9 = a 90% region), not the miscoverage**; see [HPD coverage](../metrics/distribution.md#highest-posterior-density-hpd-coverage) |
+| `highest_posterior_density_level` | `highest_posterior_density_level(support, density, y_true)` | HPD level computation |
 | `dss_score` | `dss_score(y_pred_mean, y_pred_std, y_true)` | Dawid-Sebastiani score: `(y − μ)² / σ² + 2·ln σ` |
 | `vario_score` | `vario_score(y_samples, y_true, rho=1.0)` | Vario score (Zamo & Naveau) for ensemble forecasts; higher is better (`-CRPS` at `rho=1`) |
 | `pinball_loss` | `pinball_loss(level, quantile_value, y_true)` | Pinball (quantile) loss at a single level |
@@ -113,7 +114,7 @@ Complete reference for `torchregress.metrics`. Every metric, class, and report f
 | `MarginalCalibrationError` | `MarginalCalibrationError()` | Stateful MCE accumulator |
 | `bias` | `bias(y_pred, target)` | Mean signed error |
 | `calibration_score` | `calibration_score(y_true, pred_mean, pred_std)` | Combined calibration score |
-| `calibration_metrics_report` | `calibration_metrics_report(y_pred, y_pred_std, y)` | Aggregate report |
+| `calibration_metrics_report` | `calibration_metrics_report(dist_or_samples, y_true, y_pred_quantiles=None, n_bins=20, n_samples=100)` | Aggregate report |
 
 ---
 

@@ -307,7 +307,36 @@ def highest_posterior_density_coverage(
     y_true: Union[torch.Tensor, np.ndarray],
     alpha: float = 0.1,
 ) -> float:
-    """Coverage of the HPD region with nominal mass ``alpha``."""
+    """Empirical coverage of the highest-posterior-density (HPD) region of mass ``alpha``.
+
+    Returns the fraction of targets whose HPD level (see
+    :func:`highest_posterior_density_level`) is at most ``alpha``.
+
+    .. warning::
+        ``alpha`` is the **nominal probability mass** of the HPD region, **not**
+        the miscoverage rate used by ``alpha`` elsewhere in torchregress
+        (conformal classes, ``prediction_interval_coverage``, ...). For
+        calibrated predictions the returned value is approximately ``alpha``:
+        ``alpha=0.9`` gives about 0.9 (the coverage of a 90% region), whereas the
+        default ``alpha=0.1`` gives about 0.1 (the coverage of a 10% region),
+        not 0.9. Pass ``alpha=0.9`` to evaluate a 90% HPD region.
+
+    Parameters
+    ----------
+    support : Tensor or ndarray
+        Strictly increasing 1D grid of ``S`` points.
+    density : Tensor or ndarray
+        Predictive densities on ``support``, shape ``[batch, S]``.
+    y_true : Tensor or ndarray
+        Observed targets, shape ``[batch]``.
+    alpha : float, default 0.1
+        Nominal HPD mass (``0.9`` means a 90% region).
+
+    Returns
+    -------
+    float
+        Fraction of targets inside the HPD region of mass ``alpha``.
+    """
     levels = highest_posterior_density_level(support, density, y_true)
     return float((levels <= float(alpha)).to(levels.dtype).mean().item())
 
