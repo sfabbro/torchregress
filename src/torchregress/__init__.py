@@ -39,6 +39,7 @@ _LAZY_SUBMODULES = {
     "viz",
     "comparison",
     "utils",
+    "models",
 }
 
 
@@ -71,6 +72,7 @@ __all__ = [
     "viz",
     "comparison",
     "utils",
+    "models",
     # Core classes
     "BaseLoss",
     "RegressionLoss",

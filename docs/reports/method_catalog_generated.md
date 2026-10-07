@@ -8,7 +8,7 @@ It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 
 ## Summary
 
-- Total methods: `124`
+- Total methods: `125`
 - Peer methods present: `SWAG`, `BayesianNeuralNetwork`, `MDNLoss`
 
 ### By Family
@@ -40,6 +40,7 @@ It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 | `robust_loss` | 9 |
 | `semi_supervised` | 1 |
 | `swag` | 2 |
+| `tabular_network` | 1 |
 | `target_transform` | 5 |
 | `test_time` | 8 |
 | `tictac` | 1 |
@@ -52,7 +53,7 @@ It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 |---|---:|
 | `Core` | 7 |
 | `Strong` | 19 |
-| `Available` | 98 |
+| `Available` | 99 |
 
 ## Method Rows
 
@@ -162,6 +163,7 @@ Legend: `*` suffix means partial support. This snapshot is for discovery and com
 | `TeacherStudentTrainer` | `semi_supervised` | `Strong` | `semi_supervised`, `weak_supervision`, `pseudo_labeling` | `calibration*`, `ood*` | `torchregress.semi_supervised.TeacherStudentTrainer` |
 | `MultiSWAG` | `swag` | `Available` | `epistemic_uq`, `ood` | `epistemic`, `aleatoric*`, `decomposition*`, `calibration*`, `ood*` | `torchregress.ensemble.MultiSWAG` |
 | `SWAG` | `swag` | `Available` | `epistemic_uq`, `ood` | `epistemic`, `aleatoric*`, `decomposition*`, `calibration*`, `ood*` | `torchregress.ensemble.SWAG` |
+| `TabularMLP` | `tabular_network` | `Available` | `baseline`, `tabular`, `heteroscedastic` | `aleatoric*`, `calibration*`, `ood*` | `torchregress.models.TabularMLP` |
 | `BoxCoxTransformLoss` | `target_transform` | `Available` | `target_transform`, `skewed_targets` | `calibration*`, `ood*` | `torchregress.losses.BoxCoxTransformLoss` |
 | `LogTransformLoss` | `target_transform` | `Available` | `target_transform`, `skewed_targets` | `calibration*`, `ood*` | `torchregress.losses.LogTransformLoss` |
 | `SqrtTransformLoss` | `target_transform` | `Available` | `target_transform`, `skewed_targets` | `calibration*`, `ood*` | `torchregress.losses.SqrtTransformLoss` |

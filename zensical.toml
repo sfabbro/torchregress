@@ -234,6 +234,7 @@ nav = [
       { "Bayesian Linear Regression" = "methods/test-time/bayesian-linear-regression.md" },
       { "Optimal Transport Conformal" = "methods/test-time/ot-shift-conformal.md" },
     ] },
+    { "Tabular MLP" = "methods/tabular_mlp.md" },
     { "Post-Training Calibration" = "methods/calibration.md" },
     { "Output Constraints" = "methods/constraints.md" },
     { "Causal Inference" = "methods/causal.md" },
@@ -326,6 +327,7 @@ nav = [
   { "API Reference" = [
     "api/index.md",
     { "Losses" = "api/losses.md" },
+    { "Models" = "api/models.md" },
     { "Ensemble" = "api/ensemble.md" },
     { "Conformal" = "api/conformal.md" },
     { "Algorithms" = "api/algorithms.md" },

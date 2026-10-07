@@ -117,6 +117,7 @@ _Generated date_: `2026-10-07`
 | `robust_loss` (9) | yes | no | partial | no | no | no | partial | partial | no | no |
 | `semi_supervised` (1) | yes | no | partial | no | no | no | partial | partial | no | no |
 | `swag` (2) | yes | no | partial | yes | partial | partial | partial | partial | no | no |
+| `tabular_network` (1) | yes | no | partial | no | partial | no | partial | partial | no | no |
 | `target_transform` (5) | yes | no | partial | no | no | no | partial | partial | no | no |
 | `test_time` (8) | yes | no | partial | partial | partial | partial | yes | partial | no | no |
 | `tictac` (1) | yes | no | partial | no | yes | no | partial | partial | no | no |
@@ -257,6 +258,7 @@ _Generated date_: `2026-10-07`
 | `TeacherStudentTrainer` | `semi_supervised` | `Strong` | yes | no | no | no | no | partial | partial |
 | `MultiSWAG` | `swag` | `Available` | yes | no | yes | partial | partial | partial | partial |
 | `SWAG` | `swag` | `Available` | yes | no | yes | partial | partial | partial | partial |
+| `TabularMLP` | `tabular_network` | `Available` | yes | no | no | partial | no | partial | partial |
 | `BoxCoxTransformLoss` | `target_transform` | `Available` | yes | no | no | no | no | partial | partial |
 | `LogTransformLoss` | `target_transform` | `Available` | yes | no | no | no | no | partial | partial |
 | `SqrtTransformLoss` | `target_transform` | `Available` | yes | no | no | no | no | partial | partial |
@@ -311,6 +313,7 @@ Peer-method check: `SWAG`, `BayesianNeuralNetwork`, `MDNLoss`
 | `robust_loss` | 9 | yes | no | partial | no | no | no | partial | partial | no | no |
 | `semi_supervised` | 1 | yes | no | partial | no | no | no | partial | partial | no | no |
 | `swag` | 2 | yes | no | partial | yes | partial | partial | partial | partial | no | no |
+| `tabular_network` | 1 | yes | no | partial | no | partial | no | partial | partial | no | no |
 | `target_transform` | 5 | yes | no | partial | no | no | no | partial | partial | no | no |
 | `test_time` | 8 | yes | no | partial | partial | partial | partial | yes | partial | no | no |
 | `tictac` | 1 | yes | no | partial | no | yes | no | partial | partial | no | no |

@@ -1077,6 +1077,23 @@ _METHODS: tuple[MethodMetadata, ...] = (
         notes="Shared-weight ensemble variant for lower-latency uncertainty decomposition.",
     ),
     MethodMetadata(
+        name="TabularMLP",
+        family="tabular_network",
+        public_path="torchregress.models.TabularMLP",
+        task_tags=("baseline", "tabular", "heteroscedastic"),
+        maturity="Available",
+        multi_target="yes",
+        non_gaussian="partial",
+        aleatoric="partial",
+        calibration="partial",
+        notes=(
+            "Strong-default tabular backbone (periodic embeddings, robust-scaled inputs, "
+            "AdamW + one-cycle, early stopping via fit_tabular); head width is set to match "
+            "any torchregress loss. Evidence so far is synthetic and diabetes benchmarks, "
+            "not real medium-size tabular suites."
+        ),
+    ),
+    MethodMetadata(
         name="BatchEnsembleRegressor",
         family="ensemble",
         public_path="torchregress.ensemble.BatchEnsembleRegressor",

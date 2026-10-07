@@ -11,6 +11,7 @@ For conceptual guides, derivations, and worked examples, see
 | Module | What's in it | Reference |
 |:-------|:-------------|:----------|
 | `torchregress.losses` | Regression losses: point, robust, Gaussian, quantile, ordinal, censored, Poisson/Tweedie, EIV, conformal, … | [Losses API](losses.md) |
+| `torchregress.models` | Strong-default tabular MLP, robust preprocessing, `fit_tabular` trainer | [Models API](models.md) |
 | `torchregress.ensemble` | Deep ensembles, heteroscedastic ensembles, batch ensembles, SWAG, MC-dropout, BNN | [Ensemble API](ensemble.md) |
 | `torchregress.losses.conformal` | Conformal predictors & `ConformalLoss` | [Conformal API](conformal.md) |
 | `torchregress.algorithms` | IRLS, SIMEX, RC, LatentNN, TicTac, heteroscedastic Laplace, IVON | [Algorithms API](algorithms.md) |
@@ -35,6 +36,7 @@ For conceptual guides, derivations, and worked examples, see
 | `losses` | Lazy submodule of regression losses (point, robust, Gaussian, quantile, ordinal, censored, count, EIV, conformal). |
 | `metrics` | Lazy submodule of evaluation metrics (point, distribution, interval, calibration, OOD, ensemble, decision). |
 | `algorithms` | Lazy submodule of error-in-variables and robust algorithms (IRLS, SIMEX, RC, LatentNN, TicTac, IVON). |
+| `models` | Lazy submodule of the tabular MLP, its preprocessor and trainer. |
 | `ensemble` | Lazy submodule of deep ensembles, MC-dropout, SWAG, snapshot and Bayesian model building blocks. |
 | `semi_supervised` | Lazy submodule of teacher–student semi-supervised training. |
 | `test_time` | Lazy submodule of test-time adaptation (Bayesian heads, label shift, OT conformal reweighting, alignment). |

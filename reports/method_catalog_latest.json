@@ -2,7 +2,7 @@
   "artifact": "method_catalog",
   "version": 1,
   "summary": {
-    "total_methods": 124,
+    "total_methods": 125,
     "families": {
       "bnn": 7,
       "calibration_transform": 5,
@@ -29,6 +29,7 @@
       "robust_loss": 9,
       "semi_supervised": 1,
       "swag": 2,
+      "tabular_network": 1,
       "target_transform": 5,
       "test_time": 8,
       "tictac": 1,
@@ -38,7 +39,7 @@
     "maturity": {
       "Core": 7,
       "Strong": 19,
-      "Available": 98
+      "Available": 99
     },
     "peer_uq_methods_present": {
       "SWAG": true,
@@ -2033,6 +2034,28 @@
       "imbalance": "no",
       "noisy_features_eiv": "no",
       "notes": "Shared-weight ensemble variant for lower-latency uncertainty decomposition."
+    },
+    {
+      "name": "TabularMLP",
+      "family": "tabular_network",
+      "public_path": "torchregress.models.TabularMLP",
+      "task_tags": [
+        "baseline",
+        "tabular",
+        "heteroscedastic"
+      ],
+      "maturity": "Available",
+      "multimodal": "no",
+      "multi_target": "yes",
+      "non_gaussian": "partial",
+      "epistemic": "no",
+      "aleatoric": "partial",
+      "decomposition": "no",
+      "calibration": "partial",
+      "ood_support": "partial",
+      "imbalance": "no",
+      "noisy_features_eiv": "no",
+      "notes": "Strong-default tabular backbone (periodic embeddings, robust-scaled inputs, AdamW + one-cycle, early stopping via fit_tabular); head width is set to match any torchregress loss. Evidence so far is synthetic and diabetes benchmarks, not real medium-size tabular suites."
     },
     {
       "name": "BatchEnsembleRegressor",

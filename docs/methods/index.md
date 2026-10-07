@@ -65,6 +65,12 @@ closed-form posterior updates, OT-based conformal reweighting for covariate
 shift, and shift-factored predictive transport. **Start here if your test
 distribution differs from training.**
 
+### [Tabular MLP](tabular_mlp.md)
+
+A strong-default neural backbone for tabular data (robust scaling, periodic
+embeddings, AdamW with early stopping) that works with any torchregress loss
+head. **Start here if you need a well-tuned network without a tuning loop.**
+
 ### [Post-Hoc Calibration](calibration.md)
 
 Improve uncertainty quality after training: variance temperature scaling,
