@@ -2,16 +2,16 @@
   "artifact": "method_catalog",
   "version": 1,
   "summary": {
-    "total_methods": 125,
+    "total_methods": 128,
     "families": {
       "bnn": 7,
-      "calibration_transform": 5,
+      "calibration_transform": 6,
       "causal": 2,
       "censored": 3,
-      "conformal": 12,
+      "conformal": 13,
       "constraints": 2,
       "eiv": 13,
-      "ensemble": 7,
+      "ensemble": 8,
       "evidential": 1,
       "expectile": 3,
       "flow": 3,
@@ -39,7 +39,7 @@
     "maturity": {
       "Core": 7,
       "Strong": 19,
-      "Available": 99
+      "Available": 102
     },
     "peer_uq_methods_present": {
       "SWAG": true,
@@ -1552,6 +1552,74 @@
       "imbalance": "no",
       "noisy_features_eiv": "no",
       "notes": "Scalar variance temperature fitted by NLL minimization."
+    },
+    {
+      "name": "ConformalRegressor",
+      "family": "conformal",
+      "public_path": "torchregress.estimators.ConformalRegressor",
+      "task_tags": [
+        "coverage_guarantees",
+        "prediction_intervals",
+        "calibration"
+      ],
+      "maturity": "Available",
+      "multimodal": "no",
+      "multi_target": "no",
+      "non_gaussian": "yes",
+      "epistemic": "no",
+      "aleatoric": "no",
+      "decomposition": "no",
+      "calibration": "yes",
+      "ood_support": "partial",
+      "imbalance": "no",
+      "noisy_features_eiv": "no",
+      "notes": "Experimental sklearn-style wrapper (may change in 0.4): split, normalized, CQR, CV+ and Jackknife+ intervals on any base (scikit-learn, LightGBM, torch module, TabularFit) through SplitConformal / CQR / CVPlus; parity with MAPIE on shared bases is tested."
+    },
+    {
+      "name": "CalibratedRegressor",
+      "family": "calibration_transform",
+      "public_path": "torchregress.estimators.CalibratedRegressor",
+      "task_tags": [
+        "calibration",
+        "posthoc_calibration",
+        "prediction_intervals"
+      ],
+      "maturity": "Available",
+      "multimodal": "no",
+      "multi_target": "no",
+      "non_gaussian": "partial",
+      "epistemic": "no",
+      "aleatoric": "no",
+      "decomposition": "no",
+      "calibration": "yes",
+      "ood_support": "partial",
+      "imbalance": "no",
+      "noisy_features_eiv": "no",
+      "notes": "Experimental wrapper (may change in 0.4): variance temperature (optionally with an isotonic mean map) fitted on a held-out split for any Gaussian-output base; optional conformal intervals."
+    },
+    {
+      "name": "calibrated_deep_ensemble",
+      "family": "ensemble",
+      "public_path": "torchregress.estimators.calibrated_deep_ensemble",
+      "task_tags": [
+        "uq_decomposition",
+        "epistemic_uq",
+        "aleatoric_uq",
+        "calibration",
+        "tabular"
+      ],
+      "maturity": "Available",
+      "multimodal": "no",
+      "multi_target": "no",
+      "non_gaussian": "partial",
+      "epistemic": "yes",
+      "aleatoric": "yes",
+      "decomposition": "partial",
+      "calibration": "yes",
+      "ood_support": "partial",
+      "imbalance": "no",
+      "noisy_features_eiv": "no",
+      "notes": "Experimental one-call recipe (may change in 0.4): Gaussian TabularMLP ensemble with mixture moments, variance temperature on a held-out carve and optional conformal intervals. Evidence so far is synthetic."
     },
     {
       "name": "IsotonicMeanCalibrator",

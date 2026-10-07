@@ -26,6 +26,7 @@ EXPECTED_EXPORTS = {
         "comparison",
         "utils",
         "models",
+        "estimators",
         "BaseLoss",
         "RegressionLoss",
         "DistributionLoss",
@@ -139,6 +140,11 @@ EXPECTED_EXPORTS = {
         "TabularEnsembleFit",
         "fit_tabular",
         "fit_tabular_ensemble",
+    ],
+    "estimators": [
+        "ConformalRegressor",
+        "CalibratedRegressor",
+        "calibrated_deep_ensemble",
     ],
     "ensemble": [
         "BaseEnsembleModel",
@@ -629,6 +635,7 @@ def test_public_exports_snapshot_non_losses() -> None:
         "torchregress": tr,
         "metrics": tr.metrics,
         "models": tr.models,
+        "estimators": tr.estimators,
         "ensemble": tr.ensemble,
         "semi_supervised": tr.semi_supervised,
         "algorithms": tr.algorithms,
