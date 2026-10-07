@@ -21,6 +21,7 @@ remove are decided for 0.4.0.
 - `estimators.calibrated_deep_ensemble(X, y, n_members, val_fraction, loss, alpha, conformal, seed, **fit_kwargs)`: Gaussian `TabularMLP` ensemble via `fit_tabular_ensemble` with mixture moments (mean member variance plus variance of member means), a variance temperature fitted on a held-out carve and optional normalized split-conformal intervals; returns a `CalibratedRegressor` (plan item B3). Experimental, may change in 0.4.
 
 ### Changed
+- `docs/losses/sls.md`: new section measuring the width of SLS bounding-box intervals against `GaussianNLL` / `MultivariateGaussian` on the three harness multivariate designs (plan item B7). The 1.2-1.3x width gap at nominal level shrinks to 1.04-1.11x at equal joint coverage; raw `SLSLoss` thresholds cover only 0.45-0.56 of held-out targets (0.91 in-sample), so the coverage guarantee needs `SLSConformal`. No library default changed: warmup, window, flow size and boundary-sample count do not reduce width at equal coverage on all designs.
 - 28 plumbing helpers are no longer re-exported from `torchregress.utils` (and
   dropped from its `__all__`); they remain importable from their submodules, for
   example `from torchregress.utils.tensor_ops import convert_to_tensor`.
@@ -45,6 +46,10 @@ remove are decided for 0.4.0.
   scipy 1.18.1 (PyPI) and the pixi lock (conda-forge torch 2.13.0).
 
 ### Fixed
+- `fit_tabular` / `TabularFit.predict`: `GaussianNLLLoss(log_variance=False)` heads are mapped back to the original scale with a new `"variance"` layout (`var * sigma^2`) instead of being treated as a location output; `standardize_target=False` keeps the Gaussian layout, so `calibrated_deep_ensemble(..., standardize_target=False)` works (audit C2-003, C2-006).
+- `ConformalRegressor`, `CalibratedRegressor` and `calibrated_deep_ensemble` raise `ValueError` for NaN or infinite targets instead of returning NaN intervals or a temperature fitted on a subset (audit C2-004).
+- `TabularPreprocessor`: the smooth clip no longer overflows for huge values (mapped to 0 above 1e154) or turns infinite inputs into NaN (audit C2-002).
+- `inference.median_heuristic_bandwidth` is exact for data far from the origin and rejects non-finite input; `test_time.select_high_confidence(scores=)` ranks NaN scores lowest (audit C2-001, C2-005).
 - `test_time.ShiftFactoredPredictiveTransport`: the confident-row selection (`top_fraction`, default 0.5) now ranks rows on the unrenormalised in-grid peak probability (maximum bin probability times the predictive mass inside the support grid) instead of the renormalised maximum. Renormalisation inflated the peak of predictives cut by the grid edge, so on fine grids the selection favoured them and the EM prior mean overshot a label shift by up to 0.32 |shift| at 256 bins (0.14 at 64); it is now below 0.07 |shift| at 16, 64 and 256 bins for shifts of +/-0.8. Selected rows, and therefore `target_prior` and the adapted predictive, change for a given input (plan item B6).
 - `inference.orthogonal_partially_linear`: both nuisance regressions (`E[x|z]`, `E[y|z]`) now share one cross-fitting split. Independent splits biased `theta` (-0.026, about 7.7 standard errors, over 200 replications of the DoubleML CCDDHNR-2018 design at n = 500); found by the harness `orthogonal_inference` suite against DoubleML on the same nuisance basis. Point estimates for a given `seed` change.
 - **0.3.0 release audit: 61 defects fixed**, each with a regression test in

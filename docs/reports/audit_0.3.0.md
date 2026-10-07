@@ -2,7 +2,7 @@
 
 Audit of the library before the first PyPI release (release plan Phase 2.2,
 all five batches), run 2026-10-06: batches 1–3 at commit `5a334d3`, batches
-4–5 at `d61ebb2`. **99 defects found, 98 fixed, 1 open (PRD-001).**
+4–5 at `d61ebb2`. **99 defects found, 98 fixed, 1 open (PRD-001).** Batch C2 (code added afterwards) found and fixed 6 more.
 
 **Evidence rule.** A finding counts only when a test reproduces it: every row
 below had a test that failed on `5a334d3`, and that test now lives in
@@ -22,6 +22,7 @@ dtype/device hygiene.
 | I | `inference`, `causal`, `ensemble`, `semi_supervised`, `prediction` | 13 | `39a8879` | `tests/audit/test_audit_inference.py` |
 | 4 | `algorithms`, `test_time` | 19 | see below | `tests/audit/test_audit_batch4.py` |
 | 5 | `utils`, `prediction`, `comparison`, `viz` | 19 | see below | `tests/audit/test_audit_batch5.py` |
+| C2 | `models`, `estimators`, `inference.orthogonal` additions, `losses.nflows` | 6 | `c2ada98` | `tests/audit/test_audit_c2.py` |
 
 Severity: **High** = wrong numbers or a broken guarantee in normal use;
 **Medium** = edge cases or an API-contract violation; **Low** = minor.
@@ -179,6 +180,37 @@ and above the last quantile and renormalises, so the CDF at knot k is
 (τ_k − τ_0)/(τ_K − τ_0) rather than τ_k. This is now documented; whether to
 spread the tail mass instead (which changes `test_time.transport`) is a
 maintainer decision. The two audit tests are strict xfails.
+
+## Batch C2: post-audit additions
+
+Audit of the code added after the original audit (`models`, `estimators`, the
+RFF / GCV / LOO additions to `inference.orthogonal`, `create_flow_model(bound=)`,
+and the transport selection changes), run 2026-10-07 at `7167361b`. **6 defects
+found, 6 fixed.** Tests: `tests/audit/test_audit_c2.py`.
+
+| ID | Sev | Export | Finding |
+|:--|:--|:--|:--|
+| C2-003 | Medium | `fit_tabular`, `TabularFit.predict` | `GaussianNLLLoss(log_variance=False)` got the `"location"` layout: the variance head was returned as `mu + sigma * var` instead of `var * sigma^2` (new `"variance"` layout) |
+| C2-004 | Medium | `ConformalRegressor`, `CalibratedRegressor`, `calibrated_deep_ensemble` | NaN or infinite calibration targets accepted: NaN intervals (conformal) or a temperature fitted on the remaining rows (calibrated) |
+| C2-006 | Medium | `fit_tabular`, `calibrated_deep_ensemble` | `standardize_target=False` forced layout `"none"`, so a Gaussian fit could not be wrapped: `calibrated_deep_ensemble(..., standardize_target=False)` raised "no Gaussian head" |
+| C2-002 | Low | `TabularPreprocessor` | smooth clip overflowed for \|z\| > 1e154 (huge outliers mapped to 0, the median) and gave NaN for infinite inputs |
+| C2-001 | Low | `median_heuristic_bandwidth` | `cdist` matmul expansion lost all precision for offset data (1e9 offset gave the 1.0 fallback); NaN input returned 1.0 silently |
+| C2-005 | Low | `select_high_confidence(scores=)` | NaN scores sorted last and were selected as the most confident rows |
+
+**Checked and found correct (C2).** Periodic embedding and the RealMLP smooth
+clip (forward and inverse); GCV and exact LOO closed forms (hat-matrix leverage
+with an unpenalised intercept) against brute-force refits for the full penalty
+grid; random Fourier features against the RBF kernel (max error 0.023 at
+D = 20000); coverage by simulation within binomial tolerance for split
+(0.905), normalized (0.906), CQR (0.907), CV+ (0.912; 0.927 at n = 12),
+Jackknife+ (0.941) and calibrated normalized conformal on a trained ensemble
+(0.905), with `+inf` intervals at n_cal < 1/alpha; weighted split, normalized
+and CQR coverage under covariate shift (0.91 to 0.92, 0.90); no mutation of
+the user's base estimator or inputs, no global RNG mutation, reproducibility
+by seed, train/eval mode restored by the wrappers; no leakage of calibration
+rows into the base or of the early-stopping carve into the calibration carve;
+`BoundedNSF` densities integrate to 1; transport `in_grid_mass` agrees with the
+exact Gaussian mass and with the density, sample and quantile paths.
 
 ## Also fixed after the audit
 
