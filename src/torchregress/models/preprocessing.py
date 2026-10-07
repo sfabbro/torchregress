@@ -182,7 +182,10 @@ class TabularPreprocessor:
         z = np.where(missing, 0.0, z)
         c = self.clip_value
         if self.clip == "smooth":
-            z = z / np.sqrt(1.0 + (z / c) ** 2)
+            # hypot avoids overflowing (z / c) ** 2 for |z| > ~1e154; infinities
+            # saturate at +-c instead of becoming NaN.
+            with np.errstate(over="ignore", invalid="ignore"):
+                z = np.where(np.isinf(z), np.sign(z) * c, z / np.hypot(1.0, z / c))
         elif self.clip == "hard":
             z = np.clip(z, -c, c)
         if len(self.indicator_columns_):

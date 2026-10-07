@@ -92,6 +92,14 @@ def _np1(a: Any) -> np.ndarray:
     return arr.astype(np.float64, copy=False).reshape(-1)
 
 
+def _finite_y(y: Any, name: str = "y") -> np.ndarray:
+    """Flat float64 target vector; NaN or infinite values raise ``ValueError``."""
+    arr = _np1(y)
+    if not np.isfinite(arr).all():
+        raise ValueError(f"{name} must be finite (found NaN or infinite values)")
+    return arr
+
+
 def _t64(a: Any) -> torch.Tensor:
     return torch.as_tensor(np.asarray(a, dtype=np.float64))
 
@@ -535,11 +543,13 @@ class ConformalRegressor:
             normalized and cqr). Aligned with ``X_cal`` if given, else with ``X``.
         """
         X = _as_data(X)
-        y1 = _np1(y)
+        y1 = _finite_y(y)
         if len(y1) != len(X):
             raise ValueError("X and y have different lengths")
         if (X_cal is None) != (y_cal is None):
             raise ValueError("pass both X_cal and y_cal, or neither")
+        if y_cal is not None:
+            _finite_y(y_cal, "y_cal")
         w_all = None if cal_weights is None else _np1(cal_weights)
 
         if self.method in ("cv+", "jackknife+"):
@@ -833,11 +843,13 @@ class CalibratedRegressor:
         of ``"isotonic+vts"``.
         """
         X = _as_data(X)
-        y1 = _np1(y)
+        y1 = _finite_y(y)
         if len(y1) != len(X):
             raise ValueError("X and y have different lengths")
         if (X_cal is None) != (y_cal is None):
             raise ValueError("pass both X_cal and y_cal, or neither")
+        if y_cal is not None:
+            _finite_y(y_cal, "y_cal")
         Xtr: Optional[ArrayLike] = None
         ytr: Optional[np.ndarray] = None
         if X_cal is not None and y_cal is not None:
@@ -1036,7 +1048,7 @@ def calibrated_deep_ensemble(
         if reserved in fit_kwargs:
             raise ValueError(f"{reserved!r} is set by the recipe and cannot be passed")
     X = _as_data(X)
-    y1 = _np1(y)
+    y1 = _finite_y(y)
     if len(y1) != len(X):
         raise ValueError("X and y have different lengths")
     tr, ca = _split_idx(len(X), val_fraction, seed)

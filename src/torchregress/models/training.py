@@ -14,7 +14,7 @@ from torch import nn
 from ..losses.gaussian import GaussianNLLLoss
 from .preprocessing import ArrayLike, TabularPreprocessor
 
-OutputLayout = Literal["auto", "location", "gaussian", "none"]
+OutputLayout = Literal["auto", "location", "gaussian", "variance", "none"]
 
 
 def _as_2d_tensor(a: ArrayLike, dtype: torch.dtype, name: str) -> torch.Tensor:
@@ -72,7 +72,8 @@ class TabularFit:
         the mean is mapped likewise and ``log_variance`` is shifted by
         ``2 log sigma``. The result feeds the same loss function used for training.
         Flat outputs with more than one target are read as consecutive blocks of ``D``
-        columns.
+        columns. The ``"variance"`` layout (``GaussianNLLLoss(log_variance=False)``)
+        scales the variance block by ``sigma ** 2``.
 
         Parameters
         ----------
@@ -108,6 +109,8 @@ class TabularFit:
         out = out.reshape(n, k // d, d)
         if self.output_layout == "gaussian":
             out = torch.cat([out[:, :1] * sd + mu, out[:, 1:] + 2.0 * torch.log(sd)], dim=1)
+        elif self.output_layout == "variance":
+            out = torch.cat([out[:, :1] * sd + mu, out[:, 1:] * sd**2], dim=1)
         else:
             out = out * sd + mu
         return out.reshape(n, k)
@@ -142,8 +145,8 @@ class TabularEnsembleFit:
 def _resolve_layout(loss_fn: Callable[..., torch.Tensor], layout: OutputLayout) -> str:
     if layout != "auto":
         return layout
-    if isinstance(loss_fn, GaussianNLLLoss) and loss_fn.log_variance:
-        return "gaussian"
+    if isinstance(loss_fn, GaussianNLLLoss):
+        return "gaussian" if loss_fn.log_variance else "variance"
     return "location"
 
 
@@ -217,10 +220,11 @@ def fit_tabular(
         Max gradient norm.
     standardize_target : bool, default True
         Standardise targets with the training mean and std.
-    output_layout : {"auto", "location", "gaussian", "none"}
+    output_layout : {"auto", "location", "gaussian", "variance", "none"}
         How outputs map back to the original scale in :meth:`TabularFit.predict`.
         ``"auto"`` picks ``"gaussian"`` for :class:`~torchregress.losses.GaussianNLLLoss`
-        and ``"location"`` otherwise (point and quantile heads). Use
+        (``"variance"`` with ``log_variance=False``) and ``"location"`` otherwise
+        (point and quantile heads). Use
         ``standardize_target=False`` for heads that are neither (for example
         evidential or mixture heads).
     preprocessor : TabularPreprocessor, None or False
@@ -312,7 +316,9 @@ def fit_tabular(
         if Xva.shape[1] != Xtr.shape[1]:
             raise ValueError("validation features have a different width than training")
 
-    layout = _resolve_layout(loss_fn, output_layout) if standardize_target else "none"
+    layout = _resolve_layout(loss_fn, output_layout)
+    if not standardize_target and output_layout == "auto" and layout == "location":
+        layout = "none"  # identity mapping; keep a Gaussian layout so wrappers can use it
     steps_per_epoch = math.ceil(len(Xtr) / batch_size)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     sched: Optional[torch.optim.lr_scheduler.LRScheduler]

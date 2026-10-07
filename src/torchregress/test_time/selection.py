@@ -119,6 +119,8 @@ def select_high_confidence(
     rank_scores = confidence_scores(probs) if scores is None else np.asarray(scores, dtype=float)
     if rank_scores.shape != (probs.shape[0],):
         raise ValueError("scores must have one entry per row of probabilities")
+    # np.argsort puts NaN last, i.e. "most confident"; rank NaN rows lowest instead.
+    rank_scores = np.where(np.isnan(rank_scores), -np.inf, rank_scores)
     mask = np.ones(probs.shape[0], dtype=bool)
     if min_confidence is not None:
         mask &= confidence_scores(probs) >= float(min_confidence)

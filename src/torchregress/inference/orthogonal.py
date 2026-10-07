@@ -121,6 +121,11 @@ def median_heuristic_bandwidth(
     float
         The median pairwise distance, or ``1.0`` when all sampled points
         coincide (or there are fewer than two rows).
+
+    Raises
+    ------
+    ValueError
+        If ``z`` contains NaN or infinite values.
     """
     if n_subsample < 2:
         raise ValueError("n_subsample must be at least 2")
@@ -134,9 +139,14 @@ def median_heuristic_bandwidth(
     if n_rows > n_subsample:
         generator = torch.Generator().manual_seed(seed)
         points = points[torch.randperm(n_rows, generator=generator)[:n_subsample]]
+    if not bool(torch.isfinite(points).all()):
+        raise ValueError("z must be finite")
     if points.shape[0] < 2:
         return 1.0
-    distances = torch.cdist(points, points)
+    # Distances are translation invariant: centre first and avoid the matmul
+    # expansion of ``cdist``, which cancels catastrophically for offset data.
+    points = points - points.mean(dim=0, keepdim=True)
+    distances = torch.cdist(points, points, compute_mode="donot_use_mm_for_euclid_dist")
     upper = torch.triu_indices(points.shape[0], points.shape[0], offset=1)
     median = float(distances[upper[0], upper[1]].median())
     return median if median > 0.0 else 1.0
