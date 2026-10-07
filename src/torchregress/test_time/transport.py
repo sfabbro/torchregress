@@ -22,6 +22,13 @@ from .subspace import WeightedSubspaceMomentAligner
 
 ArrayLike = np.ndarray | Tensor | Sequence[float]
 
+# EM on the support grid stops once the mean target log-likelihood gains less
+# than this per iteration (nats per row). The prior on hundreds of overlapping
+# bins is an ill-posed deconvolution: the per-bin ``tol`` criterion is never
+# met in ``max_iter`` steps (the convergence gate then skipped transport), and
+# iterating further only fits sampling noise.
+_PRIOR_EM_LOGLIK_TOL = 1.0e-4
+
 
 def _floating(t: Tensor) -> Tensor:
     """Keep a floating dtype (float64 stays float64); cast integers to the default dtype."""
@@ -532,7 +539,6 @@ class ShiftFactoredPredictiveTransport:
         source_inputs: Tensor | None = None,
         source_representations: Tensor | None = None,
     ) -> "ShiftFactoredPredictiveTransport":
-        del source_predictions
         cfg = self.config
         targets = _as_1d(source_targets)
         support = _support_grid_from_targets(
@@ -540,9 +546,17 @@ class ShiftFactoredPredictiveTransport:
             n_support=cfg.n_support,
             support_margin=cfg.support_margin,
         )
-        edges = _support_edges(support)
-        edges_cpu = edges.detach().cpu().to(dtype=targets.dtype)
-        source_prior = torch.histogram(targets, bins=edges_cpu)[0].double()
+        # Source prior on the support grid = mean source predictive probability,
+        # the marginal the (calibrated) predictive posteriors integrate to. EM
+        # reweights posteriors by q / pi, which is consistent only for this pi
+        # (Saerens et al. 2002). The eps-clamped label histogram used before is
+        # noisy on a fine grid and empty on the margins, where the predictive
+        # still has mass: q / pi blew up there and EM collapsed onto empty bins
+        # (prior TV ~1 with no shift).
+        source_density, _ = _batch_to_support_density(source_predictions, support, cfg.eps)
+        source_prior = _to_tensor(_density_to_probabilities(support, source_density, cfg.eps)).mean(
+            dim=0
+        )
         source_prior = source_prior.clamp(cfg.eps, None)
         source_prior = source_prior / source_prior.sum()
 
@@ -646,7 +660,7 @@ class ShiftFactoredPredictiveTransport:
             source_prior=self.state_.source_prior,
             sample_size=cfg.prior_estimation_rows,
             random_state=cfg.random_state,
-            config=LabelShiftEMConfig(eps=cfg.eps),
+            config=LabelShiftEMConfig(eps=cfg.eps, loglik_tol=_PRIOR_EM_LOGLIK_TOL),
         )
         estimate = adapter.estimate(
             cast(np.ndarray, probabilities[mask]),

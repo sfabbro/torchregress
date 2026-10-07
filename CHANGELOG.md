@@ -99,6 +99,21 @@ remove are decided for 0.4.0.
     histogram spans [0, 1], the Qini area is finite, RMSCE ignores empty bins,
     `plot_performance_comparison` knows more lower-is-better metrics, and
     plots that create their own figure close it.
+- Found by the harness after the audit (tests in
+  `tests/audit/test_audit_postharness.py`):
+  - `SkewTLoss` / `skew_t_nll`: the gradient with respect to the skewness was
+    exactly zero at `alpha = 0`, so heads initialised there never learned
+    skew. The Student-t CDF term is now smooth at 0 and log-space in the
+    tails; values are unchanged (match scipy).
+  - `ShiftFactoredPredictiveTransport`: the source prior is the mean source
+    predictive distribution on the support grid (it was an eps-clamped label
+    histogram), and support-grid EM stops on a log-likelihood plateau. EM no
+    longer collapses onto empty margin bins (prior TV ~1 with no shift) and
+    prior transport is applied under label shift. `estimate_target_prior_em`
+    gives classes with no source mass a target prior of 0; new
+    `LabelShiftEMConfig.loglik_tol` (default off).
+  - Docs: EM label-shift estimation needs calibrated source posteriors (BBSE
+    does not).
 - Metrics return float64 for float64 inputs (18 metrics used to return
   float32), and functional metric wrappers move their internal torchmetrics
   state to the input device. Calibration-error histograms no longer use

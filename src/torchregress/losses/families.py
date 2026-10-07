@@ -39,7 +39,6 @@ from .loss_registry import register_regression_loss
 _SQRT2 = math.sqrt(2.0)
 _LOG_2PI = math.log(2.0 * math.pi)
 _HALF_LOG_2PI = 0.5 * _LOG_2PI
-_TINY_F32 = float(torch.finfo(torch.float32).tiny)
 
 
 # ---------------------------------------------------------------------------
@@ -224,12 +223,61 @@ def skew_t_nll_elementwise(y_pred: Tensor, target: Tensor, eps: float = 1e-6) ->
 
 
 def _student_t_log_cdf_vec(x: Tensor, df: Tensor) -> Tensor:
-    """Log CDF of Student-t with elementwise dof ``df`` (tensor-valued)."""
-    xb = df / (df + x * x)
-    inc = _reg_inc_beta(df / 2.0, torch.full_like(df, 0.5), xb)
-    half_log = math.log(0.5) + torch.log(inc.clamp_min(torch.finfo(inc.dtype).tiny))
-    # T(w) = 0.5 * I_x(df/2, 1/2) for w <= 0; 1 - that for w > 0.
-    return torch.where(x <= 0.0, half_log, torch.log1p(-torch.exp(half_log.clamp(max=-_TINY_F32))))
+    """Log CDF of Student-t with elementwise dof ``df`` (tensor-valued).
+
+    Two continued-fraction branches of the regularised incomplete beta, each
+    used where it converges (Numerical Recipes ``betai`` switch), computed in
+    float64 and returned in the dtype of ``x``:
+
+    * centre, ``u = x^2 / (df + x^2) < 1.5 / (df/2 + 2.5)``:
+      ``T(x) = 1/2 + 1/2 sign(x) I_u(1/2, df/2)``. The prefactor
+      ``sign(x) u^{1/2} = x / sqrt(df + x^2)`` is written without ``|x|`` or
+      ``log u``, so the value and its gradient are smooth through ``x = 0``
+      (``dT/dx = t_df(0)`` there).
+    * tails: ``T(x) = 1/2 I_{df/(df+x^2)}(df/2, 1/2)`` for ``x < 0`` (and
+      ``1 -`` that for ``x > 0``), evaluated in log space.
+
+    The previous single-branch form evaluated ``I_{df/(df+x^2)}(df/2, 1/2)``
+    with the argument clamped at ``1 - 1e-15``; ``d/dx [df/(df+x^2)] = 0`` at
+    ``x = 0`` and the clamp has a zero gradient, so ``d log T / dx`` was
+    exactly 0 at ``x = 0`` (the skew-t never learned ``alpha`` from 0).
+    """
+    dtype = x.dtype
+    f64 = torch.float64
+    x64 = x.to(f64)
+    df64 = df.to(f64)
+    x2 = x64 * x64
+    denom = df64 + x2
+    u = x2 / denom  # 1 - xb, exact for small |x|
+    xb = df64 / denom
+    half_df = 0.5 * df64
+    central = u < 1.5 / (half_df + 2.5)
+    # One continued-fraction call for both branches: I_u(1/2, df/2) in the
+    # centre, I_xb(df/2, 1/2) in the tails. Unused-branch inputs are replaced
+    # by safe values so no inf/NaN reaches the backward pass through where().
+    aa = torch.where(central, torch.full_like(df64, 0.5), half_df)
+    bb = torch.where(central, half_df, torch.full_like(df64, 0.5))
+    cf = _betacf(aa, bb, torch.where(central, u, xb))
+    ln_norm = torch.lgamma(aa + bb) - torch.lgamma(aa) - torch.lgamma(bb) - torch.log(aa)
+
+    # centre: s = sign(x) I_u(1/2, df/2) = x / sqrt(df + x^2) * xb^{df/2} * norm * cf
+    x_c = torch.where(central, x64, torch.zeros_like(x64))
+    denom_c = torch.where(central, denom, torch.ones_like(denom))
+    xb_c = torch.where(central, xb, torch.ones_like(xb))
+    s = x_c / torch.sqrt(denom_c) * torch.exp(ln_norm + bb * torch.log(xb_c)) * cf
+    log_central = math.log(0.5) + torch.log1p(s)
+
+    # tails: log(1/2 I_xb(df/2, 1/2)) = log 1/2 + norm + df/2 log xb + 1/2 log u + log cf
+    tiny = torch.finfo(f64).tiny
+    xb_t = torch.where(central, torch.full_like(xb, 0.5), xb).clamp_min(tiny)
+    u_t = torch.where(central, torch.full_like(u, 0.5), u)
+    cf_t = torch.where(central, torch.ones_like(cf), cf).clamp_min(tiny)
+    half_log = (
+        math.log(0.5) + ln_norm + aa * torch.log(xb_t) + bb * torch.log(u_t) + torch.log(cf_t)
+    )
+    upper = torch.log1p(-torch.exp(torch.where(x64 > 0.0, half_log, torch.full_like(x64, -1.0))))
+    log_tail = torch.where(x64 > 0.0, upper, half_log)
+    return torch.where(central, log_central, log_tail).to(dtype)
 
 
 def _reg_inc_beta(a: Tensor, b: Tensor, x: Tensor) -> Tensor:

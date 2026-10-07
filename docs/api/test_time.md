@@ -75,11 +75,11 @@ EM-based target-prior estimation and Gaussian predictive adjustment under
 
 | Symbol | Description |
 |:-------|:------------|
-| `LabelShiftEMConfig` | Dataclass: `max_iter=100`, `tol=1e-6`, `eps=1e-8`. |
+| `LabelShiftEMConfig` | Dataclass: `max_iter=100`, `tol=1e-6` (max per-class prior change), `eps=1e-8`, `loglik_tol=None` (optional: also stop once the mean target log-likelihood gains less than this per iteration). |
 | `LabelShiftEstimate` | Frozen result: `source_prior`, `target_prior`, `iterations`, `converged`. |
 | `apply_label_shift_correction` | `(probabilities, *, source_prior, target_prior, eps=1e-8)` — Posterior correction under prior ratio $p_{\text{tgt}}/p_{\text{src}}$. |
-| `estimate_target_prior_em` | `(probabilities, *, source_prior=None, sample_weights=None, sample_size=None, random_state=0, config=None)` — EM target-prior estimate (Lipton–Wang–Smola 2018). |
-| `PosteriorLabelShiftAdapter` | `(*, source_prior=None, sample_size=None, random_state=0, config=None)` — Reusable adapter; `.estimate(probs)`, `.transform(probs, target_prior=...)`, `.fit_transform(probs)`. |
+| `estimate_target_prior_em` | `(probabilities, *, source_prior, sample_weights=None, sample_size=None, random_state=0, config=None)` — EM target-prior estimate (Saerens–Latinne–Decaestecker 2002). Requires calibrated source posteriors (see below); classes with source prior `<= eps` are excluded and get target prior 0. |
+| `PosteriorLabelShiftAdapter` | `(*, source_prior, sample_size=None, random_state=0, config=None)` — Reusable EM adapter (`source_prior` is required); `.estimate(probs, sample_weights=None)` returns a `LabelShiftEstimate`, `.transform(probs, target_prior=None)` reweights the posteriors (estimating the target prior first when none is given). |
 | `GaussianLabelShiftConfig` | Dataclass: `n_bins=32`, `estimation_rows`, `top_fraction=0.5`, `reference_size=2048`, `seed=0`, `eps=1e-8`. |
 | `gaussian_bin_edges_from_targets` | `(targets, n_bins)` — Quantile-based bin edges. |
 | `gaussian_bin_probabilities` | `(mean, std, bin_edges, *, eps=1e-8)` — Discretize Gaussian predictions to bin probabilities. |
@@ -87,8 +87,41 @@ EM-based target-prior estimation and Gaussian predictive adjustment under
 | `correct_gaussian_predictions_for_label_shift` | `(*, mean, std, source_targets, features=None, config=None)` — End-to-end: discretize → EM estimate → backproject → corrected `(mean, std, metadata)`. |
 | `estimate_target_prior_bbse` | `(probabilities_source, labels_source, probabilities_target, *, cond_threshold=1e8)` — Estimate target priors under label shift with BBSE (Black-Box Shift Estimation): invert the source confusion matrix against the target mean predicted-label distribution. |
 
-**Reference:** Lipton, Wang, Smola, "Detecting and Correcting for Label Shift
-with Black Box Predictors" (ICML 2018).
+EM iterates the Saerens et al. fixed point: with source posteriors $p_{ik} = p_s(y = k \mid x_i)$
+and source prior $\pi$,
+
+$$
+\hat q^{(t+1)}_k = \frac{1}{n} \sum_{i=1}^{n}
+\frac{p_{ik}\, \hat q^{(t)}_k / \pi_k}{\sum_j p_{ij}\, \hat q^{(t)}_j / \pi_j},
+$$
+
+which increases the target log-likelihood
+$\frac{1}{n}\sum_i \log \sum_k p_{ik}\, q_k / \pi_k$ at every step.
+
+!!! warning "EM needs calibrated posteriors; BBSE does not"
+    The EM estimate is consistent only when `probabilities` are **calibrated source
+    posteriors** whose source average equals `source_prior`
+    ($\mathbb{E}_s[p_s(y = k \mid x)] = \pi_k$) and label shift holds at the level of the
+    classes or bins ($p(x \mid y = k)$ shared by source and target). Binned Gaussians
+    (`gaussian_bin_probabilities(mean, std, edges)`) qualify only if `N(mean, std)` is a
+    calibrated predictive $p_s(y \mid x)$. A prediction that is a noisy copy of the label
+    (`pred = y + noise`) with `std` the residual spread gives the *likelihood*
+    $p(\text{pred} \mid y)$ instead: no shrinkage toward the prior, over-dispersed bins whose
+    source average differs from the source prior, and EM stops at a biased fixed point.
+    On such a synthetic Gaussian shift (5 quantile bins) EM reached
+    prior TV 0.26 against 0.32 uncorrected, while BBSE, which only inverts a confusion matrix,
+    reached 0.06; with calibrated posteriors and a bin-level shift EM is within 0.01 of the
+    true prior (20 000 target rows).
+    Calibrate the posteriors first, pass the **mean source posterior** as `source_prior`
+    (which restores the fixed-point condition above), or use `estimate_target_prior_bbse`.
+    On many overlapping bins the maximum-likelihood prior is an ill-posed deconvolution:
+    iterating to `tol` fits sampling noise, so set `loglik_tol` (e.g. `1e-4`).
+
+| # | Reference |
+|:-:|:----------|
+| 1 | Saerens, Latinne, Decaestecker, "Adjusting the outputs of a classifier to new a priori probabilities: a simple procedure", *Neural Computation* 14(1), 2002. |
+| 2 | Lipton, Wang, Smola, "Detecting and Correcting for Label Shift with Black Box Predictors" (ICML 2018). |
+| 3 | Alexandari, Kundaje, Shrikumar, "Maximum Likelihood with Bias-Corrected Calibration is Hard-To-Beat at Label Shift Adaptation" (ICML 2020). |
 
 ```python
 import numpy as np
@@ -262,6 +295,22 @@ under target shift.
 | `ShiftFactoredTransportConfig` | Comprehensive dataclass: `n_support=256`, `support_margin=0.05`, `alpha=0.1`, `top_fraction=0.5`, `min_selection_count=16`, `local_consistency_k=5`, `prior_estimation_rows`, `prior_transport_strength=0.5`, `prior_ratio_clip=2.0`, `prior_transport_requires_convergence=True`, `prior_transport_min_selected_fraction`, `prior_transport_max_prior_tv`, `random_state=0`, `enable_alignment=True`, `allow_input_alignment_rerun=False`, `enable_uncertainty_inflation=True`, `uncertainty_base_temperature=1.0`, `uncertainty_slope=0.2`, `uncertainty_max_temperature=2.0`, `uncertainty_clip_quantile=0.05`, `gaussian_conformal_uses_native_interval=True`, `eps=1e-8`. |
 | `ShiftFactoredTransportState` | Frozen dataclass: `source_support`, `source_prior`, `source_targets`, `source_inputs`, `source_representations`, `last_target_prior`, `conformal_method`, `metadata`. |
 | `ShiftFactoredPredictiveTransport(config=None)` | `.fit_source(source_predictions, source_targets, *, source_inputs=None, source_representations=None)`, `.adapt_unlabeled_target(*, target_predictions=None, target_inputs=None, target_representations=None, predictor=None)`, `.calibrate_target(calibration_predictions, calibration_targets, *, method=None)`, `.predict(...)`, `.apply_conformal(batch)`, `.ppi_target_ci(estimand, labeled_targets, labeled_predictions, unlabeled_predictions, *, x_labeled=None, x_unlabeled=None, q=None, alpha=0.1, n_boot=2000, seed=None)`. |
+
+`fit_source` discretises the source predictive distributions on the support grid
+(`n_support` points spanning the source labels plus `support_margin`) and uses their
+**mean** as the source prior — the marginal the predictive posteriors integrate to, which
+the EM prior estimate in `adapt_unlabeled_target` needs (see the warning above). EM runs on
+the `top_fraction` most confident target rows and stops once the mean target
+log-likelihood gains less than `1e-4` nats per row per iteration; the estimate is then
+shrunk toward the source prior and ratio-clipped (`prior_transport_strength`,
+`prior_ratio_clip`). Metadata reports `target_prior_raw` (EM), `target_prior`
+(stabilised), `prior_source_target_tv`, `estimate_converged` and `transport_applied`.
+
+!!! info "Confidence selection on fine grids"
+    With homoscedastic predictives the most confident rows on a fine grid are mostly those
+    whose predictive is truncated at the grid edge, so `top_fraction < 1` over-weights
+    extreme predictions and the raw EM prior overshoots the shift somewhat. Use
+    `top_fraction=1.0` when the predictive spread carries no per-row confidence.
 
 The transport supports PPI (`mean` / `quantile` / `ols` estimands) and
 dispatches conformal calibration to `cqr` / `cti` / `interval` / `split`
