@@ -208,14 +208,73 @@ def test_H_002_transport_recovers_label_shift(n_support: int, shift: float) -> N
     assert meta["prior_source_target_tv"] > 0.2
     src_mean, est_mean, true_mean = float(src @ support), float(est @ support), float(yt.mean())
     # Estimated target-prior mean moves with the true target label mean (source ~0).
-    # Default top_fraction=0.5 keeps the most confident rows, which on a fine grid
-    # over-selects rows whose predictive is truncated at the grid edge, so the
-    # estimate overshoots a little (see the top_fraction=1.0 test below).
+    # The confident-row selection ranks on the unrenormalised in-grid peak, so grid-edge
+    # truncation does not bias the estimate (it used to overshoot by up to 0.3 |shift|).
     assert np.sign(est_mean - src_mean) == np.sign(shift)
-    assert abs(est_mean - true_mean) < 0.4 * abs(shift)
+    assert abs(est_mean - true_mean) < 0.1 * abs(shift)
     # The stabilised (shrunk, ratio-clipped) prior moves the same way.
     adapted = np.asarray(meta["target_prior"])
     assert np.sign(float(adapted @ support) - src_mean) == np.sign(shift)
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("shift", [0.8, -0.8])
+@pytest.mark.parametrize("n_support", [16, 64, 256])
+def test_H_002_default_selection_is_not_biased_by_edge_truncation(
+    n_support: int, shift: float, seed: int
+) -> None:
+    """Default ``top_fraction=0.5``: prior error < 0.1 |shift| on coarse and fine grids.
+
+    Renormalising a predictive that is cut by the grid edge inflates its peak bin
+    probability, so ranking confidence on ``probabilities.max()`` favoured edge rows
+    on fine grids (prior mean error up to ~0.3 |shift| at 256 bins).
+    """
+    meta, support, _, yt = _transport(n_support, shift=shift, seed=seed, features=True)
+    est = np.asarray(meta["target_prior_raw"])
+    assert meta["estimate_converged"] is True
+    assert abs(float(est @ support) - float(yt.mean())) < 0.1 * abs(shift)
+
+
+def test_H_002_select_high_confidence_ranks_on_custom_scores() -> None:
+    from torchregress.test_time import select_high_confidence
+
+    probs = np.array([[0.9, 0.1], [0.6, 0.4], [0.8, 0.2], [0.55, 0.45]])
+    default = select_high_confidence(probs, top_fraction=0.5)
+    np.testing.assert_array_equal(default, [True, False, True, False])
+    custom = select_high_confidence(probs, top_fraction=0.5, scores=np.array([0.0, 3.0, 1.0, 2.0]))
+    np.testing.assert_array_equal(custom, [False, True, False, True])
+    # The min_count fallback ranks on the same scores.
+    fallback = select_high_confidence(
+        probs, top_fraction=0.25, min_count=3, scores=np.array([0.0, 3.0, 1.0, 2.0])
+    )
+    np.testing.assert_array_equal(fallback, [False, True, True, True])
+    with pytest.raises(ValueError, match="scores"):
+        select_high_confidence(probs, top_fraction=0.5, scores=np.ones(3))
+
+
+def test_H_002_in_grid_mass_matches_closed_form_for_every_family() -> None:
+    from torchregress.test_time import transport as tt
+
+    support = torch.linspace(-1.0, 1.0, 64, dtype=F64)
+    edges = tt._support_edges(support)
+    mean = torch.tensor([0.0, 0.9, 1.0, 3.0], dtype=F64)
+    std = torch.tensor([0.1, 0.5, 0.5, 0.5], dtype=F64)
+    expected = st.norm.cdf(float(edges[-1]), mean.numpy(), std.numpy()) - st.norm.cdf(
+        float(edges[0]), mean.numpy(), std.numpy()
+    )
+    batch = PredictiveBatch(point=mean, mean=mean, std=std)
+    _, meta = tt._batch_to_support_density(batch, support, 1e-8)
+    np.testing.assert_allclose(meta["in_grid_mass"].numpy(), expected, atol=1e-9)
+    assert meta["in_grid_mass"][0] > 0.999 and meta["in_grid_mass"][3] < 0.01
+
+    # A density on a wider grid gives the same mass (trapezoid error only).
+    wide = torch.linspace(-6.0, 6.0, 4001, dtype=F64)
+    dens = torch.as_tensor(
+        st.norm.pdf(wide.numpy()[None], mean.numpy()[:, None], std.numpy()[:, None])
+    )
+    dbatch = PredictiveBatch(point=mean, support=wide, density=dens)
+    _, dmeta = tt._batch_to_support_density(dbatch, support, 1e-8)
+    np.testing.assert_allclose(dmeta["in_grid_mass"].numpy(), expected, atol=5e-3)
 
 
 @pytest.mark.parametrize("n_support", [16, 256])

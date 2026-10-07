@@ -78,6 +78,59 @@ res = ppi_calibrated_mean_ci(y_labeled, pred_labeled, pred_unlabeled,
 
 ---
 
+## Orthogonal (double/debiased ML) inference
+
+Cross-fitted estimation of a low-dimensional target `theta` in the partially linear
+model `y = theta x + eta(z) + eps` (Chernozhukov et al., 2018); the nuisances
+`E[y|z]` and `E[x|z]` are ridge regressions on a feature basis of `z`, fitted out of fold
+on one shared split.
+
+| Symbol | Description |
+|:-------|:------------|
+| `orthogonal_partially_linear(y, x, z, *, folds=5, ridge=1e-6, nuisance_degree=3, nuisance_features=None, confidence=0.95, seed=0)` | Returns an `OrthogonalEstimate` (`theta`, influence-function `sigma`, `ci_low`, `ci_high`, `n`, `folds`, `nuisance_r2_x`, `nuisance_r2_y`, `cross_fitted`). `ridge` is a float penalty (default `1e-6`, a jitter for the polynomial basis) or `"gcv"` / `"loo"`: the penalty is then chosen per nuisance and training fold by generalized cross-validation or exact leave-one-out error (closed form from one SVD, unpenalised intercept). `nuisance_features` maps `z` to a custom basis. |
+| `random_fourier_features(z, *, n_features=256, bandwidth="median", standardize=True, polynomial_degree=1, seed=0)` | Random Fourier features of a Gaussian kernel (Rahimi and Recht, 2007) for `nuisance_features`. `bandwidth="median"` is the median pairwise distance of the standardised `z` on a seeded subsample; a float fixes it. `polynomial_degree` appends per-covariate powers of the standardised `z` (`0` for the bare features). |
+| `median_heuristic_bandwidth(z, *, n_subsample=1000, seed=0)` | The median-heuristic kernel bandwidth used above. |
+| `naive_linear_estimate(y, x)` | OLS slope ignoring `z`: the biased baseline. |
+
+```python
+from torchregress.inference import orthogonal_partially_linear, random_fourier_features
+
+estimate = orthogonal_partially_linear(
+    y, x, z,
+    nuisance_features=lambda z: random_fourier_features(z, seed=0),
+    ridge="gcv",
+)
+print(estimate.theta, estimate.ci_low, estimate.ci_high)
+```
+
+!!! tip "Choosing the nuisance basis"
+    Monte Carlo over 200 replications, n = 500, 95% intervals (harness
+    `orthogonal_inference` designs):
+
+    | Design | Nuisance | Bias | Coverage | SE ratio |
+    |:--|:--|--:|--:|--:|
+    | CCDDHNR-2018 (p = 20, theta = 0.5) | RFF, unit bandwidth, `ridge=1e-2` (old recipe) | +0.008 | 0.785 | 0.65 |
+    | | RFF, median bandwidth, `ridge="gcv"` (defaults) | +0.004 | 0.955 | 1.02 |
+    | | cubic polynomial (default basis) | +0.005 | 0.930 | 0.91 |
+    | cubic (p = 5, theta = 1) | RFF, unit bandwidth, `ridge=1e-2` (old recipe) | +0.060 | 0.820 | 0.73 |
+    | | RFF, median bandwidth, `ridge="gcv"` (defaults) | +0.016 | 0.900 | 0.84 |
+    | | the same with `polynomial_degree=3` | -0.002 | 0.945 | 0.93 |
+    | | cubic polynomial (default basis) | -0.001 | 0.945 | 0.92 |
+
+    Random features alone cannot reproduce a cubic trend, which is why `polynomial_degree`
+    defaults to a linear part. Raise it to 3 for polynomial-like nuisances; on
+    the smooth sigmoid nuisances of CCDDHNR it costs a little bias
+    (+0.009, 2.7 standard errors) because 60 extra columns add nuisance variance, and the
+    plain RFF default is the better choice there. The previous recipe (`W ~ N(0, 1/K)`
+    on raw `z`, no linear part, `ridge=1e-2`) is `random_fourier_features(z, bandwidth=K**0.5,
+    standardize=False, polynomial_degree=0)` with `ridge=1e-2`.
+
+**Reference:** Chernozhukov, Chetverikov, Demirer, Duflo, Hansen, Newey, Robins,
+"Double/debiased machine learning for treatment and structural parameters" (Econometrics
+Journal, 2018).
+
+---
+
 ## Quick example
 
 ```python

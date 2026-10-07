@@ -170,9 +170,27 @@ def _gaussian_density_on_support(mean: Tensor, std: Tensor, support: Tensor, eps
     return cast(Tensor, _to_numpy_if_inputs_were(result, mean, std, support))
 
 
+def _gaussian_in_grid_mass(mean: Tensor, std: Tensor, edges: Tensor, eps: float) -> Tensor:
+    """Probability mass of ``N(mean, std)`` between the outer edges of the support grid."""
+    mu = _to_tensor(mean).double().reshape(-1)
+    sigma = _to_tensor(std).double().reshape(-1).clamp(eps, None)
+    lower = torch.special.ndtr((edges[0] - mu) / sigma)
+    upper = torch.special.ndtr((edges[-1] - mu) / sigma)
+    return (upper - lower).clamp(0.0, 1.0)
+
+
 def _resample_density(
-    support_in: Tensor, density_in: Tensor, support_out: Tensor, eps: float
+    support_in: Tensor,
+    density_in: Tensor,
+    support_out: Tensor,
+    eps: float,
+    mass: list[Tensor] | None = None,
 ) -> Tensor:
+    """Resample densities onto ``support_out`` and renormalise.
+
+    If ``mass`` is a list, the fraction of each input density's integral that
+    falls on the output grid (before renormalisation) is appended to it.
+    """
     supp_out = _to_tensor(support_out).double().reshape(-1)
     supp_in = _to_tensor(support_in).double()
     dens_in = _to_tensor(density_in).double()
@@ -183,6 +201,11 @@ def _resample_density(
     else:
         for idx in range(dens_in.shape[0]):
             out[idx] = _interp_np(supp_out, supp_in[idx], dens_in[idx], left=0.0, right=0.0)
+    if mass is not None:
+        total = torch.trapezoid(dens_in.clamp(0.0, None), supp_in, dim=-1)
+        # Riemann sum over the grid cells (width dx), matching _density_to_probabilities.
+        inside = out.clamp(0.0, None).sum(dim=-1) * _uniform_dx(supp_out)
+        mass.append((inside / total.clamp(eps, None)).clamp(0.0, 1.0))
     result = _normalize_density(supp_out, out, eps)
     return cast(Tensor, _to_numpy_if_inputs_were(result, density_in))
 
@@ -233,6 +256,7 @@ def _batch_to_support_density(
     eps: float,
 ) -> tuple[Tensor, dict[str, Any]]:
     metadata: dict[str, Any] = {}
+    mass_parts: list[Tensor] = []
     hinted_family = None
     if batch.extra is not None:
         raw_family = batch.extra.get("family")
@@ -244,8 +268,10 @@ def _batch_to_support_density(
             _to_tensor(batch.density),
             support,
             eps,
+            mass_parts,
         )
         metadata["family"] = hinted_family or "density"
+        metadata["in_grid_mass"] = mass_parts[0]
         return density, metadata
     if batch.bar_logits is not None and batch.bin_edges is not None:
         converted = batch.with_density(n_support=len(support))
@@ -256,8 +282,10 @@ def _batch_to_support_density(
             _to_tensor(converted.density),
             support,
             eps,
+            mass_parts,
         )
         metadata["family"] = "bar"
+        metadata["in_grid_mass"] = mass_parts[0]
         return density, metadata
     if batch.quantiles is not None and batch.quantile_levels is not None:
         converted = batch.with_density(n_support=len(support))
@@ -268,9 +296,11 @@ def _batch_to_support_density(
             _to_tensor(converted.density),
             support,
             eps,
+            mass_parts,
         )
         metadata["family"] = "quantile"
         metadata["quantile_levels"] = list(batch.quantile_levels)
+        metadata["in_grid_mass"] = mass_parts[0]
         return density, metadata
     if batch.samples is not None:
         converted = batch.with_density(n_support=len(support))
@@ -281,8 +311,10 @@ def _batch_to_support_density(
             _to_tensor(converted.density),
             support,
             eps,
+            mass_parts,
         )
         metadata["family"] = hinted_family or "samples"
+        metadata["in_grid_mass"] = mass_parts[0]
         return density, metadata
     if batch.mean is not None and batch.std is not None:
         density = _gaussian_density_on_support(
@@ -292,6 +324,10 @@ def _batch_to_support_density(
             eps,
         )
         metadata["family"] = "gaussian"
+        edges = _support_edges(support)
+        metadata["in_grid_mass"] = _gaussian_in_grid_mass(
+            _to_tensor(batch.mean), _to_tensor(batch.std), edges, eps
+        )
         return density, metadata
     if batch.point is not None:
         density = _point_density_on_support(_to_tensor(batch.point), support, eps)
@@ -648,11 +684,20 @@ class ShiftFactoredPredictiveTransport:
             max(cfg.min_selection_count, probabilities.shape[1] * 2),
             probabilities.shape[0],
         )
+        # Rank on the *unrenormalised* in-grid maximum bin probability.  After
+        # renormalisation a predictive that is cut by the grid edge has an inflated
+        # peak, so ranking on ``probabilities.max()`` favours truncated rows and
+        # biases the EM prior estimate toward the edges on fine grids.
+        in_grid_mass = metadata.get("in_grid_mass")
+        confidence = np.asarray(_to_numpy(probabilities), dtype=float).max(axis=1)
+        if in_grid_mass is not None:
+            confidence = confidence * _to_numpy(in_grid_mass).astype(float)
         mask = torch.as_tensor(
             select_high_confidence(
                 cast(np.ndarray, probabilities),
                 top_fraction=cfg.top_fraction,
                 min_count=min_count,
+                scores=confidence,
             )
         )
 

@@ -25,6 +25,7 @@ EXPECTED_EXPORTS = {
         "viz",
         "comparison",
         "utils",
+        "models",
         "BaseLoss",
         "RegressionLoss",
         "DistributionLoss",
@@ -130,6 +131,15 @@ EXPECTED_EXPORTS = {
         "pseudo_label_acceptance_rate",
         "uncertain_gt_metrics_report",
     ],
+    "models": [
+        "TabularMLP",
+        "PeriodicEmbedding",
+        "TabularPreprocessor",
+        "TabularFit",
+        "TabularEnsembleFit",
+        "fit_tabular",
+        "fit_tabular_ensemble",
+    ],
     "ensemble": [
         "BaseEnsembleModel",
         "EnsembleFitConfig",
@@ -185,8 +195,10 @@ EXPECTED_EXPORTS = {
     "inference": [
         "OrthogonalEstimate",
         "PPIConfig",
+        "median_heuristic_bandwidth",
         "naive_linear_estimate",
         "orthogonal_partially_linear",
+        "random_fourier_features",
         "ppi_calibrated_mean_ci",
         "ppi_mean_ci",
         "ppi_pp_mean_ci",
@@ -616,6 +628,7 @@ def test_public_exports_snapshot_non_losses() -> None:
     module_map = {
         "torchregress": tr,
         "metrics": tr.metrics,
+        "models": tr.models,
         "ensemble": tr.ensemble,
         "semi_supervised": tr.semi_supervised,
         "algorithms": tr.algorithms,

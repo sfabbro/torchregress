@@ -7,8 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 **Algorithm freeze for 0.3.0 (from 2026-10-05):** no new methods or method changes
-until 0.3.0 ships; only fixes, tests, docs and packaging. Methods to add or
+until 0.3.0 ships, except the competitive-gap items decided on 2026-10-07
+(`TabularMLP`, model-agnostic UQ wrappers, calibrated-ensemble recipe, and
+the flow, DML and transport improvements below). Other methods to add or
 remove are decided for 0.4.0.
+
+### Added
+- `inference.random_fourier_features` and `inference.median_heuristic_bandwidth`: random Fourier feature nuisance basis for `orthogonal_partially_linear` with a median-heuristic bandwidth (median pairwise distance of the standardised `z` on a seeded subsample), per-covariate polynomial terms (`polynomial_degree`, default 1) and a seeded draw. `orthogonal_partially_linear(ridge="gcv" | "loo")` picks the nuisance ridge penalty per nuisance and training fold by generalized cross-validation or exact leave-one-out error (closed form from one SVD, unpenalised intercept); a float `ridge` (default `1e-6`) behaves exactly as before. Over 200 replications at n = 500 the old harness recipe (unit-bandwidth RFF, `ridge=1e-2`, no linear part) gave Coverage95 0.785 / bias +0.008 on CCDDHNR-2018 and 0.820 / +0.060 on the cubic design; the new defaults give 0.955 / +0.004 and 0.900 / +0.016, and `polynomial_degree=3` gives 0.945 / -0.002 on the cubic design (plan item B5).
+- `losses.create_flow_model(bound=...)` sets the NSF spline tail bound (zuko fixes it at 5), and `losses.recommended_tail_bound(y_standardised)` derives it from the training target (data range with 25% head-room, clipped to [5, 25]). `NormalizingFlowLoss`'s out-of-range warning reports the actual bound. New "Training recipe for NLL and calibration" section in `docs/losses/nflows.md` (validation early stopping, derived bound, 16 bins): test NLL 1.272 -> 1.201 (skewed), 1.935 -> 1.852 (Student-t 3 df), 6.144 -> 5.417 (`load_diabetes`) with equal or better 90% interval scores, versus the fixed 60-epoch recipe of the harness `pzflow_parity` row (plan item B4). Library defaults (`bins=8`, bound 5) are unchanged.
+- `test_time.select_high_confidence(scores=...)`: optional per-row ranking score (default: maximum probability).
+- `torchregress.models`: `TabularMLP` (periodic numeric embeddings, SiLU blocks, dropout), `TabularPreprocessor` (median/IQR scaling, smooth clipping, NaN imputation with missing indicators), `fit_tabular` / `fit_tabular_ensemble` (AdamW, one-cycle schedule, early stopping with restore-best-weights, target standardisation) and `TabularFit`. Works with any loss, including `GaussianNLLLoss` (`2 * D` outputs) and `MultiQuantileLoss`. Docs: `docs/methods/tabular_mlp.md`, `docs/api/models.md`. `models` is a new lazy top-level submodule (plan item B2).
 
 ### Changed
 - 28 plumbing helpers are no longer re-exported from `torchregress.utils` (and
@@ -35,6 +43,7 @@ remove are decided for 0.4.0.
   scipy 1.18.1 (PyPI) and the pixi lock (conda-forge torch 2.13.0).
 
 ### Fixed
+- `test_time.ShiftFactoredPredictiveTransport`: the confident-row selection (`top_fraction`, default 0.5) now ranks rows on the unrenormalised in-grid peak probability (maximum bin probability times the predictive mass inside the support grid) instead of the renormalised maximum. Renormalisation inflated the peak of predictives cut by the grid edge, so on fine grids the selection favoured them and the EM prior mean overshot a label shift by up to 0.32 |shift| at 256 bins (0.14 at 64); it is now below 0.07 |shift| at 16, 64 and 256 bins for shifts of +/-0.8. Selected rows, and therefore `target_prior` and the adapted predictive, change for a given input (plan item B6).
 - `inference.orthogonal_partially_linear`: both nuisance regressions (`E[x|z]`, `E[y|z]`) now share one cross-fitting split. Independent splits biased `theta` (-0.026, about 7.7 standard errors, over 200 replications of the DoubleML CCDDHNR-2018 design at n = 500); found by the harness `orthogonal_inference` suite against DoubleML on the same nuisance basis. Point estimates for a given `seed` change.
 - **0.3.0 release audit: 61 defects fixed**, each with a regression test in
   `tests/audit/` (full list with severities: `docs/reports/audit_0.3.0.md`).

@@ -231,7 +231,7 @@ std_calibrated = cal.calibrate_std(test_std, test_features)
 | `entropy_scores` | `(probabilities, *, eps=1e-8)` — Shannon entropy of normalised probabilities. |
 | `confidence_scores` | `(probabilities)` — Max probability per row. |
 | `pseudo_label_targets` | `(probabilities)` — `(argmax_labels, max_weights)` for self-training. |
-| `select_high_confidence` | `(probabilities, *, min_confidence=None, max_entropy=None, top_fraction=None, min_count=1)` — Composite selector with confidence / entropy / top-k gates. |
+| `select_high_confidence` | `(probabilities, *, min_confidence=None, max_entropy=None, top_fraction=None, min_count=1, scores=None)` — Composite selector with confidence / entropy / top-k gates. `scores` (one value per row, higher is more confident) replaces the maximum probability as the ranking key for `top_fraction` and the `min_count` fallback. |
 | `LocalConsistencyConfig` | Dataclass: `k=5`, `temperature=1.0`, `reference_size`, `max_exact_rows=4096`, `query_chunk_size=2048`, `random_state`, `eps=1e-8`. |
 | `local_consistency_weights` | `(features, probabilities, config=None)` — FTAT-style neighbourhood agreement (Bhattacharyya-like inner product of $\sqrt{p \cdot q}$), rescaled to mean 1. |
 
@@ -308,10 +308,14 @@ shrunk toward the source prior and ratio-clipped (`prior_transport_strength`,
 (stabilised), `prior_source_target_tv`, `estimate_converged` and `transport_applied`.
 
 !!! info "Confidence selection on fine grids"
-    With homoscedastic predictives the most confident rows on a fine grid are mostly those
-    whose predictive is truncated at the grid edge, so `top_fraction < 1` over-weights
-    extreme predictions and the raw EM prior overshoots the shift somewhat. Use
-    `top_fraction=1.0` when the predictive spread carries no per-row confidence.
+    The `top_fraction` most confident rows are ranked on the **unrenormalised in-grid peak
+    probability** (the maximum bin probability times the predictive mass inside the support
+    grid). A predictive cut by the grid edge has its peak inflated by renormalisation, so
+    ranking on the renormalised maximum favoured those edge rows on fine grids and the raw
+    EM prior overshot the shift by up to ~0.3 |shift| at 256 bins; with the in-grid peak the
+    error is below 0.1 |shift| at 16, 64 and 256 bins. Predictives with a constant spread
+    carry no per-row confidence either way: `top_fraction=1.0` is then equivalent and
+    uses every row.
 
 The transport supports PPI (`mean` / `quantile` / `ols` estimands) and
 dispatches conformal calibration to `cqr` / `cti` / `interval` / `split`

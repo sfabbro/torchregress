@@ -144,6 +144,7 @@ try:
         create_contrastive_flow_loss,
         create_flow_loss,
         create_flow_model,
+        recommended_tail_bound,
     )
 except ImportError:
     pass  # zuko not installed; normalizing flow features unavailable
@@ -330,6 +331,7 @@ __all__ = [
     "discrete_wasserstein1",
     "create_flow_loss",
     "create_flow_model",
+    "recommended_tail_bound",
     "create_gaussian_nll",
     "create_loss_from_config",
     "create_mdn_loss",
