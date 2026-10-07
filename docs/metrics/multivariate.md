@@ -6,7 +6,14 @@ This page covers metrics for evaluating multivariate regression models.
 
 ## `MultivariateRMSE`
 
-Computes the root mean squared error over vector outputs. It is a stateful
+Computes the root mean squared **Euclidean** error over vector outputs,
+
+$$
+\mathrm{RMSE} = \sqrt{\frac{1}{N}\sum_{i=1}^{N} \lVert \hat{y}_i - y_i \rVert_2^2},
+$$
+
+summing the squared error over the D output dimensions (not averaging): with
+equal error scales this is $\sqrt{D}$ times the per-element RMSE. It is a stateful
 metric: call `update(y_pred, y_true)` for each batch and `compute()` at the end,
 or call the instance on one batch.
 
@@ -17,7 +24,7 @@ or call the instance on one batch.
 
 **Returns:**
 
-The root mean squared error of the predictions.
+The root mean squared Euclidean error (a scalar tensor).
 
 **Example:**
 
@@ -34,8 +41,14 @@ rmse = metric(y_pred, y_true)
 
 ## `MultivariateMAE`
 
-Computes the mean absolute error over vector outputs. It takes the same
-arguments as `MultivariateRMSE`.
+Computes the mean **L1** error over vector outputs,
+
+$$
+\mathrm{MAE} = \frac{1}{N}\sum_{i=1}^{N} \lVert \hat{y}_i - y_i \rVert_1,
+$$
+
+summing the absolute error over the D output dimensions: this is D times the
+per-element MAE. It takes the same arguments as `MultivariateRMSE`.
 
 **Arguments (`update` and `__call__`):**
 
@@ -44,7 +57,7 @@ arguments as `MultivariateRMSE`.
 
 **Returns:**
 
-The mean absolute error of the predictions.
+The mean L1 error per sample (a scalar tensor).
 
 **Example:**
 

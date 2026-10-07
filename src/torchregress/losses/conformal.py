@@ -27,7 +27,6 @@ Composable features (all predictors):
 
 Loss wrappers (backward-compatible):
 - ConformalLoss: training loss + calibration + prediction
-- MultiDimensionalConformalLoss: multi-output variant
 """
 
 import logging
