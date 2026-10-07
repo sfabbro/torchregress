@@ -27,7 +27,7 @@ Use the comparison examples first when making implementation decisions:
 - `examples/imbalanced_regression.py`: tail performance vs calibration tradeoffs
 - `examples/evaluate_conformal_methods.py`: coverage vs interval width tradeoffs
 - `examples/ood_selective_prediction_comparison.py`: OOD vs selective-prediction tradeoffs (AURC, rejection policy, OOD gap)
-  now includes DeepEnsemble, heteroscedastic ensemble, MC dropout, `SWAG`, and `BNN`
+  now includes BaseEnsembleModel, heteroscedastic ensemble, MC dropout, `SWAG`, and `BNN`
 - `examples/ood_selective_prediction_realdata_comparison.py`: real-data OOD/selective comparison on Diabetes with covariate-shift split
 - `examples/eiv_method_comparison.py`: EIV method tradeoffs (analytic/MC/ODR/ensemble variants)
 - `examples/eiv_method_realdata_comparison.py`: real-data EIV tradeoffs on Diabetes with synthetic measurement-error injection
@@ -337,7 +337,7 @@ epistemic, aleatoric = ensemble_variance_decomposition(means, log_vars)
 ### [OOD / Selective Prediction Comparison (Real Data)](ood_selective_prediction_realdata_comparison.md)
 
 - Shared-budget comparison on Diabetes with deterministic covariate-shift OOD split.
-- Adds real-data evidence breadth for OOD/selective tradeoffs across DeepEnsemble/MCDropout/`SWAG`/`BNN` with split-conformal interval diagnostics.
+- Adds real-data evidence breadth for OOD/selective tradeoffs across BaseEnsembleModel/MCDropout/`SWAG`/`BNN` with split-conformal interval diagnostics.
 
 ### [EIV Method Comparison](eiv_method_comparison.md)
 

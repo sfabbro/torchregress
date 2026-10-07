@@ -61,7 +61,7 @@ This increases computational latency and memory consumption linearly with $S$ ($
 
 | Method | Epistemic? | Aleatoric? | API Reference | Best For |
 |:-------|:----------:|:----------:|:--------------|:---------|
-| **`DeepEnsemble`** | ✅ | ❌ | [DeepEnsemble](../../api/ensemble.md) | High-accuracy baseline |
+| **`BaseEnsembleModel`** | ✅ | ❌ | [BaseEnsembleModel](../../api/ensemble.md) | High-accuracy baseline |
 | **`HeteroscedasticEnsembleModel`** | ✅ | ✅ | [HeteroscedasticEnsembleModel](../../api/ensemble.md) | Full uncertainty |
 | **`BatchEnsemble`** | ✅ | ✅ | [HeteroscedasticBatchEnsembleModel](../../api/ensemble.md) | Production (fast) |
 | **Building blocks** | — | — | [BatchEnsembleLinear](../../api/ensemble.md), [BatchEnsembleMLPBackbone](../../api/ensemble.md) | Rank-1 layers / shared MLP backbone |
@@ -155,4 +155,4 @@ Continue with the ensemble journey:
 - [Ensemble Methods Detail](methods.md) — per-class API reference and parameter tables for every ensemble variant
 - [Calibration Metrics](../../metrics/calibration.md) — validate that your epistemic uncertainty estimates are honest
 - [Uncertainty Decomposition](../../guide/uncertainty-decomposition.md) — contracts and taxonomy for aleatoric vs. epistemic
-- [Ensemble Tutorial](../../examples/ensemble_methods.md) — runnable comparison of DeepEnsemble, BNN, SWAG, and BatchEnsemble
+- [Ensemble Tutorial](../../examples/ensemble_methods.md) — runnable comparison of BaseEnsembleModel, BNN, SWAG, and BatchEnsemble

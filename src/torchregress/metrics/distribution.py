@@ -735,6 +735,11 @@ def crps_from_samples(
 
     crps = term1 - term2
 
+    # Zero-clamp: CRPS is non-negative as a (proper) scoring rule, but the fair
+    # spread estimator is unbiased, not pointwise, and a single draw can round
+    # to slightly negative values (observed ~-1.5e-10 in float32).
+    crps = torch.clamp_min(crps, 0.0)
+
     if reduction == "none":
         return crps
     if reduction == "sum":

@@ -53,7 +53,7 @@ Negative log-likelihood loss for a mixture of Gaussian (readout noise) and Poiss
 
 **Methods:**
 
-- `forward(y_pred, y_true, mask=None, weights=None, extra_var=None)`: Computes the mixture loss
+- `forward(y_pred, target, extra_var=None, mask=None, weights=None, **kwargs)`: Computes the mixture loss. Note that `extra_var` is the **third positional** parameter — an optional per-sample variance added to the Gaussian component's variance when `extra_variance_model=True` (calling `loss_fn(y_pred, target, mask, weights, extra_var)` would bind `extra_var` to `mask`).
 
 The loss combines Poisson and Gaussian negative log-likelihoods using specified or learned weights:
 

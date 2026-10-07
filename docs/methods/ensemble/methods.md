@@ -6,7 +6,7 @@ Detailed API reference for all ensemble and Bayesian uncertainty methods.
 
 ---
 
-## BaseEnsembleModel
+## Member-based ensembles (`BaseEnsembleModel`)
 
 !!! abstract "Summary"
     Shared base for member-based ensembles: builds `ensemble_size` copies of a base module, runs them in parallel, and stacks outputs.
@@ -21,7 +21,7 @@ from torchregress.ensemble import BaseEnsembleModel
 
 ---
 
-## DeepEnsemble
+## Deep ensembles (`BaseEnsembleModel`)
 
 !!! abstract "Summary"
     Train $M$ **independently initialised** copies of a base model.
@@ -125,7 +125,7 @@ result = batch_ens.predict(x_test)
     When compute or memory budget prohibits $M$ full models.  BatchEnsemble achieves ~80 % of full-ensemble uncertainty quality at ~20 % extra cost.
 
 !!! warning "Member diversity limitation"
-    Because BatchEnsemble members share the same base weights $W$ and differ only through rank-1 perturbations, member diversity is inherently lower than in a `DeepEnsemble` with independently trained members. For tasks where epistemic uncertainty requires exploring truly disjoint modes in the loss landscape, `DeepEnsemble` is preferred despite the higher cost.
+    Because BatchEnsemble members share the same base weights $W$ and differ only through rank-1 perturbations, member diversity is inherently lower than in a `BaseEnsembleModel` with independently trained members. For tasks where epistemic uncertainty requires exploring truly disjoint modes in the loss landscape, `BaseEnsembleModel` is preferred despite the higher cost.
 
 !!! quote "Reference"
     Y. Wen, D. Tran, J. Ba. "BatchEnsemble: An Alternative Approach to Efficient Ensemble and Lifelong Learning." *ICLR*, **2020**.
