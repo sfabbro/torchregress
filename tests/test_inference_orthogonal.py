@@ -243,17 +243,18 @@ def test_median_heuristic_bandwidth_subsample_is_seeded_and_close():
 def test_random_fourier_features_shape_options_and_seed():
     z = torch.randn(50, 3, dtype=torch.float64)
     features = random_fourier_features(z, n_features=32, seed=3)
-    assert features.shape == (50, 35)  # 32 random + 3 standardised linear columns
+    assert features.shape == (50, 41)  # 32 random + 3 covariates x powers 1..3
     assert features.dtype == torch.float64
     assert torch.equal(features, random_fourier_features(z, n_features=32, seed=3))
     assert not torch.equal(features, random_fourier_features(z, n_features=32, seed=4))
     bare = random_fourier_features(z, n_features=32, seed=3, polynomial_degree=0)
     assert bare.shape == (50, 32)
     assert torch.equal(bare, features[:, :32])
-    standardised = features[:, 32:]
+    standardised = features[:, 32:35]  # power-1 block
     assert torch.allclose(standardised.mean(0), torch.zeros(3, dtype=torch.float64), atol=1e-12)
     assert torch.allclose(standardised.std(0, unbiased=False), torch.ones(3, dtype=torch.float64))
-    assert random_fourier_features(z[:, 0], n_features=8).shape == (50, 9)  # 1-D input
+    assert random_fourier_features(z[:, 0], n_features=8).shape == (50, 11)  # 1-D input
+    assert random_fourier_features(z, n_features=32, polynomial_degree=1).shape == (50, 35)
 
 
 def test_random_fourier_features_approximate_the_gaussian_kernel():
