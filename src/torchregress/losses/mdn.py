@@ -514,9 +514,6 @@ class MixtureDensityLoss(DistributionLoss):
         """
         log_weights, means, stds_or_L = self._extract_distribution_parameters(y_pred)
 
-        if self.covariance_type != "diagonal":
-            raise NotImplementedError("sample currently only supports diagonal covariance.")
-
         batch_size = means.shape[0]
         n_features = means.shape[2]
 
@@ -526,11 +523,14 @@ class MixtureDensityLoss(DistributionLoss):
         # Gather parameters using memory-efficient advanced indexing
         batch_indices = torch.arange(batch_size, device=y_pred.device).unsqueeze(1)
         selected_means = means[batch_indices, component_idx]
-        selected_stds = stds_or_L[batch_indices, component_idx]
-
-        # Sample
-        samples = torch.randn(batch_size, n_samples, n_features, device=y_pred.device)
-        samples = samples * selected_stds + selected_means
+        eps = torch.randn(
+            batch_size, n_samples, n_features, device=y_pred.device, dtype=means.dtype
+        )
+        if self.covariance_type == "diagonal":
+            samples = eps * stds_or_L[batch_indices, component_idx] + selected_means
+        else:  # full: covariance Cholesky factor L, y = mu + L eps
+            selected_L = stds_or_L[batch_indices, component_idx]  # [B, S, F, F]
+            samples = (selected_L @ eps.unsqueeze(-1)).squeeze(-1) + selected_means
 
         # Transpose to [n_samples, batch, n_features]
         return samples.transpose(0, 1)

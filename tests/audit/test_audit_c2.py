@@ -123,3 +123,21 @@ def test_C2_006_calibrated_deep_ensemble_without_standardisation():
     )
     mean, std = m.predict_dist(X[:3])
     assert mean.shape == (3,) and np.all(std > 0)
+
+
+def test_mdn_full_covariance_sampling_matches_component_covariance():
+    """Full-covariance MDN sampling (needed for multi-target density comparisons)."""
+    from torchregress.losses import MixtureDensityLoss
+
+    torch.manual_seed(0)
+    mdn = MixtureDensityLoss(n_components=1, n_features=2, covariance_type="full")
+    out = torch.zeros(1, mdn.expected_output_size)
+    # means (1, -2); tril (l00, l10, l11) raw values; diag goes through softplus + min_std
+    out[0, 1:3] = torch.tensor([1.0, -2.0])
+    out[0, 3:6] = torch.tensor([2.0, 0.8, -1.0])
+    _, means, L = mdn._extract_distribution_parameters(out)
+    s = mdn.sample(out, n_samples=200_000)
+    assert s.shape == (200_000, 1, 2)
+    cov = L[0, 0] @ L[0, 0].T
+    torch.testing.assert_close(s[:, 0].mean(0), means[0, 0], atol=0.02, rtol=0)
+    torch.testing.assert_close(torch.cov(s[:, 0].T), cov, atol=0.03, rtol=0.02)
