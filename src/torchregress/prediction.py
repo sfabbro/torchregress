@@ -34,17 +34,13 @@ def quantiles_to_density_grid(
     ``(tau_{k+1} - tau_k) / (q_{k+1} - q_k)`` on ``[q_k, q_{k+1}]``.
 
     .. note::
-       **Truncation semantics.**  Tail mass outside ``[q_0, q_K]`` (``tau_0`` below
-       and ``1 - tau_K`` above) is *not* represented: the density is zero on the
-       ``range_margin`` margins and the grid is renormalised to integrate to one.
-       The grid therefore encodes the predictive law *truncated to* ``[q_0, q_K]``
-       and renormalised, so its CDF at knot ``k`` is
-       ``(tau_k - tau_0) / (tau_K - tau_0)`` rather than ``tau_k``, and densities are
-       inflated by ``1 / (tau_K - tau_0)`` relative to the original law.  For
-       example, for levels ``(0.05, 0.5, 0.75)`` the grid median sits at the
-       ``(0.5 - 0.05) / 0.7 ~= 64``-th percentile of the grid.  Use wide outer
-       levels (e.g. 0.01 / 0.99) when the tails matter.  This behaviour is kept
-       pending a maintainer decision.
+       **Tails.**  The mass below the first level (``tau_0``) and above the last
+       (``1 - tau_K``) is spread uniformly over the ``range_margin`` margins, so the
+       grid CDF equals ``tau_k`` at every knot and a central interval read off the
+       grid keeps its nominal level.  The tail *shape* beyond the outer knots is
+       unknown from quantiles alone; use wide outer levels (e.g. 0.01 / 0.99) and
+       a larger ``range_margin`` when the tails matter.  Before 0.3.0 the tail mass
+       was dropped and the grid renormalised (PRD-001).
 
     Parameters
     ----------
@@ -113,6 +109,12 @@ def quantiles_to_density_grid(
         mask = (support >= left) & (support <= right)
         dens = torch.where(mask, slopes[:, seg_idx : seg_idx + 1], dens)
 
+    # Tail mass tau_0 / 1 - tau_K is spread uniformly over the grid margins, so the
+    # grid CDF equals tau_k at every knot (the interior keeps its true slopes).
+    tail_lo = levels[0] / (q_lo - lo).clamp(min=1.0e-8)
+    tail_hi = (1.0 - levels[-1]) / (hi - q_hi).clamp(min=1.0e-8)
+    dens = torch.where(support < q_lo, tail_lo, dens)
+    dens = torch.where(support > q_hi, tail_hi, dens)
     dens = dens.clamp(min=0.0)
 
     integral = torch.trapezoid(dens, support, dim=1).clamp(min=1.0e-8)

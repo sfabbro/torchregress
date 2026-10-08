@@ -2,7 +2,7 @@
 
 Audit of the library before the first PyPI release (release plan Phase 2.2,
 all five batches), run 2026-10-06: batches 1–3 at commit `5a334d3`, batches
-4–5 at `d61ebb2`. **99 defects found, 98 fixed, 1 open (PRD-001).** Batch C2 (code added afterwards) found and fixed 6 more.
+4–5 at `d61ebb2`. **99 defects found, 99 fixed.** Batch C2 (code added afterwards) found and fixed 6 more.
 
 **Evidence rule.** A finding counts only when a test reproduces it: every row
 below had a test that failed on `5a334d3`, and that test now lives in
@@ -175,11 +175,11 @@ Tests: `tests/audit/test_audit_batch5.py`.
 | UTL-008 | Low | `BSplineDensityBasis.bin_integrals` | returned the shared float64 cache |
 | UTL-009 | Low | `docs/api/utils.md` | 31 documented names did not exist; public names missing |
 
-**Open: PRD-001.** `quantiles_to_density_grid` drops the mass below the first
-and above the last quantile and renormalises, so the CDF at knot k is
-(τ_k − τ_0)/(τ_K − τ_0) rather than τ_k. This is now documented; whether to
-spread the tail mass instead (which changes `test_time.transport`) is a
-maintainer decision. The two audit tests are strict xfails.
+**PRD-001 (resolved).** `quantiles_to_density_grid` dropped the mass below the
+first and above the last quantile and renormalised, so the CDF at knot k was
+(τ_k − τ_0)/(τ_K − τ_0) rather than τ_k. The tail mass is now spread uniformly
+over the grid margins, so the CDF is exact at every knot; `test_time.transport`
+tests are unchanged.
 
 ## Batch C2: post-audit additions
 

@@ -2,7 +2,7 @@
 
 Each test reproduces one audit finding and pins the fixed behaviour. References come from
 closed forms, :mod:`scipy` (core) or :mod:`sklearn` / :mod:`matplotlib` (``test`` / ``viz``
-extras).  PRD-001 documents a *decision pending* (truncation semantics) and is xfail-strict.
+extras).  PRD-001 (truncation semantics) is resolved: tail mass is kept on the grid margins.
 """
 
 from __future__ import annotations
@@ -74,7 +74,6 @@ def _cdf_at(support, density, x):
     return np.interp(x, s, F)
 
 
-@pytest.mark.xfail(strict=True, reason="PRD-001: truncation semantics; decision pending")
 def test_PRD_001_cdf_preserved_at_knots_asymmetric_levels():
     levels = [0.05, 0.5, 0.75]
     q = torch.tensor([[stats.norm.ppf(t) for t in levels]], dtype=torch.float64)
@@ -82,18 +81,17 @@ def test_PRD_001_cdf_preserved_at_knots_asymmetric_levels():
     np.testing.assert_allclose(_cdf_at(s[0], d[0], q[0].numpy()), levels, atol=0.01)
 
 
-def test_PRD_001_documented_truncation_semantics_cdf_at_knots():
-    # Behaviour is kept (TR-COR-02 enforces zero margins) and documented: the grid is the law
-    # truncated to [q_0, q_K] and renormalised, so F_grid(q_k) = (tau_k - tau_0) / (tau_K - tau_0).
+def test_PRD_001_tail_mass_on_margins():
+    # Resolved: tau_0 and 1 - tau_K sit uniformly on the margins (no truncation).
     levels = [0.05, 0.5, 0.75]
     q = torch.tensor([[stats.norm.ppf(t) for t in levels]], dtype=torch.float64)
     s, d = quantiles_to_density_grid(q, levels, n_support=4001, range_margin=0.5)
-    expected = [(t - levels[0]) / (levels[-1] - levels[0]) for t in levels]
-    np.testing.assert_allclose(_cdf_at(s[0], d[0], q[0].numpy()), expected, atol=0.01)
-    assert "truncated" in (quantiles_to_density_grid.__doc__ or "")
+    F = _cdf_at(s[0], d[0], s[0].numpy())
+    np.testing.assert_allclose(F[-1], 1.0, atol=1e-6)
+    np.testing.assert_allclose(_cdf_at(s[0], d[0], q[0, 0].item()), 0.05, atol=0.01)
+    assert "truncated" not in (quantiles_to_density_grid.__doc__ or "")
 
 
-@pytest.mark.xfail(strict=True, reason="PRD-001: truncation semantics; decision pending")
 def test_PRD_001_density_matches_piecewise_uniform_value():
     # Linear-interpolated quantile function -> density (tau_{k+1}-tau_k)/(q_{k+1}-q_k).
     levels = [0.1, 0.5, 0.9]

@@ -21,6 +21,13 @@ remove are decided for 0.4.0.
 - `estimators.calibrated_deep_ensemble(X, y, n_members, val_fraction, loss, alpha, conformal, seed, **fit_kwargs)`: Gaussian `TabularMLP` ensemble via `fit_tabular_ensemble` with mixture moments (mean member variance plus variance of member means), a variance temperature fitted on a held-out carve and optional normalized split-conformal intervals; returns a `CalibratedRegressor` (plan item B3). Experimental, may change in 0.4.
 
 ### Changed
+
+- `quantiles_to_density_grid` (and `PredictiveBatch.with_density` for quantile
+  batches) keeps the tail mass: `tau_0` below the first quantile and
+  `1 - tau_K` above the last are spread uniformly over the grid margins
+  instead of being dropped and renormalised. The grid CDF now equals `tau_k`
+  at every knot; for levels 0.05/0.95 a 90% interval read off the grid covers
+  0.900 of Gaussian draws instead of 0.854 (PRD-001; supersedes TR-COR-02).
 - `docs/losses/sls.md`: new section measuring the width of SLS bounding-box intervals against `GaussianNLL` / `MultivariateGaussian` on the three harness multivariate designs (plan item B7). The 1.2-1.3x width gap at nominal level shrinks to 1.04-1.11x at equal joint coverage; raw `SLSLoss` thresholds cover only 0.45-0.56 of held-out targets (0.91 in-sample), so the coverage guarantee needs `SLSConformal`. No library default changed: warmup, window, flow size and boundary-sample count do not reduce width at equal coverage on all designs.
 - 28 plumbing helpers are no longer re-exported from `torchregress.utils` (and
   dropped from its `__all__`); they remain importable from their submodules, for
