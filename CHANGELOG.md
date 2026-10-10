@@ -23,6 +23,15 @@ remove are decided for 0.4.0.
 
 ### Changed
 
+- `MixtureDensityLoss(covariance_type="full")` now reads its lower-triangular
+  factor as the Cholesky factor of the **precision** (`full_parameterization="precision"`,
+  new default, as in sbi's MDN): the log-density is linear in the factor, with no
+  triangular solve. The covariance form (`full_parameterization="covariance"`, the
+  previous behaviour) did not fit multi-target data: on the 16-target scm20d
+  benchmark, train / test NLL 0.42 / 3.32 vs -3.45 / 0.31 with the precision form
+  (sbi's MDN: 0.04). The output layout is unchanged. `predict_mean_std` and
+  `predict_interval` now support full covariance (per-dimension marginals).
+
 - `quantiles_to_density_grid` (and `PredictiveBatch.with_density` for quantile
   batches) keeps the tail mass: `tau_0` below the first quantile and
   `1 - tau_K` above the last are spread uniformly over the grid margins

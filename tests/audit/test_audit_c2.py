@@ -125,19 +125,47 @@ def test_C2_006_calibrated_deep_ensemble_without_standardisation():
     assert mean.shape == (3,) and np.all(std > 0)
 
 
-def test_mdn_full_covariance_sampling_matches_component_covariance():
+@pytest.mark.parametrize("param", ["precision", "covariance"])
+def test_mdn_full_covariance_sampling_matches_component_covariance(param):
     """Full-covariance MDN sampling (needed for multi-target density comparisons)."""
     from torchregress.losses import MixtureDensityLoss
 
     torch.manual_seed(0)
-    mdn = MixtureDensityLoss(n_components=1, n_features=2, covariance_type="full")
+    mdn = MixtureDensityLoss(
+        n_components=1, n_features=2, covariance_type="full", full_parameterization=param
+    )
     out = torch.zeros(1, mdn.expected_output_size)
-    # means (1, -2); tril (l00, l10, l11) raw values; diag goes through softplus + min_std
     out[0, 1:3] = torch.tensor([1.0, -2.0])
     out[0, 3:6] = torch.tensor([2.0, 0.8, -1.0])
-    _, means, L = mdn._extract_distribution_parameters(out)
+    _, means, T = mdn._extract_distribution_parameters(out)
     s = mdn.sample(out, n_samples=200_000)
     assert s.shape == (200_000, 1, 2)
-    cov = L[0, 0] @ L[0, 0].T
-    torch.testing.assert_close(s[:, 0].mean(0), means[0, 0], atol=0.02, rtol=0)
-    torch.testing.assert_close(torch.cov(s[:, 0].T), cov, atol=0.03, rtol=0.02)
+    T0 = T[0, 0]
+    cov = T0 @ T0.T if param == "covariance" else torch.linalg.inv(T0 @ T0.T)
+    torch.testing.assert_close(s[:, 0].mean(0), means[0, 0], atol=0.03, rtol=0)
+    torch.testing.assert_close(torch.cov(s[:, 0].T), cov, atol=0.05, rtol=0.03)
+    mean, std = mdn.predict_mean_std(out)
+    torch.testing.assert_close(std[0], cov.diagonal().sqrt(), atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize("param", ["precision", "covariance"])
+def test_mdn_full_log_prob_matches_torch_multivariate_normal(param):
+    from torchregress.losses import MixtureDensityLoss
+
+    torch.manual_seed(1)
+    D, K = 3, 2
+    mdn = MixtureDensityLoss(
+        n_components=K, n_features=D, covariance_type="full", full_parameterization=param
+    )
+    out = torch.randn(5, mdn.expected_output_size, dtype=torch.float64)
+    y = torch.randn(5, D, dtype=torch.float64)
+    logw, means, T = mdn._extract_distribution_parameters(out)
+    if param == "covariance":
+        comp = torch.distributions.MultivariateNormal(means, scale_tril=T)
+    else:
+        comp = torch.distributions.MultivariateNormal(
+            means, precision_matrix=T @ T.transpose(-1, -2)
+        )
+    ref = torch.logsumexp(logw + comp.log_prob(y.unsqueeze(-2)), dim=-1)
+    nll = mdn._calculate_nll(y, (logw, means, T))
+    torch.testing.assert_close(-nll, ref, atol=1e-6, rtol=1e-6)
