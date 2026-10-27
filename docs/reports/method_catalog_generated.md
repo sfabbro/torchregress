@@ -2,13 +2,13 @@
 
 _Generated provenance_: `tools/render_method_catalog.py:render_markdown`
 _Source artifacts_: `reports/method_catalog_latest.json`
-_Generated date_: `2026-10-26`
+_Generated date_: `2026-10-27`
 
 It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 
 ## Summary
 
-- Total methods: `151`
+- Total methods: `157`
 - Peer methods present: `SWAG`, `BayesianNeuralNetwork`, `MixtureDensityLoss`
 
 ### By Family
@@ -36,11 +36,12 @@ It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 | `mc_dropout` | 1 |
 | `mdn` | 1 |
 | `multivariate` | 1 |
+| `observation_mapping` | 3 |
 | `ordinal` | 2 |
 | `point_loss` | 1 |
 | `poisson` | 4 |
 | `poisson_gaussian` | 3 |
-| `probabilistic_loss` | 8 |
+| `probabilistic_loss` | 11 |
 | `quantile` | 2 |
 | `representation_regularizer` | 1 |
 | `robust_algorithm` | 1 |
@@ -60,7 +61,7 @@ It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 |---|---:|
 | `Core` | 7 |
 | `Strong` | 20 |
-| `Available` | 124 |
+| `Available` | 130 |
 
 ## Method Rows
 
@@ -162,6 +163,9 @@ Legend: `*` suffix means partial support. This snapshot is for discovery and com
 | `MCDropoutWrapper` | `mc_dropout` | `Strong` | `epistemic_uq`, `low_compute` | `epistemic`, `aleatoric*`, `decomposition*`, `calibration*`, `ood*` | `torchregress.ensemble.MCDropoutWrapper` |
 | `MixtureDensityLoss` | `mdn` | `Available` | `multimodal`, `non_gaussian`, `multi_target` | `aleatoric`, `calibration*`, `ood*` | `torchregress.losses.MixtureDensityLoss` |
 | `TaskAgnosticCorrelations` | `multivariate` | `Available` | `covariance_evaluation`, `conditioning` | `calibration*`, `ood*` | `torchregress.metrics.TaskAgnosticCorrelations` |
+| `CommonScaleSplineHead` | `observation_mapping` | `Available` | `multi_source`, `common_bias` | `calibration*`, `ood*` | `torchregress.calibration.CommonScaleSplineHead` |
+| `ConditionBiasHead` | `observation_mapping` | `Available` | `multi_source`, `conditional_bias` | `calibration*`, `ood*` | `torchregress.calibration.ConditionBiasHead` |
+| `RelativeSurveySplineHead` | `observation_mapping` | `Available` | `multi_source`, `relative_bias`, `correlated_targets` | `calibration*`, `ood*` | `torchregress.calibration.RelativeSurveySplineHead` |
 | `CumulativeLinkLoss` | `ordinal` | `Available` | `ordinal`, `ordered_targets`, `calibration` | `calibration*`, `ood*` | `torchregress.losses.CumulativeLinkLoss` |
 | `OrdinalCrossEntropyLoss` | `ordinal` | `Available` | `ordinal`, `ordered_targets` | `calibration*`, `ood*` | `torchregress.losses.OrdinalCrossEntropyLoss` |
 | `WeightedMSELoss` | `point_loss` | `Core` | `baseline` | `calibration*`, `ood*` | `torchregress.losses.WeightedMSELoss` |
@@ -175,11 +179,14 @@ Legend: `*` suffix means partial support. This snapshot is for discovery and com
 | `BetaNLLLoss` | `probabilistic_loss` | `Available` | `heteroscedastic_noise`, `aleatoric_uq`, `optimization_stability` | `aleatoric`, `calibration*`, `ood*` | `torchregress.losses.BetaNLLLoss` |
 | `FaithfulGaussianLoss` | `probabilistic_loss` | `Available` | `heteroscedastic_noise`, `aleatoric_uq`, `mean_variance_decoupling` | `aleatoric`, `calibration*`, `ood*` | `torchregress.losses.FaithfulGaussianLoss` |
 | `GaussianCRPSLoss` | `probabilistic_loss` | `Strong` | `heteroscedastic_noise`, `aleatoric_uq`, `calibration` | `aleatoric`, `calibration*`, `ood*` | `torchregress.losses.GaussianCRPSLoss` |
+| `GaussianLatentForwardObservationNLLLoss` | `probabilistic_loss` | `Available` | `forward_observation`, `measurement_noise`, `quadrature` | `aleatoric`, `calibration*`, `ood*` | `torchregress.losses.GaussianLatentForwardObservationNLLLoss` |
 | `GaussianNLLLoss` | `probabilistic_loss` | `Core` | `heteroscedastic_noise`, `aleatoric_uq` | `aleatoric`, `calibration*`, `ood*` | `torchregress.losses.GaussianNLLLoss` |
 | `GaussianWassersteinBoundLoss` | `probabilistic_loss` | `Available` | `heteroscedastic_noise`, `multivariate_targets`, `mean_covariance_supervision` | `aleatoric*`, `calibration*`, `ood*` | `torchregress.losses.GaussianWassersteinBoundLoss` |
 | `LowRankGaussianLoss` | `probabilistic_loss` | `Strong` | `multi_target`, `scalability` | `aleatoric`, `calibration*`, `ood*` | `torchregress.losses.LowRankGaussianLoss` |
+| `MarginalizedMultiSourceGaussianNLLLoss` | `probabilistic_loss` | `Available` | `multi_target`, `correlated_targets`, `missing_labels`, `noisy_labels` | `aleatoric`, `calibration*`, `ood*` | `torchregress.losses.MarginalizedMultiSourceGaussianNLLLoss` |
 | `MultivariateGaussianLoss` | `probabilistic_loss` | `Strong` | `multi_target`, `correlated_targets` | `aleatoric`, `calibration*`, `ood*` | `torchregress.losses.MultivariateGaussianLoss` |
 | `NeighborhoodCovariancePseudoLabeler` | `probabilistic_loss` | `Available` | `pseudo_labels`, `heteroscedastic_noise`, `self_supervision` | `aleatoric*`, `calibration*`, `ood*` | `torchregress.algorithms.NeighborhoodCovariancePseudoLabeler` |
+| `RobustMultiSourceGaussianNLLLoss` | `probabilistic_loss` | `Available` | `multi_target`, `correlated_targets`, `missing_labels`, `robust` | `aleatoric`, `calibration*`, `ood*` | `torchregress.losses.RobustMultiSourceGaussianNLLLoss` |
 | `MultiQuantileLoss` | `quantile` | `Strong` | `prediction_intervals`, `non_gaussian`, `multi_quantile` | `calibration`, `ood*` | `torchregress.losses.MultiQuantileLoss` |
 | `QuantileLoss` | `quantile` | `Core` | `prediction_intervals`, `non_gaussian` | `calibration`, `ood*` | `torchregress.losses.QuantileLoss` |
 | `UncertaintyAwareConR` | `representation_regularizer` | `Available` | `imbalanced_regression`, `noisy_labels`, `scalar_targets` | `ood*` | `torchregress.losses.UncertaintyAwareConR` |

@@ -260,6 +260,10 @@ EXPECTED_EXPORTS = {
         "write_comparison_summary_json",
     ],
     "calibration": [
+        "CommonScaleSplineHead",
+        "ConditionBiasHead",
+        "RelativeSurveySplineHead",
+        "bspline_basis_with_derivative",
         "VarianceTemperatureScaler",
         "IsotonicMeanCalibrator",
         "PITCalibrator",

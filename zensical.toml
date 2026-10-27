@@ -178,6 +178,7 @@ nav = [
     "losses/index.md",
     { "Gaussian & Heteroscedastic" = [
       { "Gaussian Losses" = "losses/gaussian.md" },
+      { "Multi-Source Gaussian" = "losses/multisource.md" },
       { "Faithful & CRPS Gaussian" = "losses/faithful_gaussian.md" },
       { "Beta Negative Log-Likelihood" = "losses/beta_nll.md" },
       { "Wasserstein Bound Surrogate" = "losses/gaussian_wasserstein.md" },

@@ -283,6 +283,51 @@ _METHODS: tuple[MethodMetadata, ...] = (
         calibration="partial",
     ),
     MethodMetadata(
+        name="GaussianLatentForwardObservationNLLLoss",
+        family="probabilistic_loss",
+        public_path="torchregress.losses.GaussianLatentForwardObservationNLLLoss",
+        task_tags=("forward_observation", "measurement_noise", "quadrature"),
+        maturity="Available",
+        multi_target="no",
+        non_gaussian="partial",
+        aleatoric="yes",
+        calibration="partial",
+        notes=(
+            "Scalar latent Gaussian integrated through a nonlinear observation map "
+            "by finite Gauss-Hermite quadrature."
+        ),
+    ),
+    MethodMetadata(
+        name="MarginalizedMultiSourceGaussianNLLLoss",
+        family="probabilistic_loss",
+        public_path="torchregress.losses.MarginalizedMultiSourceGaussianNLLLoss",
+        task_tags=("multi_target", "correlated_targets", "missing_labels", "noisy_labels"),
+        maturity="Available",
+        multi_target="yes",
+        non_gaussian="no",
+        aleatoric="yes",
+        calibration="partial",
+        notes=(
+            "Joint observed-source Gaussian likelihood, exact only for the supplied "
+            "linearized observation model; does not independently establish calibration."
+        ),
+    ),
+    MethodMetadata(
+        name="RobustMultiSourceGaussianNLLLoss",
+        family="probabilistic_loss",
+        public_path="torchregress.losses.RobustMultiSourceGaussianNLLLoss",
+        task_tags=("multi_target", "correlated_targets", "missing_labels", "robust"),
+        maturity="Available",
+        multi_target="yes",
+        non_gaussian="partial",
+        aleatoric="yes",
+        calibration="partial",
+        notes=(
+            "Normalized measurement-block outlier mixture for one shared latent; "
+            "enumeration is bounded and cross-block noise covariance is rejected."
+        ),
+    ),
+    MethodMetadata(
         name="LowRankGaussianLoss",
         family="probabilistic_loss",
         public_path="torchregress.losses.LowRankGaussianLoss",
@@ -778,6 +823,34 @@ _METHODS: tuple[MethodMetadata, ...] = (
         non_gaussian="partial",
         calibration="partial",
         notes="Post-head sorting transform to remove crossing violations.",
+    ),
+    MethodMetadata(
+        name="RelativeSurveySplineHead",
+        family="observation_mapping",
+        public_path="torchregress.calibration.RelativeSurveySplineHead",
+        task_tags=("multi_source", "relative_bias", "correlated_targets"),
+        maturity="Available",
+        non_gaussian="no",
+        calibration="partial",
+        notes="Fixed per-target zero-sum gauge; does not identify an absolute scale.",
+    ),
+    MethodMetadata(
+        name="CommonScaleSplineHead",
+        family="observation_mapping",
+        public_path="torchregress.calibration.CommonScaleSplineHead",
+        task_tags=("multi_source", "common_bias"),
+        maturity="Available",
+        calibration="partial",
+        notes="Common correction requires independent anchoring for physical interpretation.",
+    ),
+    MethodMetadata(
+        name="ConditionBiasHead",
+        family="observation_mapping",
+        public_path="torchregress.calibration.ConditionBiasHead",
+        task_tags=("multi_source", "conditional_bias"),
+        maturity="Available",
+        calibration="partial",
+        notes="Source-specific condition correction centered at a reference condition.",
     ),
     MethodMetadata(
         name="VarianceTemperatureScaler",

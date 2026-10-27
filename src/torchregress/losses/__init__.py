@@ -101,6 +101,7 @@ from .families import (
     skew_t_nll,
     sqr_loss,
 )
+from .forward_quadrature import GaussianLatentForwardObservationNLLLoss
 from .gaussian import (
     GaussianCRPSLoss,
     GaussianNLLLoss,
@@ -124,6 +125,8 @@ from .loss_registry import create_loss_from_config, get_regression_loss, list_re
 
 # Mixture Density Networks
 from .mdn import MixtureDensityLoss, create_mdn_loss
+from .multisource import MarginalizedMultiSourceGaussianNLLLoss, PackedObservations
+from .multisource_robust import RobustMultiSourceGaussianNLLLoss
 from .rank_sim import RankSimLoss, rank_sim_regularizer
 
 # SLS regression
@@ -294,6 +297,7 @@ __all__ = [
     "GEVNLLLoss",
     "GammaLoss",
     "GaussianCRPSLoss",
+    "GaussianLatentForwardObservationNLLLoss",
     "GaussianNLLLoss",
     "GaussianWassersteinBoundLoss",
     "InputNoiseAugmentationLoss",
@@ -310,6 +314,7 @@ __all__ = [
     "LogTransformLoss",
     "LowRankGaussianLoss",
     "MahalanobisFrontier",
+    "MarginalizedMultiSourceGaussianNLLLoss",
     "MixtureDensityLoss",
     "MonteCarloConformal",
     "MultiExpectileLoss",
@@ -325,6 +330,7 @@ __all__ = [
     "NonExchangeableConformalRegressor",
     "NormalizingFlowLoss",
     "OrdinalCrossEntropyLoss",
+    "PackedObservations",
     "OrthogonalDistanceRegressionLoss",
     "PoissonDevianceLoss",
     "PoissonGaussianLikelihoodRatioLoss",
@@ -343,6 +349,7 @@ __all__ = [
     "RankSimLoss",
     "rank_sim_regularizer",
     "RegressionLoss",
+    "RobustMultiSourceGaussianNLLLoss",
     "SLSConformal",
     "SLSLoss",
     "SQRLoss",
