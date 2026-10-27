@@ -143,6 +143,7 @@ EXPECTED_EXPORTS = {
         "FTTransformer",
         "FeatureTokenizer",
         "FlowMatchingMLP",
+        "GaussianCopulaSplineHead",
         "NormalizingFlowMap",
         "cfm_loss",
         "sample_cfm",

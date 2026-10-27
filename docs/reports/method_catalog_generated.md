@@ -8,7 +8,7 @@ It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 
 ## Summary
 
-- Total methods: `157`
+- Total methods: `158`
 - Peer methods present: `SWAG`, `BayesianNeuralNetwork`, `MixtureDensityLoss`
 
 ### By Family
@@ -26,7 +26,7 @@ It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 | `ensemble` | 8 |
 | `evidential` | 1 |
 | `expectile` | 2 |
-| `flow` | 3 |
+| `flow` | 4 |
 | `flow_map` | 1 |
 | `flow_matching` | 1 |
 | `imbalanced_algorithm` | 4 |
@@ -61,7 +61,7 @@ It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 |---|---:|
 | `Core` | 7 |
 | `Strong` | 20 |
-| `Available` | 130 |
+| `Available` | 131 |
 
 ## Method Rows
 
@@ -139,6 +139,7 @@ Legend: `*` suffix means partial support. This snapshot is for discovery and com
 | `ExpectileLoss` | `expectile` | `Available` | `prediction_intervals`, `non_gaussian`, `expectile` | `calibration*`, `ood*` | `torchregress.losses.ExpectileLoss` |
 | `MultiExpectileLoss` | `expectile` | `Available` | `prediction_intervals`, `non_gaussian`, `multi_expectile` | `calibration*`, `ood*` | `torchregress.losses.MultiExpectileLoss` |
 | `ContrastiveFlowLoss` | `flow` | `Available` | `parameter_estimation`, `domain_shift`, `simulation_based_inference` | `aleatoric`, `decomposition*`, `calibration*`, `ood*` | `torchregress.losses.ContrastiveFlowLoss` |
+| `GaussianCopulaSplineHead` | `flow` | `Available` | `multi_target`, `correlated_targets`, `missing_labels`, `conditional_density` | `aleatoric`, `calibration*`, `ood*` | `torchregress.models.GaussianCopulaSplineHead` |
 | `NormalizingFlowLoss` | `flow` | `Available` | `multimodal`, `non_gaussian`, `multi_target` | `aleatoric`, `decomposition*`, `calibration*`, `ood*` | `torchregress.losses.NormalizingFlowLoss` |
 | `SLSLoss` | `flow` | `Available` | `multimodal`, `non_gaussian`, `prediction_intervals` | `calibration*`, `ood*` | `torchregress.losses.SLSLoss` |
 | `NormalizingFlowMap` | `flow_map` | `Available` | `multimodal`, `multi_target`, `conditional_density`, `flow_map` | `aleatoric`, `calibration*`, `ood*` | `torchregress.models.NormalizingFlowMap` |

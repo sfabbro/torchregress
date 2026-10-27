@@ -2,7 +2,7 @@
   "artifact": "method_catalog",
   "version": 1,
   "summary": {
-    "total_methods": 157,
+    "total_methods": 158,
     "families": {
       "bnn": 7,
       "calibration_transform": 7,
@@ -15,7 +15,7 @@
       "ensemble": 8,
       "evidential": 1,
       "expectile": 2,
-      "flow": 3,
+      "flow": 4,
       "flow_map": 1,
       "flow_matching": 1,
       "imbalanced_algorithm": 4,
@@ -47,7 +47,7 @@
     "maturity": {
       "Core": 7,
       "Strong": 20,
-      "Available": 130
+      "Available": 131
     },
     "peer_uq_methods_present": {
       "SWAG": true,
@@ -1871,6 +1871,29 @@
       "imbalance": "yes",
       "noisy_features_eiv": "no",
       "notes": "Scalar Gaussian-error interval probabilities soften ConR memberships; zero errors recover the hard objective. No multivariate radial-noise approximation or calibrated predictive uncertainty."
+    },
+    {
+      "name": "GaussianCopulaSplineHead",
+      "family": "flow",
+      "public_path": "torchregress.models.GaussianCopulaSplineHead",
+      "task_tags": [
+        "multi_target",
+        "correlated_targets",
+        "missing_labels",
+        "conditional_density"
+      ],
+      "maturity": "Available",
+      "multimodal": "no",
+      "multi_target": "yes",
+      "non_gaussian": "yes",
+      "epistemic": "no",
+      "aleatoric": "yes",
+      "decomposition": "no",
+      "calibration": "partial",
+      "ood_support": "partial",
+      "imbalance": "no",
+      "noisy_features_eiv": "no",
+      "notes": "Joint conditional spline flow with a Gaussian copula; intrinsic arbitrary-mask marginals are exact, while Gaussian-error convolution uses finite quadrature."
     },
     {
       "name": "NormalizingFlowMap",

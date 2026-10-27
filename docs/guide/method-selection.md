@@ -104,7 +104,7 @@ _Generated date_: `2026-10-27`
 | `ensemble` (8) | yes | no | yes | yes | yes | yes | yes | yes | no | no |
 | `evidential` (1) | yes | no | partial | yes | yes | yes | partial | partial | no | no |
 | `expectile` (2) | yes | no | yes | no | no | no | partial | partial | no | no |
-| `flow` (3) | yes | yes | yes | no | yes | partial | partial | partial | no | no |
+| `flow` (4) | yes | yes | yes | no | yes | partial | partial | partial | no | no |
 | `flow_map` (1) | yes | yes | yes | no | yes | no | partial | partial | no | no |
 | `flow_matching` (1) | yes | yes | yes | no | partial | no | partial | partial | no | no |
 | `imbalanced_algorithm` (4) | yes | no | partial | no | no | no | partial | partial | yes | no |
@@ -235,6 +235,7 @@ _Generated date_: `2026-10-27`
 | `ExpectileLoss` | `expectile` | `Available` | yes | no | no | no | no | partial | partial |
 | `MultiExpectileLoss` | `expectile` | `Available` | yes | no | no | no | no | partial | partial |
 | `ContrastiveFlowLoss` | `flow` | `Available` | yes | yes | no | yes | partial | partial | partial |
+| `GaussianCopulaSplineHead` | `flow` | `Available` | yes | no | no | yes | no | partial | partial |
 | `NormalizingFlowLoss` | `flow` | `Available` | yes | yes | no | yes | partial | partial | partial |
 | `SLSLoss` | `flow` | `Available` | yes | yes | no | no | no | partial | partial |
 | `NormalizingFlowMap` | `flow_map` | `Available` | yes | yes | no | yes | no | partial | partial |
@@ -340,7 +341,7 @@ Peer-method check: `SWAG`, `BayesianNeuralNetwork`, `MixtureDensityLoss`
 | `ensemble` | 8 | yes | no | yes | yes | yes | yes | yes | yes | no | no |
 | `evidential` | 1 | yes | no | partial | yes | yes | yes | partial | partial | no | no |
 | `expectile` | 2 | yes | no | yes | no | no | no | partial | partial | no | no |
-| `flow` | 3 | yes | yes | yes | no | yes | partial | partial | partial | no | no |
+| `flow` | 4 | yes | yes | yes | no | yes | partial | partial | partial | no | no |
 | `flow_map` | 1 | yes | yes | yes | no | yes | no | partial | partial | no | no |
 | `flow_matching` | 1 | yes | yes | yes | no | partial | no | partial | partial | no | no |
 | `imbalanced_algorithm` | 4 | yes | no | partial | no | no | no | partial | partial | yes | no |

@@ -1006,6 +1006,21 @@ _METHODS: tuple[MethodMetadata, ...] = (
         ),
     ),
     MethodMetadata(
+        name="GaussianCopulaSplineHead",
+        family="flow",
+        public_path="torchregress.models.GaussianCopulaSplineHead",
+        task_tags=("multi_target", "correlated_targets", "missing_labels", "conditional_density"),
+        maturity="Available",
+        multi_target="yes",
+        non_gaussian="yes",
+        aleatoric="yes",
+        calibration="partial",
+        notes=(
+            "Joint conditional spline flow with a Gaussian copula; intrinsic arbitrary-mask "
+            "marginals are exact, while Gaussian-error convolution uses finite quadrature."
+        ),
+    ),
+    MethodMetadata(
         name="NormalizingFlowMap",
         family="flow_map",
         public_path="torchregress.models.NormalizingFlowMap",
