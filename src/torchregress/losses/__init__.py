@@ -124,7 +124,7 @@ from .imbalanced import (
 from .loss_registry import create_loss_from_config, get_regression_loss, list_regression_losses
 
 # Mixture Density Networks
-from .mdn import MixtureDensityLoss, create_mdn_loss
+from .mdn import MixtureDensityLoss
 from .multisource import MarginalizedMultiSourceGaussianNLLLoss, PackedObservations
 from .multisource_robust import RobustMultiSourceGaussianNLLLoss
 from .rank_sim import RankSimLoss, rank_sim_regularizer
@@ -392,7 +392,6 @@ __all__ = [
     "recommended_tail_bound",
     "create_gaussian_nll",
     "create_loss_from_config",
-    "create_mdn_loss",
     "expectile_loss",
     "gaussian_wasserstein_bound_loss",
     "get_regression_loss",
