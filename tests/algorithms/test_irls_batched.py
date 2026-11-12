@@ -556,3 +556,20 @@ def test_ridge_used_by_any_solve_is_reported_per_row() -> None:
         batched_iteratively_reweighted_fit(
             replace(linear, solve=bad), torch.zeros(3, 3, dtype=DTYPE), target, precision
         )
+
+
+def test_default_config_is_student_t_nu5_and_callable_weights_need_no_params() -> None:
+    design, target, precision, _ = _data(seed=21)
+    default = _fit(design, target, precision)
+    explicit = _fit(design, target, precision, config=BatchedIRLSConfig(weight_params={"nu": 5.0}))
+    for name in ("theta", "objective", "weights"):
+        assert torch.equal(getattr(default, name), getattr(explicit, name))
+
+    def huber(u: torch.Tensor) -> torch.Tensor:
+        return torch.where(u <= 1.345, torch.ones_like(u), 1.345 / u)
+
+    config = BatchedIRLSConfig(weight=huber)
+    by_name = _fit(design, target, precision, config=BatchedIRLSConfig(weight="huber"))
+    custom = _fit(design, target, precision, config=config)
+    assert custom.converged.all()
+    torch.testing.assert_close(custom.theta, by_name.theta, rtol=1e-12, atol=1e-14)

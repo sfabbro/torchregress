@@ -119,8 +119,8 @@ class BatchedIRLSConfig:
     Attributes:
         weight: robust family (``"student_t"`` by default; any
             :func:`robust_weights` name or a callable of the standardized residual).
-        weight_params: family parameters (``{"nu": 5.0}`` by default for
-            ``"student_t"``; ``nu=math.inf`` is the Gaussian).
+        weight_params: family parameters (empty by default; ``"student_t"`` uses
+            ``nu=5`` unless given, and ``nu=math.inf`` is the Gaussian).
         eta: fractional model error ``η ≥ 0`` of the variance ``1/λ + η² m̄²``
             (:func:`effective_precision`), ``m̄`` the previous iterate's model.
         max_iter: iteration cap per row.
@@ -136,7 +136,7 @@ class BatchedIRLSConfig:
     """
 
     weight: RobustWeightName | WeightFunction = "student_t"
-    weight_params: Mapping[str, float] = field(default_factory=lambda: {"nu": 5.0})
+    weight_params: Mapping[str, float] = field(default_factory=dict)
     eta: float = 0.0
     max_iter: int = 50
     tol: float = 1.0e-3

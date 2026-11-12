@@ -175,7 +175,7 @@ The caller owns the model and the weighted solve, so bounds, priors, Gauss–New
 
 `rows` is `None` when a callback gets the whole batch in order, otherwise the global indices of the rows it gets: finished rows leave the active set, so a batch costs $\sum_b \text{iterations}_b$ row solves. Each iteration has one host synchronisation (plus one per damping attempt).
 
-`BatchedIRLSConfig` sets `weight` (default `"student_t"`), `weight_params` (default `{"nu": 5.0}`), `eta`, `max_iter`, `tol` (in standard errors, default `1e-3`), `min_iter` (default 2), `min_observations` (default: parameters + 1) and the damping schedule (`max_damping`, `damping_start`, `damping_min`).
+`BatchedIRLSConfig` sets `weight` (default `"student_t"`), `weight_params` (default `{}`; `nu=5` for `student_t` unless given), `eta`, `max_iter`, `tol` (in standard errors, default `1e-3`), `min_iter` (default 2), `min_observations` (default: parameters + 1) and the damping schedule (`max_damping`, `damping_start`, `damping_min`).
 
 `BatchedIRLSResult` holds per-row `theta`, `standard_errors`, `model`, `weights`, `effective_precision`, `objective` (NLL + penalty), `penalty`, `status` (`IRLSRowStatus`: `CONVERGED`, `MAX_ITERATIONS`, `STALLED`, `FAILED`, `EMPTY`), `iterations`, `n_observations` and `ridge_used` (any solve of the row was regularised).
 
