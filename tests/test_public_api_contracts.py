@@ -204,6 +204,8 @@ EXPECTED_EXPORTS = {
         "IRLSFitResult",
         "IRLSBreakdownError",
         "IRLSConfig",
+        "solve_normal_equations",
+        "NormalEquationsSolution",
         "RegressionCalibration",
         "SIMEX",
         "LatentNN",
@@ -352,6 +354,11 @@ EXPECTED_EXPORTS = {
 
 
 EXPECTED_SIGNATURES = {
+    "algorithms.solve_normal_equations": (
+        "(normal: 'Tensor', rhs: 'Tensor', *, nonnegative: 'Tensor | None' = None, "
+        "start: 'Tensor | None' = None, ridge: 'float' = 1e-08, kkt_tol: 'float' = 1e-10) "
+        "-> 'NormalEquationsSolution'"
+    ),
     "algorithms.iteratively_reweighted_fit": (
         "(problem: 'IRLSProblem[StateT] | IRLSCallbacks[StateT]', initial_state: 'StateT', "
         "config: 'IRLSFitConfig | None' = None) -> 'IRLSFitResult[StateT]'"

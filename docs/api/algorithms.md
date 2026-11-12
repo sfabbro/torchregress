@@ -19,6 +19,8 @@ guidance, and detailed usage walkthroughs, see [Algorithms overview](../methods/
 | `IRLSFitResult`, `IRLSIteration` | Frozen result and history diagnostics with effective sample size and finite/termination status. |
 | `IRLSBreakdownError` | Exception a caller-owned solver raises to return a diagnostic `"breakdown"` result. |
 | `robust_weights` | Huber, Pseudo-Huber, Tukey, Cauchy, Barron-style, Student-t (`(ν+1)/(ν+u²)`) or custom IRLS multipliers. |
+| `solve_normal_equations` | `(normal, rhs, *, nonnegative=None, start=None, ridge=1e-8, kkt_tol=1e-10)` — batched `min ½xᵀNx − gᵀx` per row, Jacobi-scaled Cholesky with a flagged ridge fallback; with a boolean `nonnegative` mask, batched Lawson–Hanson NNLS (warm-startable free set). Returns `NormalEquationsSolution`. |
+| `NormalEquationsSolution` | Frozen result: `solution`, `standard_errors` (free-block inverse; `1/√N_ii` at a bound; `inf` for empty columns), `free`, `dead`, `ridge_used`, `singular` (`NaN` solution, fail closed). |
 | `reweight_fixed_predictions` | Robust reweighting of a fixed model. Does not refit. |
 | `IRLSConfig` | Configuration for fixed-prediction compatibility reweighting. |
 | `huber_weights(scaled_residuals, delta)` | Huber weighting function. |

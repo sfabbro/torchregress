@@ -41,6 +41,7 @@ from .irls_fit import (
 )
 from .ivon import IVON
 from .latentnn import LatentNN
+from .normal_equations import NormalEquationsSolution, solve_normal_equations
 from .rc import RegressionCalibration
 from .simex import SIMEX
 from .tictac import TaylorInducedCovarianceHead
@@ -60,6 +61,8 @@ __all__ = [
     "IRLSFitResult",
     "IRLSBreakdownError",
     "IRLSConfig",
+    "solve_normal_equations",
+    "NormalEquationsSolution",
     "RegressionCalibration",
     "SIMEX",
     "LatentNN",

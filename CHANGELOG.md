@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   noise (the Fisher factor `(nu+1)/(nu+3)`). `robust_weights` and
   `iteratively_reweighted_fit` accept `weight="student_t"` (`(nu+1)/(nu+u^2)`, the exact
   t-likelihood weight). `StudentTLoss` accepts `nu=math.inf`.
+- `torchregress.algorithms.solve_normal_equations(normal, rhs, *, nonnegative=None, start=None,
+  ridge=1e-8, kkt_tol=1e-10)`: many small least-squares problems from their normal
+  equations in one call. Jacobi-scaled batched Cholesky (no host sync) with a flagged ridge
+  fallback and standard errors; with a `nonnegative` mask, batched Lawson-Hanson NNLS on
+  the scaled normal equations with a warm-startable free set. Empty columns are pinned at 0
+  with infinite standard error; singular or non-finite rows return `NaN` and are flagged.
 - `torchregress.models.MarginalContrastiveDensity`: Marginal Contrastive Discrimination
   (Meziani, Ndiaye & Riu 2022), `p(y|x) = p(y) r(x, y)` from an unconditional flow and a
   CNRE ratio classifier. Monte-Carlo-normalized `log_prob`, importance-resampled `sample`
