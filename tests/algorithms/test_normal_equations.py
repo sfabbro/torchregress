@@ -172,3 +172,39 @@ def test_cuda_matches_cpu() -> None:
     cpu = solve_normal_equations(normal, rhs, nonnegative=mask)
     gpu = solve_normal_equations(normal.cuda(), rhs.cuda(), nonnegative=mask.cuda())
     torch.testing.assert_close(gpu.solution.cpu(), cpu.solution, rtol=1e-9, atol=1e-11)
+
+
+@pytest.mark.parametrize(
+    "where, value",
+    [
+        ("rhs", math.nan),
+        ("rhs", math.inf),
+        ("rhs", -math.inf),
+        ("offdiag", math.nan),
+        ("diag", math.nan),
+        ("diag", math.inf),
+    ],
+)
+@pytest.mark.parametrize("bounded", [True, False])
+def test_non_finite_row_fails_closed_without_touching_good_rows(
+    where: str, value: float, bounded: bool
+) -> None:
+    _, _, _, (normal, rhs) = _least_squares_batch(5, 25, 4, seed=7)
+    nonnegative = torch.ones(4, dtype=torch.bool) if bounded else None
+    clean = solve_normal_equations(normal, rhs, nonnegative=nonnegative)
+    normal, rhs = normal.clone(), rhs.clone()
+    bad = 2
+    if where == "rhs":
+        rhs[bad, 1] = value
+    elif where == "offdiag":
+        normal[bad, 0, 3] = value
+        normal[bad, 3, 0] = value
+    else:
+        normal[bad, 2, 2] = value
+    out = solve_normal_equations(normal, rhs, nonnegative=nonnegative)
+    assert out.singular.tolist() == [row == bad for row in range(5)]
+    assert torch.isnan(out.solution[bad]).all() and torch.isnan(out.standard_errors[bad]).all()
+    assert not out.free[bad].any() and not out.dead[bad].any()
+    good = [row for row in range(5) if row != bad]
+    for name in ("solution", "standard_errors", "free", "dead"):
+        assert torch.equal(getattr(out, name)[good], getattr(clean, name)[good]), name

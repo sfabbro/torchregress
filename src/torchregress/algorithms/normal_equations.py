@@ -25,10 +25,12 @@ class NormalEquationsSolution:
             variable held at its bound, ``inf`` for an empty column (zero
             diagonal: no information) and ``NaN`` on ``singular`` rows.
         free: ``[..., n]`` variables neither at a bound nor empty.
-        dead: ``[..., n]`` empty columns (``N_ii ≤ 0``), pinned at 0.
+        dead: ``[..., n]`` empty columns (``N_ii ≤ 0``), pinned at 0 (``False`` on
+            rows with non-finite input).
         ridge_used: ``[...]`` rows whose (free-block) factorisation needed the ridge.
         singular: ``[...]`` rows singular even with the ridge, or with non-finite
-            input; not solved.
+            input (any ``NaN``/``±inf`` in their ``N`` or ``g``); not solved, and
+            ``free`` is ``False`` on them.
     """
 
     solution: Tensor
@@ -92,6 +94,13 @@ def solve_normal_equations(
     n = rhs.shape[-1]
     normal_2d = normal.reshape(-1, n, n)
     rhs_2d = rhs.reshape(-1, n)
+    # Rows with non-finite input are not solved. They are swapped for a trivial
+    # system first so that they cannot poison batch-wide quantities (the KKT
+    # tolerance, the multipliers, the active-set loop) of the other rows.
+    bad = ~torch.isfinite(normal_2d).all(-1).all(-1) | ~torch.isfinite(rhs_2d).all(-1)
+    eye = torch.eye(n, dtype=rhs.dtype, device=rhs.device)
+    normal_2d = torch.where(bad[:, None, None], eye, normal_2d)
+    rhs_2d = torch.where(bad[:, None], torch.zeros_like(rhs_2d), rhs_2d)
     scaled, gs, scale, dead = _jacobi_scale(normal_2d, rhs_2d)
     if nonnegative is None:
         x_s, se_s, free, ridged, singular = _solve_unconstrained(scaled, gs, dead, ridge)
@@ -111,7 +120,7 @@ def solve_normal_equations(
         )
     solution = x_s / scale
     standard_errors = torch.where(dead, torch.full_like(se_s, math.inf), se_s / scale)
-    singular = singular | ~torch.isfinite(solution).all(-1)
+    singular = singular | bad | ~torch.isfinite(solution).all(-1)
     nan = torch.full_like(solution, math.nan)
     solution = torch.where(singular[:, None], nan, solution)
     standard_errors = torch.where(singular[:, None], nan, standard_errors)
