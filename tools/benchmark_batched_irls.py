@@ -8,7 +8,13 @@ controller. Each configuration runs in a fresh subprocess so its peak RSS is its
 own. Rows/s for the loop are measured on at most ``--loop-rows`` rows (its cost
 is linear in rows by construction).
 
+``--max-outlier-fraction F`` draws each row's outlier fraction uniformly in
+``[0, F]`` instead of the fixed 2%, so rows converge after different numbers of
+iterations and the controller's compaction of finished rows shows up in the
+solve-call sizes (``row solves`` = Σ rows per call = Σ_b iterations_b).
+
     pixi run python tools/benchmark_batched_irls.py --rows 100 1000 10000
+    pixi run python tools/benchmark_batched_irls.py --rows 1000 --max-outlier-fraction 0.3
 """
 
 from __future__ import annotations
@@ -37,7 +43,9 @@ NU = 5.0
 CHUNK = 1024  # rows per normal-matrix block inside the caller's solve
 
 
-def make_data(rows: int, pixels: int, n: int, seed: int = 0):  # type: ignore[no-untyped-def]
+def make_data(  # type: ignore[no-untyped-def]
+    rows: int, pixels: int, n: int, seed: int = 0, max_outliers: float | None = None
+):
     g = torch.Generator().manual_seed(seed)
     grid = torch.linspace(-1.0, 1.0, pixels, dtype=torch.float64)
     basis = torch.stack([torch.special.legendre_polynomial_p(grid, m) for m in range(n)], -1)
@@ -46,7 +54,11 @@ def make_data(rows: int, pixels: int, n: int, seed: int = 0):  # type: ignore[no
     precision = 100.0 * (0.5 + torch.rand(rows, pixels, generator=g, dtype=torch.float64))
     target = (design @ theta.unsqueeze(-1)).squeeze(-1)
     target += torch.randn(rows, pixels, generator=g, dtype=torch.float64) * precision.rsqrt()
-    target += 2.0 * (torch.rand(rows, pixels, generator=g) < 0.02)
+    if max_outliers is None:
+        fraction = torch.full((rows, 1), 0.02)
+    else:  # heterogeneous rows: different iteration counts
+        fraction = max_outliers * torch.rand(rows, 1, generator=g)
+    target += 2.0 * (torch.rand(rows, pixels, generator=g) < fraction)
     return design, target, precision
 
 
@@ -77,8 +89,10 @@ def batched_problem(design: torch.Tensor, calls: list[int]) -> BatchedIRLSProble
     return BatchedIRLSProblem(predict, solve, exact_solve=True)
 
 
-def run_batched(rows: int, pixels: int, n: int) -> dict[str, float]:
-    design, target, precision = make_data(rows, pixels, n)
+def run_batched(
+    rows: int, pixels: int, n: int, max_outliers: float | None = None
+) -> dict[str, float]:
+    design, target, precision = make_data(rows, pixels, n, max_outliers=max_outliers)
     calls: list[int] = []
     problem = batched_problem(design, calls)
     theta0 = torch.zeros(rows, n, dtype=torch.float64)
@@ -91,14 +105,15 @@ def run_batched(rows: int, pixels: int, n: int) -> dict[str, float]:
         "seconds": seconds,
         "rows_per_s": rows / seconds,
         "mean_iterations": float(result.iterations.double().mean()),
+        "max_iterations": float(result.iterations.max()),
         "converged_fraction": float(result.converged.double().mean()),
         "solve_calls": float(len(calls)),
         "row_solves": float(sum(calls)),
     }
 
 
-def run_loop(rows: int, pixels: int, n: int) -> dict[str, float]:
-    design, target, precision = make_data(rows, pixels, n)
+def run_loop(rows: int, pixels: int, n: int, max_outliers: float | None = None) -> dict[str, float]:
+    design, target, precision = make_data(rows, pixels, n, max_outliers=max_outliers)
     iterations = converged = 0
     start = time.perf_counter()
     for row in range(rows):
@@ -136,10 +151,13 @@ def run_loop(rows: int, pixels: int, n: int) -> dict[str, float]:
     }
 
 
-def child(mode: str, rows: int, pixels: int, n: int, threads: int) -> None:
+def child(
+    mode: str, rows: int, pixels: int, n: int, threads: int, max_outliers: float | None
+) -> None:
     torch.set_num_threads(threads)
     base = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    stats = run_batched(rows, pixels, n) if mode == "batched" else run_loop(rows, pixels, n)
+    run = run_batched if mode == "batched" else run_loop
+    stats = run(rows, pixels, n, max_outliers)
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     stats["peak_rss_mb"] = peak / 1024.0
     stats["peak_rss_over_import_mb"] = (peak - base) / 1024.0
@@ -153,12 +171,30 @@ def main() -> None:
     parser.add_argument("--params", type=int, default=8)
     parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--loop-rows", type=int, default=200)
+    parser.add_argument(
+        "--max-outlier-fraction",
+        type=float,
+        default=None,
+        help="draw each row's outlier fraction in [0, F] (heterogeneous convergence)",
+    )
     parser.add_argument("--child", nargs=2, metavar=("MODE", "ROWS"), help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.child:
-        child(args.child[0], int(args.child[1]), args.pixels, args.params, args.threads)
+        child(
+            args.child[0],
+            int(args.child[1]),
+            args.pixels,
+            args.params,
+            args.threads,
+            args.max_outlier_fraction,
+        )
         return
-    print(f"N={args.pixels} n={args.params} threads={args.threads} nu={NU} float64 cpu")
+    outliers = (
+        "2% outliers"
+        if args.max_outlier_fraction is None
+        else f"outlier fraction U[0, {args.max_outlier_fraction}] per row"
+    )
+    print(f"N={args.pixels} n={args.params} threads={args.threads} nu={NU} float64 cpu, {outliers}")
     header = f"{'mode':<8} {'B':>6} {'rows/s':>10} {'s':>8} {'iters':>6} {'conv':>5} {'peak MB':>8}"
     print(header)
     for rows in args.rows:
@@ -176,7 +212,12 @@ def main() -> None:
                     str(args.params),
                     "--threads",
                     str(args.threads),
-                ],
+                ]
+                + (
+                    []
+                    if args.max_outlier_fraction is None
+                    else ["--max-outlier-fraction", str(args.max_outlier_fraction)]
+                ),
                 check=True,
                 capture_output=True,
                 text=True,
@@ -186,7 +227,12 @@ def main() -> None:
                 f"{mode:<8} {rows:>6} {stats['rows_per_s']:>10.1f} {stats['seconds']:>8.2f} "
                 f"{stats['mean_iterations']:>6.2f} {stats['converged_fraction']:>5.2f} "
                 f"{stats['peak_rss_over_import_mb']:>8.0f}"
-                + (f"  solve calls {stats['solve_calls']:.0f}" if mode == "batched" else "")
+                + (
+                    f"  solve calls {stats['solve_calls']:.0f}, row solves "
+                    f"{stats['row_solves']:.0f} (max iters {stats['max_iterations']:.0f})"
+                    if mode == "batched"
+                    else ""
+                )
             )
 
 

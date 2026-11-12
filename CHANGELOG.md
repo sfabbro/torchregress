@@ -37,7 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ridge_used`, accumulated per row into `BatchedIRLSResult.ridge_used`. At N=4096, n=8 (float64,
   CPU, 2 threads, on a shared 4-CPU host) it fits 260-730 rows/s for B=100..10,000, 4-12x
   a per-row loop over `iteratively_reweighted_fit` in the same run
-  (`tools/benchmark_batched_irls.py`).
+  (`tools/benchmark_batched_irls.py`; `--max-outlier-fraction` draws per-row outlier
+  fractions so rows converge at different iterations and the compaction of finished rows
+  shows in its row-solve count). The controller holds about three `[B, N]` working buffers
+  of the running rows (plus two transients) on top of the caller's data.
 - `torchregress.algorithms.solve_normal_equations(normal, rhs, *, nonnegative=None, start=None,
   ridge=1e-8, kkt_tol=1e-10, pivot_tol=None)`: many small least-squares problems from their normal
   equations in one call. Jacobi-scaled batched Cholesky (no host sync) with a flagged ridge
