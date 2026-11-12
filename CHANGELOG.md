@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Student-t family with known per-observation precision:
+  `torchregress.losses.student_t_nll(residual, precision, nu, *, mask=None, dim=-1)` is
+  the exact `t_nu(0, 1/precision)` NLL with all constants, masked and summed per row
+  (`nu=math.inf` is the Gaussian; masked entries may be non-finite);
+  `effective_precision(precision, model, eta)` is the variance model
+  `1/precision + eta^2 model^2`; `student_t_efficiency(nu, noise="gaussian")` is
+  `E[psi']^2/E[psi^2]` of the t location score under Gaussian noise (Gauss-Hermite) or t
+  noise (the Fisher factor `(nu+1)/(nu+3)`). `robust_weights` and
+  `iteratively_reweighted_fit` accept `weight="student_t"` (`(nu+1)/(nu+u^2)`, the exact
+  t-likelihood weight). `StudentTLoss` accepts `nu=math.inf`.
 - `torchregress.models.MarginalContrastiveDensity`: Marginal Contrastive Discrimination
   (Meziani, Ndiaye & Riu 2022), `p(y|x) = p(y) r(x, y)` from an unconditional flow and a
   CNRE ratio classifier. Monte-Carlo-normalized `log_prob`, importance-resampled `sample`

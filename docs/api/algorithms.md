@@ -18,7 +18,7 @@ guidance, and detailed usage walkthroughs, see [Algorithms overview](../methods/
 | `iteratively_reweighted_fit` | `(problem, initial_state, config)` — solver-agnostic IRLS that refits after every weight update and returns `IRLSFitResult`. |
 | `IRLSFitResult`, `IRLSIteration` | Frozen result and history diagnostics with effective sample size and finite/termination status. |
 | `IRLSBreakdownError` | Exception a caller-owned solver raises to return a diagnostic `"breakdown"` result. |
-| `robust_weights` | Huber, Pseudo-Huber, Tukey, Cauchy, Barron-style or custom IRLS multipliers. |
+| `robust_weights` | Huber, Pseudo-Huber, Tukey, Cauchy, Barron-style, Student-t (`(ν+1)/(ν+u²)`) or custom IRLS multipliers. |
 | `reweight_fixed_predictions` | Robust reweighting of a fixed model. Does not refit. |
 | `IRLSConfig` | Configuration for fixed-prediction compatibility reweighting. |
 | `huber_weights(scaled_residuals, delta)` | Huber weighting function. |

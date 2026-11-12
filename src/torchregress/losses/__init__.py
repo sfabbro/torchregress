@@ -221,7 +221,12 @@ from .split_eiv import (
     corrected_score_eiv_loss,
     split_measurement_loss,
 )
-from .student_t import StudentTLoss
+from .student_t import (
+    StudentTLoss,
+    effective_precision,
+    student_t_efficiency,
+    student_t_nll,
+)
 from .transforms import (
     BoxCoxTransformLoss,
     LogTransformLoss,
@@ -406,6 +411,9 @@ __all__ = [
     "sinh_arcsinh_nll",
     "skew_normal_nll",
     "skew_t_nll",
+    "student_t_nll",
+    "student_t_efficiency",
+    "effective_precision",
     "split_low_rank_gaussian_output",
     "sqr_loss",
     "symmetric_spd_matrix_sqrt",

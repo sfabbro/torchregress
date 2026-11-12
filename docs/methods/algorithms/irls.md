@@ -48,6 +48,7 @@ and the callback receives the block precision $w_i C_i^{-1}$ unless `base_precis
 | `"pseudo_huber"` | $w = [1 + (r/\delta)^2]^{-1/2}$ | Smooth Huber approximation | $\delta = 1.345$ |
 | `"cauchy"` | $w = [1 + (r/c)^2]^{-1}$ | Smooth redescending influence | $c=2.3849$ |
 | `"barron"` | Barron $\psi(r)/r$ | Continuous robust shape family | $\alpha=0$ |
+| `"student_t"` | $w = (\nu + 1)/(\nu + r^2)$ | Exact Student-$t$ likelihood weight (not normalised to 1 at $r=0$); `nu=math.inf` gives unit weights | $\nu = 5$ |
 | Custom `Callable` | User-defined | Flexible | — |
 
 Here $r$ denotes the **scaled** residual $r / \hat\sigma$ passed to the weight function.
@@ -77,7 +78,7 @@ beta = result.state
 | `problem` | `IRLSProblem` or `IRLSCallbacks` | — | Residual and weighted-refit callbacks; optional covariance, whitening and state-step callbacks |
 | `initial_state` | caller-defined | — | Initial model/parameter state |
 | `max_iter` | `int` | `50` | Maximum updates when no continuation schedule is supplied |
-| `weight` | `str` or `Callable` | `"huber"` | Huber, Pseudo-Huber, Tukey, Cauchy, Barron or custom weights |
+| `weight` | `str` or `Callable` | `"huber"` | Huber, Pseudo-Huber, Tukey, Cauchy, Barron, Student-t or custom weights |
 | `scale` | `str`, scalar, tensor or callable | `"mad"` | `"mad"`, `"std"`, `"rms"`, `"none"`, fixed or custom scale |
 | `base_precision` | `Tensor` or `None` | `None` | Sample, diagonal-output, or block precision multiplied by robust weights |
 | `mask` | boolean `Tensor` or `None` | `None` | Sample or element mask; covariance blocks require sample masks |
