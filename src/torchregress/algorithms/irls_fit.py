@@ -175,11 +175,13 @@ def robust_weights(
     """Return IRLS multipliers ``ψ(u)/u`` for standardized residual magnitudes ``u``.
 
     ``"student_t"`` (parameter ``nu``, default 5; ``math.inf`` gives unit weights)
-    is the exact ``t_ν`` NLL multiplier ``(ν+1)/(ν+u²)``. Unlike the other named
-    families it is not normalised to 1 at ``u = 0``: it is the Fisher-scoring
-    weight of the likelihood, so weighted normal matrices built from it give
-    the ``t_ν`` curvature (``"cauchy"`` with ``c = √ν`` differs from it by the
-    constant factor ``ν/(ν+1)``).
+    is the IRLS/MM (EM) weight ``ψ(u)/u = (ν+1)/(ν+u²)`` of the exact ``t_ν`` NLL.
+    Unlike the other named families it is not normalised to 1 at ``u = 0``
+    (``"cauchy"`` with ``c = √ν`` differs from it by the constant factor
+    ``ν/(ν+1)``). Its expectation under ``t_ν`` noise is 1, so a weighted normal
+    matrix built from it estimates the Gaussian information ``XᵀΛX``, not the
+    ``t_ν`` Fisher information ``(ν+1)/(ν+3) · XᵀΛX``: inverting it does not give
+    asymptotic ``t_ν`` standard errors (see :func:`student_t_efficiency`).
     """
     params = dict(weight_params or {})
     value = standardized_residuals.abs()

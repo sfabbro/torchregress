@@ -49,6 +49,8 @@ class BatchedIRLSStep:
         standard_errors: ``[b, n]`` parameter standard errors at those weights
             (e.g. from the weighted normal matrix); the convergence test divides
             the step by them. ``inf`` marks a parameter with no information.
+            These are the conditional errors of the weighted least-squares solve,
+            not asymptotic ``t_ν`` errors (see :class:`BatchedIRLSResult`).
         failed: optional ``[b]`` boolean mask of rows the solver could not solve
             (e.g. a singular normal matrix); they are marked ``FAILED``.
         predicted_objective: optional ``[b]`` value of the solver's local model
@@ -163,7 +165,15 @@ class BatchedIRLSResult:
 
     Attributes:
         theta: ``[B, n]`` parameters.
-        standard_errors: ``[B, n]`` from the last weighted solve of the row.
+        standard_errors: ``[B, n]`` from the last weighted solve of the row: the
+            conditional errors of that weighted least-squares problem, which set
+            the convergence scale. They are *not* asymptotic ``t_ν`` errors: the
+            Student-t IRLS weights average 1 under ``t_ν`` noise, so their normal
+            matrix estimates the Gaussian information and these errors are too
+            small by about ``√((ν+3)/(ν+1))`` under ``t_ν`` noise. For asymptotic
+            errors invert ``student_t_efficiency(ν, noise) · Jᵀ diag(λ_eff) J``
+            (the normal matrix of ``effective_precision`` without the IRLS
+            weights), or use a sandwich estimate.
         model: ``[B, N]`` model at ``theta`` (values off the likelihood are
             returned as ``predict`` gives them and not checked).
         weights: ``[B, N]`` IRLS weights ``λ_eff ψ(u)/u`` at ``theta`` (zero off the

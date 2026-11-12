@@ -179,6 +179,9 @@ The caller owns the model and the weighted solve, so bounds, priors, Gauss–New
 
 `BatchedIRLSResult` holds per-row `theta`, `standard_errors`, `model`, `weights`, `effective_precision`, `objective` (NLL + penalty), `penalty`, `status` (`IRLSRowStatus`: `CONVERGED`, `MAX_ITERATIONS`, `STALLED`, `FAILED`, `EMPTY`), `iterations` and `n_observations`.
 
+!!! warning "Standard errors are conditional, not asymptotic"
+    `standard_errors` are those of the final weighted least-squares solve: they set the convergence scale. They are not asymptotic $t_\nu$ errors. The Student-$t$ weight $(\nu+1)/(\nu+u^2)$ is the IRLS/MM weight $\psi(u)/u$, whose mean is 1 under $t_\nu$ noise, so $X^\mathsf{T} W X$ estimates the Gaussian information $X^\mathsf{T}\Lambda_{\mathrm{eff}} X$ rather than the $t_\nu$ Fisher information $\tfrac{\nu+1}{\nu+3} X^\mathsf{T}\Lambda_{\mathrm{eff}} X$: the returned errors are too small by about $\sqrt{(\nu+3)/(\nu+1)}$ (15% at $\nu = 5$) under $t_\nu$ noise and by a few percent under Gaussian noise. For asymptotic errors, build the normal matrix from `result.effective_precision` without the IRLS weights and multiply it by [`student_t_efficiency(nu, noise)`](../../losses/robust.md#student-t-likelihood-with-known-precisions) before inverting, as in the example below, or use a sandwich estimate.
+
 !!! warning "Fail closed"
     Rows with a non-finite target or precision on an observed entry, a non-finite start, too few observations, a failed or non-finite solve, or non-finite weights or objective are `FAILED`; rows with no usable observation are `EMPTY`. Their outputs are `NaN`, never zeros that look like a fit. Masked entries may hold any value, `NaN` included, and model values off the likelihood (masked or zero-precision entries) are not checked, so a template may be undefined there.
 
@@ -195,6 +198,7 @@ from torchregress.algorithms import (
     batched_iteratively_reweighted_fit,
     solve_normal_equations,
 )
+from torchregress.losses import student_t_efficiency
 
 torch.manual_seed(0)
 B, N, n = 1000, 512, 4
@@ -233,7 +237,11 @@ result = batched_iteratively_reweighted_fit(
     BatchedIRLSConfig(weight_params={"nu": 5.0}),
 )
 print(result.converged.all().item(), result.iterations.double().mean().item())
-print(((result.theta - truth) / result.standard_errors).abs().max().item())
+# Asymptotic t_5 errors under Gaussian noise: efficiency x information at λ_eff.
+lam = result.effective_precision  # zero off the likelihood
+info = student_t_efficiency(5.0) * design.transpose(1, 2) @ (design * lam.unsqueeze(-1))
+se = torch.linalg.inv(info).diagonal(dim1=-2, dim2=-1).sqrt()
+print("max |pull|:", ((result.theta - truth) / se).abs().max().item())
 gaussian = batched_iteratively_reweighted_fit(
     problem, torch.zeros(B, n, dtype=torch.float64), target, precision, mask,
     BatchedIRLSConfig(weight_params={"nu": math.inf}),

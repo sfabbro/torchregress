@@ -18,8 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `E[psi']^2/E[psi^2]` of the t location score under Gaussian noise (closed form for nu < 3,
   200-node Gauss-Hermite above; round-off accurate for every nu > 0) or t
   noise (the Fisher factor `(nu+1)/(nu+3)`). `robust_weights` and
-  `iteratively_reweighted_fit` accept `weight="student_t"` (`(nu+1)/(nu+u^2)`, the exact
-  t-likelihood weight). `StudentTLoss` accepts `nu=math.inf`.
+  `iteratively_reweighted_fit` accept `weight="student_t"` (`(nu+1)/(nu+u^2)`, the IRLS/MM
+  weight psi(u)/u of the exact t NLL; its weighted normal matrix estimates the Gaussian,
+  not the t Fisher, information). `StudentTLoss` accepts `nu=math.inf`.
 - `torchregress.algorithms.batched_iteratively_reweighted_fit(problem, initial_theta, target,
   precision, mask=None, config=None, *, initial_weights=None)`: IRLS for many independent
   rows (`[B, N]` observations with known precisions and masks; one spectrum or source per
