@@ -74,9 +74,10 @@ def solve_normal_equations(
     flagged in ``ridge_used``) where the Cholesky factorisation fails or is
     numerically rank-deficient: its smallest pivot ``L_kk²`` is at most
     ``pivot_tol`` (default: ``ridge``) times its largest. On ridged rows the
-    scaled condition number is then about ``n/ridge`` at most, and the solution and standard errors are
-    those of ``N_s + ridge·I``: regularised, so a non-identified direction gets
-    a finite (ridge-limited) error rather than ``inf``. The pivot test is cheap
+    scaled condition number is then about ``n/ridge`` at most, and the solution
+    and standard errors are those of ``N_s + ridge·I``: regularised, so a
+    non-identified direction gets a finite (ridge-limited) error rather than
+    ``inf``. The pivot test is cheap
     but not rank-revealing: an unridged factorisation can still be badly
     conditioned. Empty columns (``N_ii ≤ 0``) are pinned at 0.
 
