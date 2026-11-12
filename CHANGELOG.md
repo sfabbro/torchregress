@@ -43,11 +43,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   controller holds about three `[B, N]` working buffers of the running rows (plus two
   transients) on top of the caller's data.
 - `torchregress.algorithms.solve_normal_equations(normal, rhs, *, nonnegative=None, start=None,
-  ridge=1e-8, kkt_tol=1e-10, pivot_tol=None)`: many small least-squares problems from their
+  ridge=1e-8, kkt_tol=1e-10, pivot_tol=0.0)`: many small least-squares problems from their
   normal equations in one call. Jacobi-scaled batched Cholesky (no host sync) with a flagged
-  ridge fallback (taken where the factorisation fails or its smallest-to-largest pivot ratio
-  is at most `pivot_tol`, default `ridge`; solution and standard errors are then
-  regularised) and standard errors; with a `nonnegative` mask, batched Lawson-Hanson NNLS on
+  ridge fallback (by default only where the factorisation fails, so identified rows are never
+  biased; opt-in `pivot_tol > 0` also takes it where the smallest-to-largest pivot ratio is
+  at most `pivot_tol`; solution and standard errors are then regularised) and standard
+  errors; with a `nonnegative` mask, batched Lawson-Hanson NNLS on
   the scaled normal equations with a warm-startable free set (each active-set step works on
   the rows still pending, about one host sync per step). Empty columns are pinned at 0 with
   infinite standard error; singular or non-finite rows return `NaN` and are flagged.

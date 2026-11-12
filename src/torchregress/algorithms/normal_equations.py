@@ -56,7 +56,7 @@ def solve_normal_equations(
     start: Tensor | None = None,
     ridge: float = 1.0e-8,
     kkt_tol: float = NNLS_KKT_TOL,
-    pivot_tol: float | None = None,
+    pivot_tol: float = 0.0,
 ) -> NormalEquationsSolution:
     r"""Solve many small least-squares problems given their normal equations.
 
@@ -70,16 +70,16 @@ def solve_normal_equations(
     for a positive semi-definite ``N = XᵀWX (+ prior precision)`` and
     ``g = XᵀWy (+ prior term)``; ``𝒞`` is empty unless ``nonnegative`` is given.
     The system is Jacobi-scaled (unit diagonal) before factorisation, so the
-    ``ridge`` is relative. It is added to the scaled diagonal (and the row
-    flagged in ``ridge_used``) where the Cholesky factorisation fails or is
-    numerically rank-deficient: its smallest pivot ``L_kk²`` is at most
-    ``pivot_tol`` (default: ``ridge``) times its largest. On ridged rows the
-    scaled condition number is then about ``n/ridge`` at most, and the solution
-    and standard errors are those of ``N_s + ridge·I``: regularised, so a
-    non-identified direction gets a finite (ridge-limited) error rather than
-    ``inf``. The pivot test is cheap
-    but not rank-revealing: an unridged factorisation can still be badly
-    conditioned. Empty columns (``N_ii ≤ 0``) are pinned at 0.
+    ``ridge`` is relative. By default it is added to the scaled diagonal (and
+    the row flagged in ``ridge_used``) only where the Cholesky factorisation
+    fails. On ridged rows the solution and standard errors are those of
+    ``N_s + ridge·I``: regularised, so a non-identified direction gets a
+    finite (ridge-limited) error rather than ``inf``. A factorisation that
+    succeeds is not regularised, however badly conditioned: rows whose
+    minimiser is identified in floating point are never biased. With
+    ``pivot_tol > 0`` (opt-in) the ridge is also taken where the smallest
+    pivot ``L_kk²`` is at most ``pivot_tol`` times the largest; this test is
+    cheap but not rank-revealing. Empty columns (``N_ii ≤ 0``) are pinned at 0.
 
     Without ``nonnegative`` the solve is one batched Cholesky with no host
     synchronisation. With it, a batched Lawson--Hanson active-set method runs on
@@ -102,11 +102,12 @@ def solve_normal_equations(
             to the bounds; non-finite entries start at 0). Ignored without
             ``nonnegative``.
         ridge: positive relative ridge added to the scaled diagonal where the
-            factorisation fails or its pivots span more than ``1/pivot_tol``.
+            factorisation fails (or, with ``pivot_tol > 0``, its pivots span
+            more than ``1/pivot_tol``).
         pivot_tol: smallest-to-largest Cholesky pivot ratio at or below which a
             successful factorisation counts as rank-deficient and takes the
-            ridge. ``None`` (default) uses ``ridge``; ``0`` takes the ridge only
-            where the factorisation fails.
+            ridge. ``0`` (default) takes the ridge only where the factorisation
+            fails.
         kkt_tol: positive KKT tolerance of the non-negative solve (threshold
             ``kkt_tol · (1 + |g_s|_∞)`` on the scaled multipliers).
 
@@ -114,10 +115,8 @@ def solve_normal_equations(
         :class:`NormalEquationsSolution`.
     """
     _validate(normal, rhs, ridge, kkt_tol)
-    if pivot_tol is None:
-        pivot_tol = ridge
-    elif not (math.isfinite(pivot_tol) and pivot_tol >= 0.0):
-        raise ValueError("pivot_tol must be finite and >= 0, or None")
+    if not (math.isfinite(pivot_tol) and pivot_tol >= 0.0):
+        raise ValueError("pivot_tol must be finite and >= 0")
     batch_shape = rhs.shape[:-1]
     n = rhs.shape[-1]
     normal_2d = normal.reshape(-1, n, n)

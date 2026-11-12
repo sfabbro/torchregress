@@ -163,7 +163,7 @@ after at least `min_iter` iterations whenever the weights depend on the residual
 
 ### Ownership
 
-The caller owns the model and the weighted solve, so bounds, priors, Gauss–Newton linearisations and operators stay in caller code. [`solve_normal_equations`](../../api/algorithms.md#irls-robust-regression) covers the common linear case: batched Jacobi-scaled Cholesky with a flagged ridge fallback (taken where the factorisation fails or its smallest-to-largest pivot ratio is at most `pivot_tol`, default `ridge`, i.e. numerical rank deficiency; solution and standard errors on those rows are those of the ridged system, i.e. regularised) and standard errors, or, with a `nonnegative` mask, batched Lawson–Hanson NNLS \[6\] with a warm-started free set.
+The caller owns the model and the weighted solve, so bounds, priors, Gauss–Newton linearisations and operators stay in caller code. [`solve_normal_equations`](../../api/algorithms.md#irls-robust-regression) covers the common linear case: batched Jacobi-scaled Cholesky with a flagged ridge fallback and standard errors (by default the ridge is taken only where the factorisation fails, so a badly conditioned but identified row is never biased; opt-in `pivot_tol > 0` also takes it where the smallest-to-largest pivot ratio is at most `pivot_tol`; solution and standard errors on ridged rows are those of the ridged system, i.e. regularised), or, with a `nonnegative` mask, batched Lawson–Hanson NNLS \[6\] with a warm-started free set.
 
 | Callback / field | Signature | Role |
 |:-----------------|:----------|:-----|

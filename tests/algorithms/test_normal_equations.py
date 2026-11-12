@@ -224,7 +224,7 @@ def test_numerically_singular_factorisation_takes_the_ridge(bounded: bool) -> No
     # The warm start frees the collinear column (from 0 it would never be freed:
     # its multiplier vanishes once the other two fit exactly).
     start = torch.ones_like(rhs)
-    out = solve_normal_equations(normal, rhs, nonnegative=nonnegative, start=start)
+    out = solve_normal_equations(normal, rhs, nonnegative=nonnegative, start=start, pivot_tol=1e-8)
     rows = out.free.all(-1)  # the collinear block is in the factorisation
     assert rows.any()
     assert out.ridge_used[rows].all() and not out.singular.any()
@@ -239,7 +239,7 @@ def test_well_conditioned_rows_do_not_take_the_ridge() -> None:
         assert not solve_normal_equations(normal, rhs, nonnegative=nonnegative).ridge_used.any()
 
 
-def test_pivot_tol_zero_takes_the_ridge_only_on_failure() -> None:
+def test_default_takes_the_ridge_only_on_failure() -> None:
     generator = torch.Generator().manual_seed(0)
     design = torch.randn(64, 30, 3, generator=generator, dtype=torch.float64)
     design[..., 2] = design[..., 0] + design[..., 1]
@@ -248,11 +248,60 @@ def test_pivot_tol_zero_takes_the_ridge_only_on_failure() -> None:
     root = torch.diagonal(normal, dim1=-2, dim2=-1).sqrt()
     failed = torch.linalg.cholesky_ex(normal / (root[:, :, None] * root[:, None, :]))[1] != 0
     assert failed.any() and not failed.all()
-    out = solve_normal_equations(normal, rhs, pivot_tol=0.0)
-    assert torch.equal(out.ridge_used, failed)
+    assert torch.equal(solve_normal_equations(normal, rhs).ridge_used, failed)
+    assert torch.equal(solve_normal_equations(normal, rhs, pivot_tol=0.0).ridge_used, failed)
     for bad in (-1.0, math.nan):
         with pytest.raises(ValueError, match="pivot_tol"):
             solve_normal_equations(normal, rhs, pivot_tol=bad)
+
+
+def _near_collinear_pair(eps: float) -> tuple[torch.Tensor, torch.Tensor]:
+    """Columns ``a``, ``a(1 + eps t)`` and a constant: ill-conditioned, identified."""
+    t = torch.linspace(-1.0, 1.0, 200, dtype=torch.float64)
+    a = torch.exp(-0.5 * (t / 0.3) ** 2)
+    return torch.stack([a, a * (1.0 + eps * t), torch.ones_like(t)], -1), t
+
+
+def test_default_does_not_bias_an_identified_ill_conditioned_row() -> None:
+    # Scaled smallest eigenvalue ~2e-10: badly conditioned but identified in
+    # float64 (least squares agrees to ~1e-7 standard errors). A pivot-ratio
+    # rank test at 1e-8 would ridge it, shift the solution by ~0.1 standard
+    # errors and shrink the errors from ~6.5e3 to ~1e3.
+    design, t = _near_collinear_pair(1e-4)
+    generator = torch.Generator().manual_seed(0)
+    y = design.sum(-1) + 0.01 * torch.randn(t.shape, generator=generator, dtype=torch.float64)
+    normal, rhs = (design.T @ design)[None], (design.T @ y)[None]
+    out = solve_normal_equations(normal, rhs)
+    assert not out.ridge_used.any()
+    reference = torch.linalg.lstsq(design, y[:, None], driver="gelsd").solution.squeeze(-1)
+    assert ((out.solution[0] - reference).abs() / out.standard_errors[0]).max() < 1e-5
+    se = torch.diagonal(torch.linalg.inv(normal[0])).sqrt()
+    torch.testing.assert_close(out.standard_errors[0], se, rtol=1e-4, atol=0.0)
+
+
+def test_default_nonnegative_solution_does_not_depend_on_the_warm_start() -> None:
+    # The data push the second of a near-collinear pair negative, so it sits
+    # at its bound. A rank test on the intermediate active-set free sets would
+    # ridge {a, b, c}; its near-null direction then looks feasible and a warm
+    # start from (1, 1, 1) would stop at a ridged, non-minimising point.
+    design, t = _near_collinear_pair(1e-6)
+    generator = torch.Generator().manual_seed(0)
+    noise = 0.01 * torch.randn(t.shape, generator=generator, dtype=torch.float64)
+    y = 2.0 * design[:, 0] + 1.0 + noise - 5e-6 * t * design[:, 0]
+    normal, rhs = (design.T @ design)[None], (design.T @ y)[None]
+    mask = torch.tensor([True, True, False])
+    cold = solve_normal_equations(normal, rhs, nonnegative=mask)
+    warm = solve_normal_equations(normal, rhs, nonnegative=mask, start=torch.ones_like(rhs))
+    for out in (cold, warm):
+        assert out.free[0].tolist() == [True, False, True]
+        assert not out.ridge_used.any()
+        assert out.standard_errors[0].max() < 1.0
+    torch.testing.assert_close(warm.solution, cold.solution, rtol=1e-10, atol=1e-12)
+
+    def objective(x: torch.Tensor) -> float:
+        return float(0.5 * x @ normal[0] @ x - rhs[0] @ x)
+
+    assert objective(warm.solution[0]) <= objective(cold.solution[0]) + 1e-12
 
 
 def test_nonnegative_steps_work_on_the_rows_still_in_play(
