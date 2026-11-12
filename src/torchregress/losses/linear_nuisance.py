@@ -55,10 +55,9 @@ class LinearNuisanceMarginal(NamedTuple):
         coefficient_covariance: Posterior covariance of the coefficients
             ``[..., m, m]``.
         nuisance: Fitted nuisance ``U @ coefficients`` at every sample ``[..., N]``,
-            masked samples included (evaluated with the basis as given; where a
-            per-row basis is non-finite at a masked sample the value is
-            non-finite and carries no gradient, so it cannot reach the
-            gradients of observed samples).
+            masked samples included (where a per-row basis is non-finite at a
+            masked sample the value there is ``NaN`` without a gradient, so it
+            cannot reach the gradients of observed samples).
         residual: Conditional residual ``target - y_pred - nuisance`` ``[..., N]``;
             masked entries carry whatever the inputs held there.
     """
@@ -281,6 +280,7 @@ def _marginalize(
 
     u = basis.to(device=device, dtype=dtype)
     lam_r = lam * r
+    sample_finite: Optional[Tensor] = None  # per-row masked basis: finite rows of U
     if shared_basis:
         checks.append(
             (
@@ -298,9 +298,22 @@ def _marginalize(
         u_rows = None
     else:
         u_rows = torch.broadcast_to(u, (*lead, n, m)).reshape(rows, n, m)
-        if valid is not None:
+        if valid is not None and not shared_basis:
+            # A per-row basis may be non-finite at masked samples. Zero only those
+            # samples' basis rows: masked samples still drop out (lam = 0 there),
+            # the fit below is the nuisance at every other sample, and NaN never
+            # enters the graph (0 * NaN in a backward would poison every gradient).
+            # One reduction finds them: a row sum is finite iff the row is, unless
+            # entries exceed max/m, whose squares overflow the Gram anyway.
+            sample_finite = torch.isfinite(u_rows.sum(-1))
             u_rows = torch.where(
-                valid.unsqueeze(-1), u_rows, torch.zeros((), dtype=dtype, device=device)
+                sample_finite.unsqueeze(-1), u_rows, torch.zeros((), dtype=dtype, device=device)
+            )
+            checks.append(
+                (
+                    (sample_finite | ~valid).all(),
+                    "the basis must be finite on unmasked samples",
+                )
             )
         gram = (u_rows * lam.unsqueeze(-1)).mT @ u_rows
         b = (u_rows.mT @ lam_r.unsqueeze(-1)).squeeze(-1)
@@ -386,7 +399,7 @@ def _marginalize(
         fit = coef @ u.mT
     else:
         fit = (u_rows @ coef.unsqueeze(-1)).squeeze(-1)
-    cond = r - fit
+    cond = r - fit if valid is None else torch.where(valid, r - fit, r)  # r = 0 where masked
     chi2 = (lam * cond * cond).sum(-1) + (p * coef_w * coef_w).sum(-1)
     nll = 0.5 * ((n_obs - n_flat) * _LOG_2PI - log_lam.sum(-1) + log_det_a - log_det_prior + chi2)
     nll_out = nll.reshape(lead)
@@ -399,24 +412,11 @@ def _marginalize(
         post_cov = transform @ post_cov @ transform.mT
 
     coef_out = coef.reshape(*lead, m)
-    if u_rows is None:
-        nuisance = fit.reshape(*lead, n)  # shared basis, never masked: reuse U @ coef
-    elif shared_basis:
-        nuisance = coef_out @ u.mT
-    else:
-        # Not `fit`: the fitted nuisance is also evaluated at masked samples.
-        u_full = torch.broadcast_to(u, (*lead, n, m))
-        if valid is None:
-            nuisance = (u_full @ coef_out.unsqueeze(-1)).squeeze(-1)
-        else:
-            # A per-row basis may be non-finite at masked samples. Keep it out of
-            # the graph there (0 * NaN in a backward would poison every
-            # gradient), but return the documented "basis as given" value.
-            finite = torch.isfinite(u_full)
-            u_safe = torch.where(finite, u_full, torch.zeros((), dtype=dtype, device=device))
-            nuisance = (u_safe @ coef_out.unsqueeze(-1)).squeeze(-1)
-            raw = (u_full.detach() @ coef_out.detach().unsqueeze(-1)).squeeze(-1)
-            nuisance = torch.where(finite.all(-1), nuisance, raw)
+    # `fit` is U @ coef at every sample (masked ones included) on every path.
+    nuisance = fit.reshape(*lead, n)
+    if sample_finite is not None:
+        nan = torch.full((), float("nan"), dtype=dtype, device=device)
+        nuisance = torch.where(sample_finite.reshape(*lead, n), nuisance, nan)
     residual = y_obs - y_hat - nuisance
     return nll_out, LinearNuisanceMarginal(
         nll=nll_out,

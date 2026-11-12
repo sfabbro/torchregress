@@ -435,6 +435,22 @@ class TestFailClosed:
         with pytest.raises(ValueError, match=match):
             marginalize_linear_nuisance(y_pred, target, precision, basis, **kwargs)
 
+    def test_per_row_basis_must_be_finite_on_unmasked_samples(self) -> None:
+        y_pred, target, precision, basis = _problem(rows=3)
+        mask = torch.ones_like(target, dtype=torch.bool)
+        mask[0, 2] = False
+        u = basis.expand(3, *basis.shape).clone()
+        u[0, 2, 0] = float("nan")  # masked: fine
+        u[1, 5, 2] = float("inf")  # observed: must raise
+        with pytest.raises(ValueError, match="finite on unmasked samples"):
+            marginalize_linear_nuisance(y_pred, target, precision, u, mask=mask)
+        u[1, 5, 2] = 1e200  # huge but finite at a masked sample is ignored
+        mask[1, 5] = False
+        res = marginalize_linear_nuisance(y_pred, target, precision, u, mask=mask)
+        ref = marginalize_linear_nuisance(y_pred, target, precision, basis, mask=mask)
+        torch.testing.assert_close(res.nll, ref.nll)
+        torch.testing.assert_close(res.coefficients, ref.coefficients)
+
     def test_shape_mismatch_raises(self) -> None:
         y_pred, target, precision, basis = _problem()
         with pytest.raises(ValueError):
