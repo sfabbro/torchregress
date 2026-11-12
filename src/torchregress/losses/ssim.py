@@ -10,7 +10,7 @@ two things image SSIM implementations do not offer and sequence data needs:
   convolution, ``conv(m x) / conv(m)``), windows with too little valid support
   are excluded, and non-finite values at masked samples never enter the result;
 * per-sample weights (e.g. inverse variances) that enter the local moments the
-  same way, ``conv(w m x) / conv(w m)``.
+  same way, ``conv(w m x) / conv(w m)``; a zero weight is a masked sample.
 
 Without mask or weights the local SSIM map equals ``torchmetrics``' 2-D SSIM on
 ``[R, 1, N, 1]`` inputs with a ``(k, 1)`` kernel; ``padding="reflect"`` also
@@ -138,6 +138,10 @@ def _ssim_rows(
             w = torch.where(valid, w, torch.zeros_like(w))
         if not bool(torch.all(torch.isfinite(w) & (w >= 0))):
             raise ValueError("weights must be finite and >= 0 on unmasked samples")
+        # A zero weight (e.g. zero inverse variance at a bad pixel) is a masked
+        # sample: coverage, data range, offset and non-finite masking all use
+        # this one validity (w is already 0 where the mask is False).
+        valid = w > 0
         amp = w
     elif valid is not None:
         amp = valid.to(dtype)
@@ -308,16 +312,20 @@ def structural_similarity_1d(
             ``"reflect"``: ``N`` positions on a reflect-padded sequence, the
             convention of ``torchmetrics`` 1.9.
         min_coverage: A window is used only if its valid samples carry at least
-            this fraction of the window mass, :math:`\sum_i g_i m_{j+i}`, and
-            their weighted mass is positive. Irrelevant without mask (except
-            for ``padding="same"`` at the edges).
+            this fraction of the window mass,
+            :math:`\sum_i g_i \mathbb 1[w_{j+i} m_{j+i} > 0]`, and their
+            weighted mass is positive. Irrelevant without mask or zero weights
+            (except for ``padding="same"`` at the edges).
         mask: Optional boolean mask (``True`` = valid), broadcastable to
             ``y_pred``. Masked samples never enter a moment; non-finite values
             there are ignored.
         weights: Optional per-sample weights ``>= 0`` (e.g. inverse variances),
             broadcastable to ``y_pred``, entering every local moment as above.
-            A weight that is constant over a window cancels; weights only
-            reweight samples *within* windows. They are not a noise model.
+            A sample with zero weight is treated exactly as a masked sample
+            (no moment, no coverage, no data range; non-finite values there
+            are ignored). A weight that is constant over a window cancels;
+            weights only reweight samples *within* windows. They are not a
+            noise model.
         reduction: ``"mean"`` (over rows with at least one valid window),
             ``"sum"`` (same rows), or ``"none"`` (one score per row, shape
             ``[...]``; ``NaN`` for rows without a valid window).

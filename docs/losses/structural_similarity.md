@@ -42,12 +42,17 @@ $$
 
 A row's score is the mean of $\mathrm{SSIM}_j$ over its **valid windows**: windows
 whose valid samples carry at least `min_coverage` of the window mass,
-$\sum_i g_i m_{j+i} \ge$ `min_coverage`, with positive weighted mass. Windows inside
+$\sum_i g_i \mathbb 1[w_{j+i} m_{j+i} > 0] \ge$ `min_coverage`, with positive
+weighted mass. Windows inside
 a gap are excluded, not scored as zeros. The loss is $1 - \overline{\mathrm{SSIM}}$
 per row. Moments are population moments (no Bessel correction), as in `torchmetrics`.
 
 Masked samples never enter a moment: values there may be `NaN` or `inf`, and their
-gradient is exactly zero. A weight that is constant over a window cancels, so a
+gradient is exactly zero. A sample with **zero weight** (zero inverse variance at a
+bad pixel, say) is a masked sample in every respect: it does not count towards
+coverage or the default data range, and non-finite values there are ignored, so a
+window holding a single weighted sample is excluded rather than scored on luminance
+alone. A weight that is constant over a window cancels, so a
 per-row weight changes nothing; weights only re-balance samples *within* windows.
 
 ### Edge handling

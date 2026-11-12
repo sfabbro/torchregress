@@ -13,8 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   structural similarity along the last dimension of `[..., N]` sequences (spectra, light
   curves, profiles), batched over leading dimensions. Masks and per-sample weights (e.g.
   inverse variances) enter every local mean, variance and covariance by normalised
-  convolution; windows with less than `min_coverage` of their kernel mass valid are
-  excluded; masked samples may hold `NaN`. Gaussian or uniform window, `padding="valid"`
+  convolution; a zero weight is a masked sample; windows with less than `min_coverage`
+  of their kernel mass valid are excluded; masked samples may hold `NaN`. Gaussian or uniform window, `padding="valid"`
   (default), `"same"` (sequence masked beyond its ends) or `"reflect"` (reproduces
   `torchmetrics` 2-D SSIM on `[B, 1, N, 1]` with a `(k, 1)` kernel to round-off); per-row
   `data_range` (default: the target row's valid range, independent of the batch);

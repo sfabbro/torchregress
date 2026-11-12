@@ -48,7 +48,8 @@ def _np_ssim_row(
     x = np.where(m, x, 0.0)
     y = np.where(m, y, 0.0)
     w = np.where(m, w, 0.0)
-    gated = mask is not None or padding == "same"
+    m = m & (w > 0)  # a zero weight is a masked sample
+    gated = mask is not None or weights is not None or padding == "same"
     if padding == "reflect":
         x, y = np.pad(x, p, mode="reflect"), np.pad(y, p, mode="reflect")
         m, w = np.pad(m, p, mode="reflect"), np.pad(w, p, mode="reflect")
@@ -133,6 +134,7 @@ class TestNumpyReference:
         mask = torch.rand(4, 48, generator=gen) > 0.25
         mask[1, 10:30] = False  # a long gap: windows inside it must be excluded
         weights = torch.rand(4, 48, generator=gen, dtype=torch.float64) + 0.1
+        weights[2, 5:40:3] = 0.0  # zero weights count as masked samples
         ssim_map_score, ssim_map = structural_similarity_1d(
             x,
             y,
@@ -249,6 +251,37 @@ class TestMaskAndWeights:
         for padding in ("valid", "same", "reflect"):
             score = structural_similarity_1d(x, x, mask=mask, weights=weights, padding=padding)
             torch.testing.assert_close(score, torch.tensor(1.0, dtype=torch.float64))
+
+    @pytest.mark.parametrize("padding", ["valid", "same", "reflect"])
+    def test_zero_weight_is_a_masked_sample(self, padding) -> None:
+        x, y = _pair(rows=2, n=48, seed=5)
+        w = torch.rand(x.shape, generator=torch.Generator().manual_seed(6), dtype=torch.float64)
+        w = w + 0.5
+        w[0, 10:16] = 0.0  # a bad stretch: one window keeps a single weighted sample
+        w[0, 12] = 1.0
+        w[1, ::3] = 0.0
+        kw = {"kernel_size": 7, "padding": padding, "reduction": "none", "return_map": True}
+        score, smap = structural_similarity_1d(x, y, weights=w, **kw)
+        ref_score, ref_map = structural_similarity_1d(x, y, mask=w > 0, weights=w, **kw)
+        torch.testing.assert_close(score, ref_score, equal_nan=True)
+        torch.testing.assert_close(smap, ref_map, equal_nan=True)
+        assert torch.isnan(smap).any()  # low-coverage windows are excluded
+
+    def test_values_at_zero_weight_samples_are_ignored(self) -> None:
+        x, y = _pair(rows=2, n=48, seed=7)
+        w = torch.ones_like(x)
+        w[:, 20:23] = 0.0
+        base = structural_similarity_1d(x, y, weights=w, reduction="none")
+        for bad in (float("nan"), float("inf"), 1e12):
+            y_bad, x_bad = y.clone(), x.clone()
+            y_bad[w == 0] = bad
+            x_bad[w == 0] = -bad
+            pred = x_bad.requires_grad_(True)
+            score = structural_similarity_1d(pred, y_bad, weights=w, reduction="none")
+            torch.testing.assert_close(score.detach(), base)
+            score.sum().backward()
+            assert pred.grad is not None and torch.isfinite(pred.grad).all()
+            assert (pred.grad[w == 0] == 0).all()
 
     def test_weights_shift_the_score_towards_heavily_weighted_samples(self) -> None:
         x, y = _pair(rows=1, n=64, seed=2)
