@@ -368,10 +368,15 @@ def test_effective_precision_rejects_invalid_tensor_eta(bad: float) -> None:
         effective_precision(precision, model, eta)
 
 
-def test_effective_precision_tensor_eta_must_broadcast_to_precision() -> None:
+@pytest.mark.parametrize("shape", [(2, 3, 1), (3,), (2, 4)])
+def test_effective_precision_tensor_eta_must_broadcast_to_precision(
+    shape: tuple[int, ...],
+) -> None:
+    # (2, 3, 1) broadcasts but expands the output; (3,) and (2, 4) do not
+    # broadcast at all.
     precision = torch.ones(3, 4, dtype=torch.float64)
     with pytest.raises(ValueError, match="broadcast"):
-        effective_precision(precision, precision, torch.full((2, 3, 1), 0.1, dtype=torch.float64))
+        effective_precision(precision, precision, torch.full(shape, 0.1, dtype=torch.float64))
 
 
 @pytest.mark.parametrize("nu", [1.0, 3.0, 5.0, 10.0])

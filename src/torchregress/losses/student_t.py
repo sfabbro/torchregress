@@ -173,7 +173,11 @@ def effective_precision(precision: Tensor, model: Tensor, eta: float | Tensor) -
     """
     if isinstance(eta, Tensor):
         eta = eta.to(dtype=precision.dtype, device=precision.device)
-        if torch.broadcast_shapes(eta.shape, precision.shape) != precision.shape:
+        try:
+            fits = torch.broadcast_shapes(eta.shape, precision.shape) == precision.shape
+        except RuntimeError:
+            fits = False
+        if not fits:
             raise ValueError(
                 f"eta shape {tuple(eta.shape)} must broadcast to precision shape "
                 f"{tuple(precision.shape)}"
