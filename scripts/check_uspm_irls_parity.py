@@ -9,7 +9,8 @@ that implementation, frozen in ``scripts/uspm_b461f8f_reference.py``:
 * ``student_t_efficiency`` vs ``student_t_fisher_factor`` /
   ``student_t_gaussian_efficiency``;
 * ``solve_normal_equations(nonnegative=...)`` vs ``nnls_normal`` (cold and warm
-  starts, partly constrained, rows that take the ridge, a single row);
+  starts, partly constrained, a single row, and many rows of one call that
+  take the ridge);
 * ``batched_iteratively_reweighted_fit`` with a linear solve vs ``irls_fit`` and with
   uspm's bilinear Gauss--Newton/LM solve as callbacks vs ``irls_fit_shared``.
 
@@ -97,13 +98,20 @@ def check_nnls(uspm_op) -> None:  # type: ignore[no-untyped-def]
     y = torch.randn(b, p, generator=g, dtype=DTYPE)
     collinear = x.clone()
     collinear[: b // 4, :, 2] = collinear[: b // 4, :, 0] + collinear[: b // 4, :, 1]
+    # An exact duplicate of an unconstrained (always free) column: the plain
+    # factorisation fails on nearly all of those rows, so many rows of one call
+    # take the ridge (a collinear constrained column is mostly pinned instead).
+    duplicated = x.clone()
+    duplicated[: b // 4, :, 8] = duplicated[: b // 4, :, 7]
     warm = torch.randn(b, n, generator=g, dtype=DTYPE)
     for label, design, k, start, rows in (
         ("k=6", x, 6, None, slice(None)),
         ("k=9", x, 9, None, slice(None)),
         ("k=6 warm", x, 6, warm, slice(None)),
         ("k=6 one row", x, 6, None, slice(0, 1)),
-        ("k=6 ridged rows", collinear, 6, warm, slice(None)),
+        ("k=6 collinear constrained column", collinear, 6, warm, slice(None)),
+        ("k=6 ridged rows", duplicated, 6, None, slice(None)),
+        ("k=6 ridged rows warm", duplicated, 6, warm, slice(None)),
     ):
         xd, yd = design[rows], y[rows]
         normal = xd.transpose(1, 2) @ xd
@@ -116,7 +124,11 @@ def check_nnls(uspm_op) -> None:  # type: ignore[no-untyped-def]
         report(f"nnls {label}: free set mismatches", float((ours.free != passive).sum()), 0.0)
         flags = (ours.ridge_used != ridged).sum() + (ours.singular != singular).sum()
         report(f"nnls {label}: ridge/singular mismatches", float(flags), 0.0)
-    report("nnls ridged rows present", 0.0 if bool(ridged.any()) else 1.0, 0.0)
+        if "ridged rows" in label:
+            # Most of the b // 4 duplicated rows take the ridge in the same call.
+            count = int(ours.ridge_used.sum())
+            short = float(max(0, b // 8 - count))
+            report(f"nnls {label}: ridged rows short of {b // 8} (got {count})", short, 0.0)
 
 
 def linear_problem(design: Tensor) -> BatchedIRLSProblem:
