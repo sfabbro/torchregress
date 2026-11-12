@@ -221,6 +221,9 @@ from .split_eiv import (
     corrected_score_eiv_loss,
     split_measurement_loss,
 )
+
+# 1-D structural similarity (spectra, time series, profiles)
+from .ssim import StructuralSimilarity1dLoss, structural_similarity_1d
 from .student_t import (
     StudentTLoss,
     effective_precision,
@@ -367,6 +370,7 @@ __all__ = [
     "SplitMeasurementLoss",
     "SqrtTransformLoss",
     "StructuralEIVLoss",
+    "StructuralSimilarity1dLoss",
     "StudentTLoss",
     "TransformedTargetLoss",
     "TukeyBiweightLoss",
@@ -416,6 +420,7 @@ __all__ = [
     "effective_precision",
     "split_low_rank_gaussian_output",
     "sqr_loss",
+    "structural_similarity_1d",
     "symmetric_spd_matrix_sqrt",
     "tweedie_loss",
     "conr_loss",
