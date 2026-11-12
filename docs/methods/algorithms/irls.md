@@ -171,7 +171,7 @@ The caller owns the model and the weighted solve, so bounds, priors, Gauss–New
 | `solve` | `(theta, weights, target, rows) -> BatchedIRLSStep` | Full step at fixed weights: `theta`, `standard_errors`, optional `failed`, optional `predicted_objective` |
 | `damped_solve` | `(theta, weights, target, rows, damping) -> theta` | Optional damped step for per-row damping $\lambda$ |
 | `penalty` | `(theta, rows) -> [b]` | Optional penalty $\Pi_b$ in NLL units |
-| `exact_solve` | `bool` | `solve` is the exact minimiser (linear LS, NNLS): one solve converges when the weights are fixed |
+| `exact_solve` | `bool` | `solve` is the exact minimiser (linear LS, NNLS): one solve converges when the weights are fixed, and is taken without the decrease test |
 
 `rows` is `None` when a callback gets the whole batch in order, otherwise the global indices of the rows it gets: finished rows leave the active set, so a batch costs $\sum_b \text{iterations}_b$ row solves. Each iteration has one host synchronisation (plus one per damping attempt).
 

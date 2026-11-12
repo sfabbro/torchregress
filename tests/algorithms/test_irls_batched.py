@@ -464,3 +464,26 @@ def test_result_evaluated_in_row_chunks(monkeypatch: pytest.MonkeyPatch) -> None
     chunked = _fit(design, target, precision, config=config)
     for name in ("theta", "model", "weights", "effective_precision", "objective"):
         torch.testing.assert_close(getattr(chunked, name), getattr(whole, name), rtol=0, atol=0)
+
+
+def test_exact_fixed_weight_solve_is_taken_even_from_an_infeasible_start() -> None:
+    # min Σ λ (y − x a)² with a ≥ 0 and y = −x: the minimiser is a = 0, but the
+    # infeasible start a = −1 fits exactly (lower weighted objective than any
+    # feasible point), so a decrease test would reject the exact solve.
+    pixels = 40
+    x = torch.linspace(0.5, 1.5, pixels, dtype=DTYPE)
+    design = x.reshape(1, pixels, 1).expand(2, pixels, 1).clone()
+    target = -design[..., 0]
+    precision = torch.full_like(target, 4.0)
+    linear = _linear_problem(design, nonnegative=torch.tensor([True]))
+
+    def damped(theta, weights, target_, rows, damping):  # type: ignore[no-untyped-def]
+        return linear.solve(theta, weights, target_, rows).theta
+
+    problem = replace(linear, damped_solve=damped)
+    config = BatchedIRLSConfig(weight_params={"nu": math.inf})
+    start = torch.full((2, 1), -1.0, dtype=DTYPE)
+    result = batched_iteratively_reweighted_fit(problem, start, target, precision, None, config)
+    assert (result.status == IRLSRowStatus.CONVERGED).all()
+    assert torch.equal(result.theta, torch.zeros(2, 1, dtype=DTYPE))
+    assert (result.iterations == 1).all()

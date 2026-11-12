@@ -92,7 +92,9 @@ class BatchedIRLSProblem:
             belongs in ``solve``.
         exact_solve: ``solve`` returns the exact minimiser at the given weights
             (linear least squares, NNLS). With weights that do not depend on the
-            residuals one solve then converges.
+            residuals one solve then converges: its result is taken as it is,
+            without the decrease test of ``damped_solve`` (the start may be
+            infeasible and fit better than any feasible point).
     """
 
     predict: Callable[[Tensor, Tensor | None], Tensor]
@@ -347,7 +349,10 @@ def batched_iteratively_reweighted_fit(
         sub_tol = ok & (ratio < cfg.tol)
         new = full
         stuck = torch.zeros_like(ok)
-        if problem.damped_solve is not None:
+        # One exact solve at fixed weights is the minimiser itself: it is taken
+        # unconditionally (the start may be infeasible, or lower than any
+        # feasible point), never damped.
+        if problem.damped_solve is not None and not one_solve:
             new, stuck, sub_tol, lam = _accept_or_damp(
                 problem,
                 cfg,
@@ -366,7 +371,7 @@ def batched_iteratively_reweighted_fit(
             )
             _put(damping, rows, lam)
         if one_solve:
-            done = ok
+            done = ok & ~stuck
         elif fixed_weights or iteration >= cfg.min_iter:
             done = sub_tol
         else:
