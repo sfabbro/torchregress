@@ -133,6 +133,8 @@ $$
 \lambda_{\mathrm{eff},i} = \frac{1}{1/\lambda_i + \eta^2 m_i^2} = \frac{\lambda_i}{1 + \eta^2 m_i^2 \lambda_i}.
 $$
 
+`eta` is a float or a tensor broadcastable to the precisions (e.g. one value per row, `[B, 1]`). A tensor `eta` is validated (finite, $\ge 0$) with one value read back to the host, so on a GPU each call synchronises the device; a float `eta` costs no synchronisation.
+
 **Efficiency.** [`student_t_efficiency`](../api/losses.md#robust-losses) returns $E[\psi']^2/E[\psi^2]$ for the score $\psi(z) = (\nu+1)z/(\nu+z^2)$: the information the $t_\nu$ estimator extracts per unit Gaussian information. Under $t_\nu$ noise (`noise="student_t"`) it is the Fisher factor $(\nu+1)/(\nu+3)$; under Gaussian noise (`noise="gaussian"`, the default) it is a closed form in $\operatorname{erfc}$ for $\nu < 3$ and 200-node Gauss–Hermite quadrature above, both within a few $10^{-15}$ (relative) of high-precision quadrature for every $\nu > 0$ ($0.942$ at $\nu = 5$; it falls like $\sqrt\nu$ as $\nu \to 0$). Use it to turn a Gaussian Fisher information into the asymptotic information of a $t_\nu$ fit.
 
 ```python

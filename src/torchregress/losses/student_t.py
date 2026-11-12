@@ -159,6 +159,12 @@ def effective_precision(precision: Tensor, model: Tensor, eta: float | Tensor) -
     propagate (fail closed). For ``eta == 0`` (a Python number) ``precision``
     itself is returned, not a copy.
 
+    A float ``eta`` is checked on the host at no cost. A tensor ``eta`` is
+    checked with one reduction read back to the host: a device
+    synchronisation on every call when it lives on an accelerator, so a loop
+    that passes a per-row tensor pays it at each iteration. A float ``eta``
+    (one value for every row) avoids it.
+
     Args:
         precision: Known precisions ``λ ≥ 0``.
         model: Model values ``m`` (broadcastable to ``precision``), usually frozen

@@ -82,7 +82,7 @@ $$\mathcal{L}_{\beta\text{-NLL}} = (\sigma^2 + \varepsilon)^{-\beta} \cdot \math
 | `CauchyLoss` | `CauchyLoss(c=1.0, reduction="mean")` | Logarithmic tail |
 | `StudentTLoss` | `StudentTLoss(nu=1.0, scale=1.0, reduction="mean")` | Student-t NLL; Cauchy at ν=1, Gaussian at `nu=math.inf` |
 | `student_t_nll` | `student_t_nll(residual, precision, nu, *, mask=None, dim=-1)` | Exact `t_ν(0, 1/precision)` NLL with constants, masked, summed over `dim` (`None`: elementwise); `nu=math.inf` is Gaussian |
-| `effective_precision` | `effective_precision(precision, model, eta)` | Precision of the variance model `1/precision + η² model²`; zero precision stays zero for a finite model, `eta` (float or tensor) must be finite and ≥ 0 |
+| `effective_precision` | `effective_precision(precision, model, eta)` | Precision of the variance model `1/precision + η² model²`; zero precision stays zero for a finite model, `eta` (float or tensor) must be finite and ≥ 0; a tensor `eta` is validated with one host synchronisation per call |
 | `student_t_efficiency` | `student_t_efficiency(nu, noise="gaussian")` | `E[ψ']²/E[ψ²]` of the t_ν location score under Gaussian noise (closed form for ν < 3, Gauss–Hermite above) or t_ν noise (`(ν+1)/(ν+3)`) |
 | `TukeyBiweightLoss` | `TukeyBiweightLoss(c=4.685, reduction="mean")` | Redescending (zero for |r| > c) |
 | `AdaptiveRobustLoss` | `AdaptiveRobustLoss(...)` | Trainable α + scale |

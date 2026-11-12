@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the exact `t_nu(0, 1/precision)` NLL with all constants, masked and summed per row
   (`nu=math.inf` is the Gaussian; masked entries may be non-finite);
   `effective_precision(precision, model, eta)` is the variance model
-  `1/precision + eta^2 model^2`; `student_t_efficiency(nu, noise="gaussian")` is
+  `1/precision + eta^2 model^2` (a tensor `eta` is validated with one host sync per call); `student_t_efficiency(nu, noise="gaussian")` is
   `E[psi']^2/E[psi^2]` of the t location score under Gaussian noise (closed form for nu < 3,
   200-node Gauss-Hermite above; round-off accurate for every nu > 0) or t
   noise (the Fisher factor `(nu+1)/(nu+3)`). `robust_weights` and
