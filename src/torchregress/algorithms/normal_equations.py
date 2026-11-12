@@ -87,7 +87,10 @@ def solve_normal_equations(
     ``kkt_tol · (1 + |g_s|_∞)``; each inner step solves the free block and, when a
     constrained variable would turn non-positive, moves to the first bound on
     the segment and pins it. ``start`` warm-starts the free set (e.g. the
-    previous solution of a nearby problem). Rows terminate independently.
+    previous solution of a nearby problem). Rows terminate independently, and
+    every step works on the rows still in play only: about one host
+    synchronisation per active-set step, at ``O(b·n³)`` for the ``b`` rows still
+    pending, plus one final batched factorisation for the standard errors.
 
     Args:
         normal: ``[..., n, n]`` symmetric positive semi-definite matrices.
@@ -237,14 +240,13 @@ def _free_block_cholesky(
     )
     chol, info = torch.linalg.cholesky_ex(system)
     ridged = (info != 0) | _rank_deficient(chol, free, pivot_tol)
-    singular = torch.zeros_like(ridged)
-    if bool(ridged.any()):
-        chol_r, info_r = torch.linalg.cholesky_ex(
-            system + ridge * torch.diag_embed(free.to(scaled.dtype))
-        )
-        singular = ridged & (info_r != 0)
-        chol_r = torch.where(singular[:, None, None], eye, chol_r)
-        chol = torch.where(ridged[:, None, None], chol_r, chol)
+    # Both factorisations are computed unconditionally: no host synchronisation.
+    chol_r, info_r = torch.linalg.cholesky_ex(
+        system + ridge * torch.diag_embed(free.to(scaled.dtype))
+    )
+    singular = ridged & (info_r != 0)
+    chol_r = torch.where(singular[:, None, None], eye, chol_r)
+    chol = torch.where(ridged[:, None, None], chol_r, chol)
     return chol, ridged, singular
 
 
@@ -258,57 +260,66 @@ def _solve_nonnegative(
     pivot_tol: float,
     kkt_tol: float,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Batched Lawson--Hanson on Jacobi-scaled normal equations (feasible ``x``)."""
+    """Batched Lawson--Hanson on Jacobi-scaled normal equations (feasible ``x``).
+
+    Every step works on the rows still in play only (``going`` for the outer
+    KKT step, ``pending`` for the inner feasibility steps), gathered by index:
+    each step costs ``O(b·n³)`` on those rows and one host synchronisation (the
+    index of the rows that carry on), whatever the batch size.
+    """
     b, n = gs.shape
     free = ~dead & (~constrained | (x > 0.0))
-    tol = kkt_tol * (1.0 + gs.abs().amax(-1, keepdim=True))
+    tol = kkt_tol * (1.0 + gs.abs().amax(-1))
     ridged = torch.zeros(b, dtype=torch.bool, device=gs.device)
     singular = torch.zeros_like(ridged)
-    going = torch.ones_like(ridged)
-    inf = torch.full_like(x, math.inf)
-    # Free set of the last factorisation: the standard errors reuse it when the
-    # set has not changed since (bit-identical, one factorisation saved).
-    factored: Tensor | None = None
-    chol: Tensor | None = None
+    going = torch.arange(b, device=gs.device)
     for _ in range(3 * n + 3):
-        pending = going & ~singular
+        pending = going
         for _ in range(n + 1):
-            if not bool(pending.any()):
+            if pending.numel() == 0:
                 break
-            chol, used, sing = _free_block_cholesky(scaled, free, ridge, pivot_tol)
-            factored = free
-            ridged |= used & pending
-            singular |= sing & pending
-            pending &= ~sing
+            free_p, gs_p, x_p = free[pending], gs[pending], x[pending]
+            bounded = free_p & constrained[pending]
+            chol, used, sing = _free_block_cholesky(scaled[pending], free_p, ridge, pivot_tol)
+            ridged[pending] = ridged[pending] | used
+            singular[pending] = singular[pending] | sing
             z = torch.cholesky_solve(
-                torch.where(free, gs, torch.zeros_like(gs)).unsqueeze(-1), chol
+                torch.where(free_p, gs_p, torch.zeros_like(gs_p)).unsqueeze(-1), chol
             ).squeeze(-1)
-            z = torch.where(free, z, torch.zeros_like(z))
-            infeasible = pending.unsqueeze(-1) & free & constrained & ~(z > 0.0)
+            z = torch.where(free_p, z, torch.zeros_like(z))
+            infeasible = ~sing.unsqueeze(-1) & bounded & ~(z > 0.0)
             stuck = infeasible.any(-1)
-            accept = pending & ~stuck
-            x = torch.where(accept.unsqueeze(-1), z, x)
+            accept = ~sing & ~stuck
+            x_p = torch.where(accept.unsqueeze(-1), z, x_p)
             # Move from x (feasible) towards z up to the first bound on the way.
-            ratio = torch.where(infeasible, x / (x - z), inf)
+            ratio = torch.where(infeasible, x_p / (x_p - z), torch.full_like(x_p, math.inf))
             alpha = ratio.amin(-1, keepdim=True).clamp(0.0, 1.0)
-            moved = x + alpha * (z - x)
+            moved = x_p + alpha * (z - x_p)
             hit = stuck.unsqueeze(-1) & (
-                (infeasible & (ratio <= alpha)) | (free & constrained & ~(moved > 0.0))
+                (infeasible & (ratio <= alpha)) | (bounded & ~(moved > 0.0))
             )
-            x = torch.where(stuck.unsqueeze(-1), moved, x)
-            x = torch.where(hit, torch.zeros_like(x), x)
-            free = free & ~hit
-            pending = stuck
-        multiplier = gs - (scaled @ x.unsqueeze(-1)).squeeze(-1)
-        candidate = going.unsqueeze(-1) & constrained & ~free & ~dead & (multiplier > tol)
-        going = candidate.any(-1) & ~singular
-        if not bool(going.any()):
+            x_p = torch.where(stuck.unsqueeze(-1), moved, x_p)
+            x[pending] = torch.where(hit, torch.zeros_like(x_p), x_p)
+            free[pending] = free_p & ~hit
+            pending = pending[stuck]  # the one host synchronisation of the step
+        free_g, x_g = free[going], x[going]
+        multiplier = gs[going] - (scaled[going] @ x_g.unsqueeze(-1)).squeeze(-1)
+        candidate = (
+            ~singular[going].unsqueeze(-1)
+            & constrained[going]
+            & ~free_g
+            & ~dead[going]
+            & (multiplier > tol[going].unsqueeze(-1))
+        )
+        best = torch.where(candidate, multiplier, torch.full_like(x_g, -math.inf)).argmax(-1)
+        more = candidate.any(-1)
+        pick = torch.nn.functional.one_hot(best, n).to(torch.bool) & more.unsqueeze(-1)
+        free[going] = free_g | pick
+        going = going[more]  # the one host synchronisation of the step
+        if going.numel() == 0:
             break
-        best = torch.where(candidate, multiplier, -inf).argmax(-1)
-        pick = torch.nn.functional.one_hot(best, n).to(torch.bool)
-        free = free | (pick & going.unsqueeze(-1))
-    if chol is None or factored is None or not bool(torch.equal(factored, free)):
-        chol, _, _ = _free_block_cholesky(scaled, free, ridge, pivot_tol)
+    # One more factorisation of the final free sets gives the standard errors.
+    chol, _, _ = _free_block_cholesky(scaled, free, ridge, pivot_tol)
     inv_diag = torch.diagonal(torch.cholesky_inverse(chol), dim1=-2, dim2=-1)
     se = torch.where(free, inv_diag.clamp_min(0.0).sqrt(), torch.ones_like(x))
     return x, se, free, ridged, singular

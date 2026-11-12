@@ -253,3 +253,28 @@ def test_pivot_tol_zero_takes_the_ridge_only_on_failure() -> None:
     for bad in (-1.0, math.nan):
         with pytest.raises(ValueError, match="pivot_tol"):
             solve_normal_equations(normal, rhs, pivot_tol=bad)
+
+
+def test_nonnegative_steps_work_on_the_rows_still_in_play(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import torchregress.algorithms.normal_equations as module
+
+    _, _, _, (normal, rhs) = _least_squares_batch(16, 30, 6, seed=4)
+    mask = torch.ones(6, dtype=torch.bool)
+    reference = solve_normal_equations(normal, rhs, nonnegative=mask)
+    sizes: list[int] = []
+    factor = module._free_block_cholesky
+
+    def recording(scaled, free, ridge, pivot_tol):  # type: ignore[no-untyped-def]
+        sizes.append(scaled.shape[0])
+        return factor(scaled, free, ridge, pivot_tol)
+
+    monkeypatch.setattr(module, "_free_block_cholesky", recording)
+    out = solve_normal_equations(normal, rhs, nonnegative=mask)
+    for name in ("solution", "standard_errors", "free", "ridge_used", "singular"):
+        assert torch.equal(getattr(out, name), getattr(reference, name)), name
+    # Rows finish at different steps: later steps factorise fewer rows; the last
+    # call factorises every row's final free set for the standard errors.
+    assert sizes[0] == 16 and sizes[-1] == 16
+    assert min(sizes[:-1]) < 16

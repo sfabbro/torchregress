@@ -290,8 +290,9 @@ def batched_iteratively_reweighted_fit(
     reachable is below the float resolution of the objective (then it is
     converged, if ``min_iter`` allows). Finished rows leave the active set, so
     a batch costs ``Σ_b iterations_b`` row solves, and there is no per-row
-    Python loop: one host synchronisation per iteration (plus one per damping
-    attempt).
+    Python loop: one host synchronisation per controller iteration (plus one
+    per damping attempt), excluding the caller's solve (the non-negative path of
+    :func:`solve_normal_equations` adds about one per active-set step).
 
     **Fail closed.** Rows with non-finite target or precision on an observed
     entry, a non-finite start, fewer than ``min_observations`` usable

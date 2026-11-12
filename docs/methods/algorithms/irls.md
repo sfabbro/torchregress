@@ -173,7 +173,7 @@ The caller owns the model and the weighted solve, so bounds, priors, Gauss–New
 | `penalty` | `(theta, rows) -> [b]` | Optional penalty $\Pi_b$ in NLL units |
 | `exact_solve` | `bool` | `solve` is the exact minimiser (linear LS, NNLS): one solve converges when the weights are fixed, and is taken without the decrease test |
 
-`rows` is `None` when a callback gets the whole batch in order, otherwise the global indices of the rows it gets: finished rows leave the active set, so a batch costs $\sum_b \text{iterations}_b$ row solves. Each iteration has one host synchronisation (plus one per damping attempt).
+`rows` is `None` when a callback gets the whole batch in order, otherwise the global indices of the rows it gets: finished rows leave the active set, so a batch costs $\sum_b \text{iterations}_b$ row solves. Each controller iteration has one host synchronisation (plus one per damping attempt), excluding the caller's solve: the non-negative path of `solve_normal_equations` costs about one more per active-set step, at $O(b\,n^3)$ per step on the rows still pending (the unconstrained path has none).
 
 `BatchedIRLSConfig` sets `weight` (default `"student_t"`), `weight_params` (default `{}`; `nu=5` for `student_t` unless given), `eta`, `max_iter`, `tol` (in standard errors, default `1e-3`), `min_iter` (default 2), `min_observations` (default: parameters + 1) and the damping schedule (`max_damping`, `damping_start`, `damping_min`).
 

@@ -24,7 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `torchregress.algorithms.batched_iteratively_reweighted_fit(problem, initial_theta, target,
   precision, mask=None, config=None, *, initial_weights=None)`: IRLS for many independent
   rows (`[B, N]` observations with known precisions and masks; one spectrum or source per
-  row) with no per-row Python loop and one host sync per iteration. Student-t weights by
+  row) with no per-row Python loop and one host sync per controller iteration (plus one per
+  damping attempt; the caller's solve is extra). Student-t weights by
   default (any `robust_weights` family), variance `1/precision + eta^2 m^2`, exact per-row
   NLL plus an optional penalty, per-row `IRLSRowStatus` (converged / max_iterations /
   stalled / failed / empty) with early exit of finished rows. Convergence is certified on
@@ -41,7 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   equations in one call. Jacobi-scaled batched Cholesky (no host sync) with a flagged ridge
   fallback (taken where the factorisation fails or its smallest-to-largest pivot ratio is at
   most `pivot_tol`, default `ridge`; solution and standard errors are then regularised) and standard errors; with a `nonnegative` mask, batched Lawson-Hanson NNLS on
-  the scaled normal equations with a warm-startable free set. Empty columns are pinned at 0
+  the scaled normal equations with a warm-startable free set (each active-set step works
+  on the rows still pending, about one host sync per step). Empty columns are pinned at 0
   with infinite standard error; singular or non-finite rows return `NaN` and are flagged.
 - `torchregress.models.MarginalContrastiveDensity`: Marginal Contrastive Discrimination
   (Meziani, Ndiaye & Riu 2022), `p(y|x) = p(y) r(x, y)` from an unconditional flow and a
