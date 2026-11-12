@@ -131,8 +131,8 @@ def marginalize_linear_nuisance(
         y_pred: Predictions ``[..., N]``.
         target: Observations, broadcastable with ``y_pred``.
         precision: Known inverse variances :math:`\lambda`, broadcastable to
-            ``[..., N]``; must be > 0 on unmasked samples (0 gives ``+inf``:
-            use ``mask`` to drop a sample).
+            ``[..., N]``; must be > 0 on unmasked samples (0 gives ``+inf``,
+            negative raises: use ``mask`` to drop a sample).
         basis: Nuisance basis ``[N, m]`` shared by all rows (must be finite),
             or per row ``[..., N, m]``.
         prior_precision: Diagonal prior precision of the coefficients: a
@@ -140,7 +140,8 @@ def marginalize_linear_nuisance(
             prior in that direction. Default (with ``prior_covariance`` also
             ``None``): flat in every direction.
         prior_covariance: Full prior covariance ``[m, m]`` or ``[..., m, m]``,
-            positive definite. Mutually exclusive with ``prior_precision``.
+            symmetric (to a relative ``16 eps``) and positive definite.
+            Mutually exclusive with ``prior_precision``.
         mask: Optional boolean mask (``True`` = observed), broadcastable to
             ``[..., N]``. Masked samples drop out exactly (as if absent), and
             non-finite values there are ignored.
@@ -151,8 +152,9 @@ def marginalize_linear_nuisance(
         conditional residual.
 
     Raises:
-        ValueError: On shape errors, a non-positive-definite ``prior_covariance``
-            or negative ``prior_precision``, or a row whose posterior precision
+        ValueError: On shape errors, a negative ``precision`` on an unmasked
+            sample, an asymmetric or non-positive-definite ``prior_covariance``,
+            a negative ``prior_precision``, or a row whose posterior precision
             :math:`A` is not numerically positive definite: some flat direction
             is not constrained by that row's unmasked data (an empty row with a
             flat prior, a basis column that is zero on every unmasked sample,
@@ -243,6 +245,10 @@ def _marginalize(
     valid: Optional[Tensor] = None
     if mask is not None:
         valid = torch.broadcast_to(mask.to(device), full).reshape(rows, n)
+    lam_chk = lam if valid is None else torch.where(valid, lam, torch.ones_like(lam))
+    if bool((lam_chk < 0).any()):
+        raise ValueError("precision must be >= 0 on unmasked samples (use mask to drop a sample)")
+    if valid is not None:
         zero = torch.zeros((), dtype=dtype, device=device)
         r = torch.where(valid, r, zero)
         lam = torch.where(valid, lam, zero)
@@ -277,7 +283,13 @@ def _marginalize(
     transform: Optional[Tensor] = None
     if prior_covariance is not None:
         cov = torch.broadcast_to(prior_covariance.to(device=device, dtype=dtype), (*lead, m, m))
-        chol_s, info = torch.linalg.cholesky_ex(cov.reshape(rows, m, m))
+        c = cov.reshape(rows, m, m)
+        # Only the lower triangle is read by the Cholesky: reject an asymmetric input.
+        tiny = torch.finfo(dtype).tiny
+        sym_tol = 16 * torch.finfo(dtype).eps * c.abs().amax(dim=(-2, -1), keepdim=True)
+        if not bool(((c - c.mT).abs() <= sym_tol.clamp_min(tiny)).all()):
+            raise ValueError("prior_covariance must be symmetric positive definite")
+        chol_s, info = torch.linalg.cholesky_ex(c)
         if bool((info != 0).any()):
             raise ValueError("prior_covariance must be symmetric positive definite")
         transform = chol_s

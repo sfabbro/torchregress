@@ -317,6 +317,31 @@ class TestFailClosed:
         with pytest.raises(error):
             marginalize_linear_nuisance(y_pred, target, precision, basis, **kwargs)
 
+    def test_negative_precision_raises_only_on_unmasked_samples(self) -> None:
+        y_pred, target, precision, basis = _problem()
+        bad = precision.clone()
+        bad[1, 7] = -1.0
+        with pytest.raises(ValueError, match="precision must be >= 0"):
+            marginalize_linear_nuisance(y_pred, target, bad, basis, prior_precision=1.0)
+        mask = torch.ones_like(target, dtype=torch.bool)
+        mask[1, 7] = False
+        res = marginalize_linear_nuisance(
+            y_pred, target, bad, basis, prior_precision=1.0, mask=mask
+        )
+        ref = marginalize_linear_nuisance(
+            y_pred, target, precision, basis, prior_precision=1.0, mask=mask
+        )
+        torch.testing.assert_close(res.nll, ref.nll)
+
+    @pytest.mark.parametrize("transpose", [False, True])
+    def test_asymmetric_prior_covariance_raises(self, transpose: bool) -> None:
+        y_pred, target, precision, basis = _problem(m=2)
+        cov = torch.tensor([[1.0, 50.0], [0.0, 1.0]], dtype=F64)
+        with pytest.raises(ValueError, match="symmetric positive definite"):
+            marginalize_linear_nuisance(
+                y_pred, target, precision, basis, prior_covariance=cov.T if transpose else cov
+            )
+
     def test_shape_mismatch_raises(self) -> None:
         y_pred, target, precision, basis = _problem()
         with pytest.raises(ValueError):

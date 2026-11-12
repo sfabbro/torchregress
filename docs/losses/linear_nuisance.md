@@ -84,8 +84,9 @@ a flat prior the NLL is **exactly invariant** to adding any $U a$ to the target.
 
 Masked samples drop out exactly (as if absent from the row); `NaN`/`inf` values
 there are ignored. Every unmasked sample needs $\lambda_i > 0$ ($\lambda_i = 0$ gives
-$+\infty$, as in [`student_t_nll`](robust.md)). A ValueError is raised, rather than a
-silently regularised answer, when for some row $A$ is not numerically positive
+$+\infty$, as in [`student_t_nll`](robust.md); a negative $\lambda_i$ raises). An
+asymmetric or non-positive-definite `prior_covariance` raises. A ValueError is also
+raised, rather than a silently regularised answer, when for some row $A$ is not numerically positive
 definite: an empty row or a basis column that vanishes on every unmasked sample
 under a flat prior, collinear columns, or non-finite precisions/basis on unmasked
 samples. The test is a Jacobi-scaled Cholesky whose squared pivots must exceed
