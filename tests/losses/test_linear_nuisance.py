@@ -373,6 +373,33 @@ class TestLossClass:
         weighted = MarginalizedNuisanceGaussianNLLLoss()(*args, prior_precision=1.0, weights=w)
         torch.testing.assert_close(weighted, (w * nll).sum() / w.sum())
 
+    @pytest.mark.parametrize("per_row", [False, True])
+    def test_loss_equals_functional_nll_without_building_extras(
+        self, per_row: bool, monkeypatch
+    ) -> None:
+        rows = 6
+        y_pred, target, precision, basis = _problem(rows=rows, n=30, m=3)
+        b = basis + 0.1 * torch.randn(rows, 30, 3, dtype=F64) if per_row else basis
+        mask = torch.rand(rows, 30, generator=torch.Generator().manual_seed(8)) > 0.25
+        kw = {"prior_precision": torch.tensor([0.0, 1.0, 3.0], dtype=F64), "mask": mask}
+        w = torch.rand(rows, dtype=F64) + 0.5
+        nll = marginalize_linear_nuisance(y_pred, target, precision, b, **kw).nll
+        # The loss needs only the NLL: no posterior covariance (cholesky_inverse).
+        calls: list[int] = []
+        real = torch.cholesky_inverse
+        monkeypatch.setattr(
+            torch, "cholesky_inverse", lambda *a, **k: calls.append(1) or real(*a, **k)
+        )
+        for reduction, want in (
+            ("none", nll),
+            ("sum", (w * nll).sum()),
+            ("mean", (w * nll).sum() / w.sum()),
+        ):
+            loss_fn = MarginalizedNuisanceGaussianNLLLoss(reduction=reduction)
+            got = loss_fn(y_pred, target, precision, b, weights=w, **kw)
+            torch.testing.assert_close(got, want if reduction != "none" else w * nll)
+        assert calls == []
+
     def test_fitting_through_the_loss_ignores_the_baseline(self) -> None:
         """A model trained through the flat-prior loss recovers the signal, not the baseline."""
         n = 64

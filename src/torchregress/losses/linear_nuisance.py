@@ -157,7 +157,7 @@ def marginalize_linear_nuisance(
     """
     # An outer AMP context must not demote the Gram products and Cholesky solves.
     with torch.autocast(device_type=y_pred.device.type, enabled=False):
-        return _marginalize(
+        _, result = _marginalize(
             y_pred,
             target,
             precision,
@@ -165,7 +165,10 @@ def marginalize_linear_nuisance(
             prior_precision=prior_precision,
             prior_covariance=prior_covariance,
             mask=mask,
+            need_extras=True,
         )
+    assert result is not None
+    return result
 
 
 def _marginalize(
@@ -177,8 +180,14 @@ def _marginalize(
     prior_precision: float | Tensor | None,
     prior_covariance: Optional[Tensor],
     mask: Optional[Tensor],
-) -> LinearNuisanceMarginal:
-    """Body of :func:`marginalize_linear_nuisance`; call with autocast disabled."""
+    need_extras: bool,
+) -> tuple[Tensor, Optional[LinearNuisanceMarginal]]:
+    """Body of :func:`marginalize_linear_nuisance`; call with autocast disabled.
+
+    Returns the per-row NLL ``[...]`` and, if ``need_extras``, the full
+    :class:`LinearNuisanceMarginal` (posterior covariance, fitted nuisance and
+    conditional residual are only built then).
+    """
     if prior_precision is not None and prior_covariance is not None:
         raise ValueError("pass at most one of prior_precision and prior_covariance")
     if basis.dim() < 2:
@@ -315,6 +324,9 @@ def _marginalize(
     cond = r - fit
     chi2 = (lam * cond * cond).sum(-1) + (p * coef_w * coef_w).sum(-1)
     nll = 0.5 * (n_obs * _LOG_2PI - log_lam.sum(-1) + log_det_a - log_det_prior + chi2)
+    nll_out = nll.reshape(lead)
+    if not need_extras:
+        return nll_out, None
 
     inv_scaled = torch.cholesky_inverse(chol)
     post_cov = inv_scaled * scale.unsqueeze(-1) * scale.unsqueeze(-2)
@@ -322,13 +334,16 @@ def _marginalize(
         post_cov = transform @ post_cov @ transform.mT
 
     coef_out = coef.reshape(*lead, m)
-    if shared_basis:
+    if u_rows is None:
+        nuisance = fit.reshape(*lead, n)  # shared basis, never masked: reuse U @ coef
+    elif shared_basis:
         nuisance = coef_out @ u.mT
     else:
+        # Not `fit`: the fitted nuisance is also evaluated at masked samples.
         nuisance = (torch.broadcast_to(u, (*lead, n, m)) @ coef_out.unsqueeze(-1)).squeeze(-1)
     residual = y_obs - y_hat - nuisance
-    return LinearNuisanceMarginal(
-        nll=nll.reshape(lead),
+    return nll_out, LinearNuisanceMarginal(
+        nll=nll_out,
         coefficients=coef_out,
         coefficient_covariance=post_cov.reshape(*lead, m, m),
         nuisance=nuisance,
@@ -382,18 +397,20 @@ class MarginalizedNuisanceGaussianNLLLoss(DistributionLoss):
             mask: Optional boolean sample mask broadcastable to ``[..., N]``.
             weights: Optional per-row weights broadcastable to ``[...]``.
         """
-        result = marginalize_linear_nuisance(
-            y_pred,
-            target,
-            precision,
-            basis,
-            prior_precision=prior_precision,
-            prior_covariance=prior_covariance,
-            mask=mask,
-        )
-        row_mask = None
-        if mask is not None:
-            full = (*result.nll.shape, basis.shape[-2])
-            row_mask = torch.broadcast_to(mask.to(result.nll.device), full).any(-1)
-        with torch.autocast(device_type=result.nll.device.type, enabled=False):
-            return self._reduce(result.nll, row_mask, weights)
+        # Only the NLL: no posterior covariance, fitted nuisance or residual.
+        with torch.autocast(device_type=y_pred.device.type, enabled=False):
+            nll, _ = _marginalize(
+                y_pred,
+                target,
+                precision,
+                basis,
+                prior_precision=prior_precision,
+                prior_covariance=prior_covariance,
+                mask=mask,
+                need_extras=False,
+            )
+            row_mask = None
+            if mask is not None:
+                full = (*nll.shape, basis.shape[-2])
+                row_mask = torch.broadcast_to(mask.to(nll.device), full).any(-1)
+            return self._reduce(nll, row_mask, weights)
