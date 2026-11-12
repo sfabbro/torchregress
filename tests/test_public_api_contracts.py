@@ -369,7 +369,7 @@ EXPECTED_SIGNATURES = {
     "algorithms.solve_normal_equations": (
         "(normal: 'Tensor', rhs: 'Tensor', *, nonnegative: 'Tensor | None' = None, "
         "start: 'Tensor | None' = None, ridge: 'float' = 1e-08, kkt_tol: 'float' = 1e-10, "
-        "pivot_tol: 'float' = 0.0) -> 'NormalEquationsSolution'"
+        "rank_tol: 'float' = 0.0) -> 'NormalEquationsSolution'"
     ),
     "algorithms.iteratively_reweighted_fit": (
         "(problem: 'IRLSProblem[StateT] | IRLSCallbacks[StateT]', initial_state: 'StateT', "

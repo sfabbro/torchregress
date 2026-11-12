@@ -224,7 +224,7 @@ def test_numerically_singular_factorisation_takes_the_ridge(bounded: bool) -> No
     # The warm start frees the collinear column (from 0 it would never be freed:
     # its multiplier vanishes once the other two fit exactly).
     start = torch.ones_like(rhs)
-    out = solve_normal_equations(normal, rhs, nonnegative=nonnegative, start=start, pivot_tol=1e-8)
+    out = solve_normal_equations(normal, rhs, nonnegative=nonnegative, start=start, rank_tol=1e-8)
     rows = out.free.all(-1)  # the collinear block is in the factorisation
     assert rows.any()
     assert out.ridge_used[rows].all() and not out.singular.any()
@@ -249,10 +249,10 @@ def test_default_takes_the_ridge_only_on_failure() -> None:
     failed = torch.linalg.cholesky_ex(normal / (root[:, :, None] * root[:, None, :]))[1] != 0
     assert failed.any() and not failed.all()
     assert torch.equal(solve_normal_equations(normal, rhs).ridge_used, failed)
-    assert torch.equal(solve_normal_equations(normal, rhs, pivot_tol=0.0).ridge_used, failed)
+    assert torch.equal(solve_normal_equations(normal, rhs, rank_tol=0.0).ridge_used, failed)
     for bad in (-1.0, math.nan):
-        with pytest.raises(ValueError, match="pivot_tol"):
-            solve_normal_equations(normal, rhs, pivot_tol=bad)
+        with pytest.raises(ValueError, match="rank_tol"):
+            solve_normal_equations(normal, rhs, rank_tol=bad)
 
 
 def _near_collinear_pair(eps: float) -> tuple[torch.Tensor, torch.Tensor]:
@@ -304,6 +304,87 @@ def test_default_nonnegative_solution_does_not_depend_on_the_warm_start() -> Non
     assert objective(warm.solution[0]) <= objective(cold.solution[0]) + 1e-12
 
 
+def _product_design(batch: int) -> torch.Tensor:
+    """uspm-style ``basis × Legendre`` design: 15 columns, conditioning spread over decades."""
+    generator = torch.Generator().manual_seed(2)
+    grid = torch.linspace(-1.0, 1.0, 400, dtype=torch.float64)
+    centres = torch.rand(batch, 1, 5, generator=generator, dtype=torch.float64) * 2.0 - 1.0
+    basis = 1.0 + torch.exp(-0.5 * ((grid[None, :, None] - centres) / 0.15) ** 2)
+    legendre = torch.stack([torch.special.legendre_polynomial_p(grid, m) for m in range(3)], -1)
+    return (basis.unsqueeze(-1) * legendre[None, :, None, :]).reshape(batch, 400, 15)
+
+
+@pytest.mark.parametrize("rank_tol", [1e-12, 1e-10])
+def test_rank_tol_ridges_exactly_the_rows_below_the_eigenvalue_ratio(rank_tol: float) -> None:
+    # The Cholesky pivot ratio misclassifies 10-27 of these rows (it can exceed
+    # lambda_min by 8 decades); the eigenvalue test must be exact and monotone.
+    design = _product_design(100)
+    normal = design.transpose(1, 2) @ design
+    rhs = normal.sum(-1)
+    unit = design / design.norm(dim=1, keepdim=True)  # Jacobi scaling of the design
+    singular_values = torch.linalg.svdvals(unit)
+    ratio = (singular_values[:, -1] / singular_values[:, 0]).square()
+    clear = (ratio.log10() - math.log10(rank_tol)).abs() > 0.5
+    expected = ratio <= rank_tol
+    assert expected[clear].any() and (~expected[clear]).any()
+    out = solve_normal_equations(normal, rhs, rank_tol=rank_tol)
+    assert torch.equal(out.ridge_used[clear], expected[clear])
+    looser = solve_normal_equations(normal, rhs, rank_tol=100.0 * rank_tol)
+    assert not (out.ridge_used & ~looser.ridge_used).any()
+
+
+def test_rank_tol_tests_only_the_final_free_set() -> None:
+    # The final free set {a, c} is well conditioned: an opt-in rank test must
+    # leave the row unridged from any start (cf. the default-rule test above).
+    design, t = _near_collinear_pair(1e-6)
+    generator = torch.Generator().manual_seed(0)
+    noise = 0.01 * torch.randn(t.shape, generator=generator, dtype=torch.float64)
+    y = 2.0 * design[:, 0] + 1.0 + noise - 5e-6 * t * design[:, 0]
+    normal, rhs = (design.T @ design)[None], (design.T @ y)[None]
+    mask = torch.tensor([True, True, False])
+    cold = solve_normal_equations(normal, rhs, nonnegative=mask)
+    for start in (None, torch.ones_like(rhs)):
+        out = solve_normal_equations(normal, rhs, nonnegative=mask, start=start, rank_tol=1e-8)
+        assert out.free[0].tolist() == [True, False, True] and not out.ridge_used.any()
+        torch.testing.assert_close(out.solution, cold.solution, rtol=1e-10, atol=1e-12)
+        torch.testing.assert_close(out.standard_errors, cold.standard_errors, rtol=1e-10, atol=0)
+
+
+def test_rank_tol_nonnegative_ridged_solution_does_not_depend_on_the_start() -> None:
+    # An exactly duplicated column: the minimisers form a segment. Starts with
+    # both copies positive reach the rank-deficient free set {a, b, c}, which
+    # the rank test flags; the ridged problem has a unique minimiser, reached
+    # from every such start. (Starts with one copy at 0 stop at a vertex of
+    # the segment, a full-rank free set: also a minimiser.)
+    design, t = _near_collinear_pair(0.0)
+    generator = torch.Generator().manual_seed(1)
+    y = (
+        1.5 * design[:, 0]
+        + 1.0
+        + 0.01 * torch.randn(t.shape, generator=generator, dtype=torch.float64)
+    )
+    normal, rhs = (design.T @ design)[None], (design.T @ y)[None]
+    mask = torch.tensor([True, True, False])
+    starts = torch.tensor([[1.0, 1.0, 1.0], [1.4, 0.1, 1.0], [0.05, 3.0, 0.0]], dtype=torch.float64)
+    outs = [
+        solve_normal_equations(normal, rhs, nonnegative=mask, start=start[None], rank_tol=1e-8)
+        for start in starts
+    ]
+    cold = solve_normal_equations(normal, rhs, nonnegative=mask)
+
+    def objective(x: torch.Tensor) -> float:
+        return float(0.5 * x @ normal[0] @ x - rhs[0] @ x)
+
+    for out in outs:
+        assert abs(objective(out.solution[0]) - objective(cold.solution[0])) < 1e-8
+        assert out.ridge_used.all() and not out.singular.any()
+        assert out.free[0].tolist() == [True, True, True]
+        # Symmetric pair: the ridged minimiser splits the coefficient equally.
+        torch.testing.assert_close(out.solution[0, 0], out.solution[0, 1], rtol=1e-6, atol=0)
+        torch.testing.assert_close(out.solution, outs[0].solution, rtol=1e-6, atol=1e-9)
+        torch.testing.assert_close(out.standard_errors, outs[0].standard_errors, rtol=1e-6, atol=0)
+
+
 def test_nonnegative_steps_work_on_the_rows_still_in_play(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -315,9 +396,9 @@ def test_nonnegative_steps_work_on_the_rows_still_in_play(
     sizes: list[int] = []
     factor = module._free_block_cholesky
 
-    def recording(scaled, free, ridge, pivot_tol):  # type: ignore[no-untyped-def]
+    def recording(scaled, free, ridge):  # type: ignore[no-untyped-def]
         sizes.append(scaled.shape[0])
-        return factor(scaled, free, ridge, pivot_tol)
+        return factor(scaled, free, ridge)
 
     monkeypatch.setattr(module, "_free_block_cholesky", recording)
     out = solve_normal_equations(normal, rhs, nonnegative=mask)

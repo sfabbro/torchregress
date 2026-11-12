@@ -32,9 +32,9 @@ class NormalEquationsSolution:
         free: ``[..., n]`` variables neither at a bound nor empty.
         dead: ``[..., n]`` empty columns (``N_ii ≤ 0``), pinned at 0 (``False`` on
             rows with non-finite input).
-        ridge_used: ``[...]`` rows whose (free-block) factorisation failed or was
-            numerically rank-deficient and took the ridge: their solution and
-            standard errors are regularised.
+        ridge_used: ``[...]`` rows that took the ridge (a factorisation failed,
+            or, with ``rank_tol > 0``, the final system was numerically
+            rank-deficient): their solution and standard errors are regularised.
         singular: ``[...]`` rows singular even with the ridge, or with non-finite
             input (any ``NaN``/``±inf`` in their ``N`` or ``g``); not solved, and
             ``free`` is ``False`` on them.
@@ -56,7 +56,7 @@ def solve_normal_equations(
     start: Tensor | None = None,
     ridge: float = 1.0e-8,
     kkt_tol: float = NNLS_KKT_TOL,
-    pivot_tol: float = 0.0,
+    rank_tol: float = 0.0,
 ) -> NormalEquationsSolution:
     r"""Solve many small least-squares problems given their normal equations.
 
@@ -76,10 +76,22 @@ def solve_normal_equations(
     ``N_s + ridge·I``: regularised, so a non-identified direction gets a
     finite (ridge-limited) error rather than ``inf``. A factorisation that
     succeeds is not regularised, however badly conditioned: rows whose
-    minimiser is identified in floating point are never biased. With
-    ``pivot_tol > 0`` (opt-in) the ridge is also taken where the smallest
-    pivot ``L_kk²`` is at most ``pivot_tol`` times the largest; this test is
-    cheap but not rank-revealing. Empty columns (``N_ii ≤ 0``) are pinned at 0.
+    minimiser is identified in floating point are never biased.
+
+    With ``rank_tol > 0`` (opt-in) a row is also ridged where its final system
+    is numerically rank-deficient: the smallest eigenvalue of the scaled
+    matrix (of its block on the final free set, with ``nonnegative``) is at
+    most ``rank_tol`` times the largest. The test is rank-revealing and
+    monotone in conditioning (one batched ``eigvalsh``), and in the non-negative solve it
+    is applied to the final free set only: the active-set steps ridge failed
+    factorisations alone, so the free set reached does not depend on the test,
+    and a flagged row is then re-solved as the strictly convex problem
+    ``N_s + ridge·I`` (warm-started from that solution), whose minimiser does
+    not depend on ``start``. The test sees the free set reached only: where the
+    minimisers form a set and the active set stops at a full-rank vertex of
+    it (a variable at its bound), the solution is a minimiser and the row is
+    not flagged.
+    Empty columns (``N_ii ≤ 0``) are pinned at 0.
 
     Without ``nonnegative`` the solve is one batched Cholesky with no host
     synchronisation. With it, a batched Lawson--Hanson active-set method runs on
@@ -91,7 +103,9 @@ def solve_normal_equations(
     previous solution of a nearby problem). Rows terminate independently, and
     every step works on the rows still in play only: about one host
     synchronisation per active-set step, at ``O(b·n³)`` for the ``b`` rows still
-    pending, plus one final batched factorisation for the standard errors.
+    pending, plus one final batched factorisation for the standard errors
+    (and, with ``rank_tol > 0``, one batched ``eigvalsh`` and one more host
+    synchronisation).
 
     Args:
         normal: ``[..., n, n]`` symmetric positive semi-definite matrices.
@@ -102,12 +116,13 @@ def solve_normal_equations(
             to the bounds; non-finite entries start at 0). Ignored without
             ``nonnegative``.
         ridge: positive relative ridge added to the scaled diagonal where the
-            factorisation fails (or, with ``pivot_tol > 0``, its pivots span
-            more than ``1/pivot_tol``).
-        pivot_tol: smallest-to-largest Cholesky pivot ratio at or below which a
-            successful factorisation counts as rank-deficient and takes the
-            ridge. ``0`` (default) takes the ridge only where the factorisation
-            fails.
+            factorisation fails (or, with ``rank_tol > 0``, the final system
+            is numerically rank-deficient).
+        rank_tol: smallest-to-largest eigenvalue ratio of the scaled final
+            system at or below which a row counts as rank-deficient and takes
+            the ridge. ``0`` (default) takes the ridge only where the
+            factorisation fails. ``n·eps`` (about ``2e-16·n`` in float64) flags
+            the rows whose system is singular to working precision.
         kkt_tol: positive KKT tolerance of the non-negative solve (threshold
             ``kkt_tol · (1 + |g_s|_∞)`` on the scaled multipliers).
 
@@ -115,8 +130,8 @@ def solve_normal_equations(
         :class:`NormalEquationsSolution`.
     """
     _validate(normal, rhs, ridge, kkt_tol)
-    if not (math.isfinite(pivot_tol) and pivot_tol >= 0.0):
-        raise ValueError("pivot_tol must be finite and >= 0")
+    if not (math.isfinite(rank_tol) and rank_tol >= 0.0):
+        raise ValueError("rank_tol must be finite and >= 0")
     batch_shape = rhs.shape[:-1]
     n = rhs.shape[-1]
     normal_2d = normal.reshape(-1, n, n)
@@ -130,7 +145,7 @@ def solve_normal_equations(
     rhs_2d = torch.where(bad[:, None], torch.zeros_like(rhs_2d), rhs_2d)
     scaled, gs, scale, dead = _jacobi_scale(normal_2d, rhs_2d)
     if nonnegative is None:
-        x_s, se_s, free, ridged, singular = _solve_unconstrained(scaled, gs, dead, ridge, pivot_tol)
+        x_s, se_s, free, ridged, singular = _solve_unconstrained(scaled, gs, dead, ridge, rank_tol)
     else:
         if nonnegative.dtype != torch.bool:
             raise TypeError("nonnegative must be a boolean mask")
@@ -143,7 +158,7 @@ def solve_normal_equations(
             x0 = torch.where(dead | ~torch.isfinite(warm), x0, warm * scale)
             x0 = torch.where(constrained & ~(x0 > 0.0), torch.zeros_like(x0), x0)
         x_s, se_s, free, ridged, singular = _solve_nonnegative(
-            scaled, gs, dead, constrained, x0, ridge, pivot_tol, kkt_tol
+            scaled, gs, dead, constrained, x0, ridge, rank_tol, kkt_tol
         )
     solution = x_s / scale
     standard_errors = torch.where(dead, torch.full_like(se_s, math.inf), se_s / scale)
@@ -193,31 +208,27 @@ def _jacobi_scale(normal: Tensor, rhs: Tensor) -> tuple[Tensor, Tensor, Tensor, 
     return scaled, gs, scale, dead
 
 
-def _rank_deficient(chol: Tensor, free: Tensor | None, pivot_tol: float) -> Tensor:
-    """Rows whose Cholesky pivots ``d_k = L_kk²`` span more than ``1/pivot_tol``.
+def _rank_deficient(system: Tensor, rank_tol: float) -> Tensor:
+    """Rows whose (Jacobi-scaled) ``system`` has ``λ_min ≤ rank_tol · λ_max``.
 
-    A factorisation of an (exactly) singular matrix often succeeds with a pivot
-    at round-off level; its inverse is then meaningless. The pivot ratio is a
-    cheap necessary test (``d_min ≥ λ_min``), not a rank-revealing one.
+    Rank-revealing and monotone in conditioning, unlike the Cholesky pivot ratio, which
+    can exceed ``λ_min`` by many orders of magnitude. Variables outside a free
+    block carry a unit diagonal, an eigenvalue 1 that changes neither extreme of
+    a unit-diagonal block (its ``λ_max ≥ 1 ≥ λ_min``).
     """
-    if pivot_tol == 0.0:
-        return torch.zeros(chol.shape[:-2], dtype=torch.bool, device=chol.device)
-    pivots = torch.diagonal(chol, dim1=-2, dim2=-1).square()
-    if free is None:
-        low, high = pivots.amin(-1), pivots.amax(-1)
-    else:
-        low = torch.where(free, pivots, torch.full_like(pivots, math.inf)).amin(-1)
-        high = torch.where(free, pivots, torch.zeros_like(pivots)).amax(-1)
-    return low <= pivot_tol * high
+    eigenvalues = torch.linalg.eigvalsh(system)
+    return eigenvalues[..., 0] <= rank_tol * eigenvalues[..., -1]
 
 
 def _solve_unconstrained(
-    scaled: Tensor, gs: Tensor, dead: Tensor, ridge: float, pivot_tol: float
+    scaled: Tensor, gs: Tensor, dead: Tensor, ridge: float, rank_tol: float
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     n = scaled.shape[-1]
     eye = torch.eye(n, dtype=scaled.dtype, device=scaled.device)
     chol, info = torch.linalg.cholesky_ex(scaled)
-    ridged = (info != 0) | _rank_deficient(chol, None, pivot_tol)
+    ridged = info != 0
+    if rank_tol > 0.0:
+        ridged = ridged | _rank_deficient(scaled, rank_tol)
     # Both factorisations are computed unconditionally: no host synchronisation.
     chol_r, info_r = torch.linalg.cholesky_ex(scaled + ridge * eye)
     singular = ridged & (info_r != 0)
@@ -228,18 +239,26 @@ def _solve_unconstrained(
     return x, inv_diag.clamp_min(0.0).sqrt(), ~dead, ridged, singular
 
 
-def _free_block_cholesky(
-    scaled: Tensor, free: Tensor, ridge: float, pivot_tol: float
-) -> tuple[Tensor, Tensor, Tensor]:
-    """Cholesky factor of ``scaled`` on the free block (identity elsewhere)."""
-    n = scaled.shape[-1]
-    eye = torch.eye(n, dtype=scaled.dtype, device=scaled.device)
+def _free_block(scaled: Tensor, free: Tensor) -> Tensor:
+    """``scaled`` on the free block, identity elsewhere."""
     pair = free.unsqueeze(-1) & free.unsqueeze(-2)
-    system = torch.where(pair, scaled, torch.zeros_like(scaled)) + torch.diag_embed(
+    return torch.where(pair, scaled, torch.zeros_like(scaled)) + torch.diag_embed(
         (~free).to(scaled.dtype)
     )
+
+
+def _free_block_cholesky(
+    scaled: Tensor, free: Tensor, ridge: float
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Cholesky factor of ``scaled`` on the free block (identity elsewhere).
+
+    The ridge is taken where the factorisation fails, and only there.
+    """
+    n = scaled.shape[-1]
+    eye = torch.eye(n, dtype=scaled.dtype, device=scaled.device)
+    system = _free_block(scaled, free)
     chol, info = torch.linalg.cholesky_ex(system)
-    ridged = (info != 0) | _rank_deficient(chol, free, pivot_tol)
+    ridged = info != 0
     # Both factorisations are computed unconditionally: no host synchronisation.
     chol_r, info_r = torch.linalg.cholesky_ex(
         system + ridge * torch.diag_embed(free.to(scaled.dtype))
@@ -257,15 +276,51 @@ def _solve_nonnegative(
     constrained: Tensor,
     x: Tensor,
     ridge: float,
-    pivot_tol: float,
+    rank_tol: float,
     kkt_tol: float,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """Non-negative solve; rank-deficient final free blocks re-solved ridged."""
+    free, ridged, singular = _active_set(scaled, gs, dead, constrained, x, ridge, kkt_tol)
+    if rank_tol > 0.0:
+        deficient = ~singular & _rank_deficient(_free_block(scaled, free), rank_tol)
+        rows = deficient.nonzero().squeeze(-1)  # host synchronisation (opt-in)
+        if rows.numel() > 0:
+            # The ridged problem is strictly convex: its minimiser is unique, so it
+            # does not depend on the warm start (the unridged solution).
+            live = (~dead[rows]).to(scaled.dtype)
+            scaled = scaled.clone()
+            scaled[rows] = scaled[rows] + ridge * torch.diag_embed(live)
+            x_r = x[rows]
+            free_r, _, singular_r = _active_set(
+                scaled[rows], gs[rows], dead[rows], constrained[rows], x_r, ridge, kkt_tol
+            )
+            x[rows], free[rows] = x_r, free_r
+            ridged[rows] = True
+            singular[rows] = singular_r
+    # One more factorisation of the final free sets gives the standard errors.
+    chol, _, _ = _free_block_cholesky(scaled, free, ridge)
+    inv_diag = torch.diagonal(torch.cholesky_inverse(chol), dim1=-2, dim2=-1)
+    se = torch.where(free, inv_diag.clamp_min(0.0).sqrt(), torch.ones_like(x))
+    return x, se, free, ridged, singular
+
+
+def _active_set(
+    scaled: Tensor,
+    gs: Tensor,
+    dead: Tensor,
+    constrained: Tensor,
+    x: Tensor,
+    ridge: float,
+    kkt_tol: float,
+) -> tuple[Tensor, Tensor, Tensor]:
     """Batched Lawson--Hanson on Jacobi-scaled normal equations (feasible ``x``).
 
-    Every step works on the rows still in play only (``going`` for the outer
-    KKT step, ``pending`` for the inner feasibility steps), gathered by index:
-    each step costs ``O(b·n³)`` on those rows and one host synchronisation (the
-    index of the rows that carry on), whatever the batch size.
+    Updates ``x`` in place and returns the final free sets and the rows whose
+    factorisations took the ridge or were singular even with it. Every step
+    works on the rows still in play only (``going`` for the outer KKT step,
+    ``pending`` for the inner feasibility steps), gathered by index: each step
+    costs ``O(b·n³)`` on those rows and one host synchronisation (the index of
+    the rows that carry on), whatever the batch size.
     """
     b, n = gs.shape
     free = ~dead & (~constrained | (x > 0.0))
@@ -280,7 +335,7 @@ def _solve_nonnegative(
                 break
             free_p, gs_p, x_p = free[pending], gs[pending], x[pending]
             bounded = free_p & constrained[pending]
-            chol, used, sing = _free_block_cholesky(scaled[pending], free_p, ridge, pivot_tol)
+            chol, used, sing = _free_block_cholesky(scaled[pending], free_p, ridge)
             ridged[pending] = ridged[pending] | used
             singular[pending] = singular[pending] | sing
             z = torch.cholesky_solve(
@@ -318,8 +373,4 @@ def _solve_nonnegative(
         going = going[more]  # the one host synchronisation of the step
         if going.numel() == 0:
             break
-    # One more factorisation of the final free sets gives the standard errors.
-    chol, _, _ = _free_block_cholesky(scaled, free, ridge, pivot_tol)
-    inv_diag = torch.diagonal(torch.cholesky_inverse(chol), dim1=-2, dim2=-1)
-    se = torch.where(free, inv_diag.clamp_min(0.0).sqrt(), torch.ones_like(x))
-    return x, se, free, ridged, singular
+    return free, ridged, singular
