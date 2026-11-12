@@ -24,10 +24,17 @@ _RUNNING = -1
 
 
 class IRLSRowStatus(IntEnum):
-    """Per-row outcome of :func:`batched_iteratively_reweighted_fit`."""
+    """Per-row outcome of :func:`batched_iteratively_reweighted_fit` (``int8`` codes).
+
+    Correspondence with :data:`IRLSTermination` of :func:`iteratively_reweighted_fit`:
+    ``CONVERGED`` is ``"converged"``, ``MAX_ITERATIONS`` is ``"max_iterations"``,
+    ``EMPTY`` is ``"empty"``, ``FAILED`` covers ``"breakdown"`` (a singular or
+    failed solve) and ``"non_finite"``; ``STALLED`` (no damped step accepted) has
+    no single-problem counterpart.
+    """
 
     CONVERGED = 0
-    """The full step at the current weights moved every parameter by < ``tol`` σ."""
+    """The full step at the current weights moved every parameter by < ``step_tol`` σ."""
     MAX_ITERATIONS = 1
     """``max_iter`` reached before convergence."""
     STALLED = 2
@@ -50,7 +57,7 @@ class BatchedIRLSStep:
             (e.g. from the weighted normal matrix); the convergence test divides
             the step by them. ``inf`` marks a parameter with no information.
             These are the conditional errors of the weighted least-squares solve,
-            not asymptotic ``t_ν`` errors (see :class:`BatchedIRLSResult`).
+            not asymptotic ``t_ν`` errors (see :class:`BatchedIRLSFitResult`).
         failed: optional ``[b]`` boolean mask of rows the solver could not solve
             (e.g. a singular normal matrix); they are marked ``FAILED``.
         predicted_objective: optional ``[b]`` value of the solver's local model
@@ -62,7 +69,7 @@ class BatchedIRLSStep:
         ridge_used: optional ``[b]`` boolean mask of rows whose solve was
             regularised (e.g. :attr:`NormalEquationsSolution.ridge_used`: a
             rank-deficient normal matrix). Accumulated per row into
-            :attr:`BatchedIRLSResult.ridge_used` so callers can fail closed.
+            :attr:`BatchedIRLSFitResult.ridge_used` so callers can fail closed.
     """
 
     theta: Tensor
@@ -81,7 +88,8 @@ class BatchedIRLSProblem:
     (finished rows are dropped from later iterations). Tensors passed in hold
     only those rows; ``weights`` and ``target`` are the controller's working
     buffers, valid for the duration of the call only (they are compacted and
-    overwritten in place later): do not keep or modify them.
+    overwritten in place later): do not keep or modify them. Any object with
+    these attributes is accepted in place of this dataclass.
 
     Contract on ``rows``: every callback of one iteration (``solve``, the
     weight refresh's ``predict`` and ``penalty``) receives the identical object,
@@ -122,7 +130,7 @@ class BatchedIRLSProblem:
 
 
 @dataclass(frozen=True)
-class BatchedIRLSConfig:
+class BatchedIRLSFitConfig:
     """Settings of :func:`batched_iteratively_reweighted_fit`.
 
     Attributes:
@@ -133,7 +141,9 @@ class BatchedIRLSConfig:
         eta: fractional model error ``η ≥ 0`` of the variance ``1/λ + η² m̄²``
             (:func:`effective_precision`), ``m̄`` the previous iterate's model.
         max_iter: iteration cap per row.
-        tol: convergence threshold on ``max_k |Δθ_k| / se_k`` of the full step.
+        step_tol: convergence threshold on ``max_k |Δθ_k| / se_k``, the largest
+            full-step change in standard-error units. Unlike the relative-norm
+            :attr:`IRLSFitConfig.parameter_tol`, it is scale-free per parameter.
         min_iter: iterations required before a row may converge when the weights
             depend on the residuals (the first solve uses the starting weights).
         min_observations: observations with positive precision a row needs to be
@@ -148,7 +158,7 @@ class BatchedIRLSConfig:
     weight_params: Mapping[str, float] = field(default_factory=dict)
     eta: float = 0.0
     max_iter: int = 50
-    tol: float = 1.0e-3
+    step_tol: float = 1.0e-3
     min_iter: int = 2
     min_observations: int | None = None
     max_damping: int = 16
@@ -158,8 +168,8 @@ class BatchedIRLSConfig:
     def __post_init__(self) -> None:
         if self.max_iter < 1 or self.min_iter < 1 or self.max_damping < 0:
             raise ValueError("max_iter >= 1, min_iter >= 1 and max_damping >= 0 are required")
-        if not (math.isfinite(self.tol) and self.tol > 0.0):
-            raise ValueError("tol must be finite and positive")
+        if not (math.isfinite(self.step_tol) and self.step_tol > 0.0):
+            raise ValueError("step_tol must be finite and positive")
         if not (math.isfinite(self.eta) and self.eta >= 0.0):
             raise ValueError("eta must be finite and >= 0")
         if not (0.0 < self.damping_min <= self.damping_start < math.inf):
@@ -172,7 +182,7 @@ class BatchedIRLSConfig:
 
 
 @dataclass(frozen=True)
-class BatchedIRLSResult:
+class BatchedIRLSFitResult:
     """Per-row result of :func:`batched_iteratively_reweighted_fit`.
 
     Rows that are ``FAILED`` or ``EMPTY`` carry ``NaN`` in every floating output.
@@ -272,10 +282,10 @@ def batched_iteratively_reweighted_fit(
     target: Tensor,
     precision: Tensor,
     mask: Tensor | None = None,
-    config: BatchedIRLSConfig | None = None,
+    config: BatchedIRLSFitConfig | None = None,
     *,
     initial_weights: Tensor | None = None,
-) -> BatchedIRLSResult:
+) -> BatchedIRLSFitResult:
     r"""Fit many independent rows by IRLS under a Student-t (or other robust) likelihood.
 
     Row ``b`` has observations ``y_{bi}`` with known precisions ``λ_{bi}``, a model
@@ -295,7 +305,7 @@ def batched_iteratively_reweighted_fit(
     is frozen at the previous iterate: a fixed-point iteration in ``m̄``.
 
     **Convergence** is certified per row on the *full* (undamped) step at the
-    current weights: ``max_k |Δθ_k| / se_k < tol``, after at least ``min_iter``
+    current weights: ``max_k |Δθ_k| / se_k < step_tol``, after at least ``min_iter``
     iterations when the weights depend on the residuals. A damped or rejected
     step never counts. A row whose step no damping accepts stops as ``STALLED``,
     unless the solver's ``predicted_objective`` shows that the decrease still
@@ -317,20 +327,22 @@ def batched_iteratively_reweighted_fit(
         problem: the caller's model and weighted solve (:class:`BatchedIRLSProblem`).
         initial_theta: ``[B, n]`` starting parameters.
         target: ``[B, N]`` observations ``y``.
-        precision: ``[B, N]`` known precisions ``λ ≥ 0`` (inverse variances);
+        precision: ``[B, N]`` known base precisions ``λ ≥ 0`` (inverse variances,
+            as :attr:`IRLSFitConfig.base_precision`; not the effective precision
+            :func:`iteratively_reweighted_fit` passes to its weighted fit);
             zero-precision entries leave the likelihood.
         mask: optional ``[B, N]`` boolean (``True`` = observed). Masked entries
             may hold any value, ``NaN`` included.
-        config: :class:`BatchedIRLSConfig`.
+        config: :class:`BatchedIRLSFitConfig`.
         initial_weights: optional ``[B, N]`` warm-start IRLS weights (e.g. a
             previous fit of a nearby problem). A row whose weights are not
             finite, non-negative and positive exactly where ``λ`` is positive
             starts from ``λ``; ignored when the weights are fixed.
 
     Returns:
-        :class:`BatchedIRLSResult`.
+        :class:`BatchedIRLSFitResult`.
     """
-    cfg = config or BatchedIRLSConfig()
+    cfg = config or BatchedIRLSFitConfig()
     _validate(initial_theta, target, precision, mask, initial_weights)
     dtype, device = target.dtype, target.device
     batch, n_par = initial_theta.shape
@@ -409,7 +421,7 @@ def batched_iteratively_reweighted_fit(
             _put(ridge_used, rows, _take(ridge_used, rows) | step.ridge_used)
         full = torch.where(ok[:, None], full, th0)
         ratio = ((full - th0).abs() / se.clamp_min(tiny)).amax(-1)
-        sub_tol = ok & (ratio < cfg.tol)
+        sub_tol = ok & (ratio < cfg.step_tol)
         new = full
         stuck = torch.zeros_like(ok)
         # One exact solve at fixed weights is the minimiser itself: it is taken
@@ -504,7 +516,7 @@ def _likelihood(target: Tensor, precision: Tensor, mask: Tensor | None) -> tuple
     return use, bad
 
 
-def _family(cfg: BatchedIRLSConfig) -> _Family:
+def _family(cfg: BatchedIRLSFitConfig) -> _Family:
     nu = _student_t_nu(cfg.weight_params) if cfg.weight == "student_t" else None
     return _Family(cfg.weight, cfg.weight_params, cfg.eta, nu)
 
@@ -597,7 +609,7 @@ def _weighted_objective(
 
 def _accept_or_damp(
     problem: BatchedIRLSProblem,
-    cfg: BatchedIRLSConfig,
+    cfg: BatchedIRLSFitConfig,
     th0: Tensor,
     full: Tensor,
     w: Tensor,
@@ -616,7 +628,7 @@ def _accept_or_damp(
 
     ``q0`` is the weighted objective at ``th0`` when the caller already has it.
     Returns the new parameters, the stuck rows (no decrease at any damping),
-    the convergence flags (full step below ``tol``, or stuck at round-off) and
+    the convergence flags (full step below ``step_tol``, or stuck at round-off) and
     the updated damping.
     """
     assert problem.damped_solve is not None
@@ -706,7 +718,7 @@ def _result(
     mask: Tensor | None,
     n_obs: Tensor,
     ridge_used: Tensor,
-) -> BatchedIRLSResult:
+) -> BatchedIRLSFitResult:
     """Evaluate every row at its final parameters, in row chunks of the inputs."""
     batch = theta.shape[0]
     dtype, device = target.dtype, target.device
@@ -751,7 +763,7 @@ def _result(
     status = torch.where(fitted & ~finite, int(IRLSRowStatus.FAILED), status).to(torch.int8)
     drop = ~(fitted & finite)
     nan = math.nan
-    return BatchedIRLSResult(
+    return BatchedIRLSFitResult(
         theta=theta.masked_fill_(drop[:, None], nan),
         standard_errors=standard_errors.masked_fill_(drop[:, None], nan),
         model=model.masked_fill_(drop[:, None], nan),

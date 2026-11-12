@@ -26,29 +26,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rows (`[B, N]` observations with known precisions and masks; one spectrum or source per
   row) with no per-row Python loop and one host sync per controller iteration (with a damped
   solve, plus one for the decrease test and one per damping attempt; the caller's solve is
-  extra). Student-t weights by
-  default (any `robust_weights` family), variance `1/precision + eta^2 m^2`, exact per-row
-  NLL plus an optional penalty, per-row `IRLSRowStatus` (converged / max_iterations /
-  stalled / failed / empty) with early exit of finished rows. Convergence is certified on
-  the full step in standard-error units; an optional Levenberg-Marquardt `damped_solve`
-  is accepted on objective decrease and never counts as converged. Failed and empty rows
-  are `NaN`, not zeros. The caller owns the weighted solve (`BatchedIRLSProblem`,
-  `BatchedIRLSStep`, `BatchedIRLSConfig`, `BatchedIRLSResult`); a solve may report
-  `ridge_used`, accumulated per row into `BatchedIRLSResult.ridge_used`. At N=4096, n=8 (float64,
-  CPU, 2 threads, on a shared 4-CPU host) it fits 260-730 rows/s for B=100..10,000, 4-12x
-  a per-row loop over `iteratively_reweighted_fit` in the same run
-  (`tools/benchmark_batched_irls.py`; `--max-outlier-fraction` draws per-row outlier
-  fractions so rows converge at different iterations and the compaction of finished rows
-  shows in its row-solve count). The controller holds about three `[B, N]` working buffers
-  of the running rows (plus two transients) on top of the caller's data.
+  extra). Student-t weights by default (any `robust_weights` family), variance
+  `1/precision + eta^2 m^2`, exact per-row NLL plus an optional penalty, per-row
+  `IRLSRowStatus` (converged / max_iterations / stalled / failed / empty, mapped onto
+  `IRLSTermination` in its docstring) with early exit of finished rows. Convergence is
+  certified on the full step in standard-error units (`BatchedIRLSFitConfig.step_tol`); an
+  optional Levenberg-Marquardt `damped_solve` is accepted on objective decrease and never
+  counts as converged. Failed and empty rows are `NaN`, not zeros. The caller owns the
+  weighted solve (`BatchedIRLSProblem`, `BatchedIRLSStep`, `BatchedIRLSFitConfig`,
+  `BatchedIRLSFitResult`); a solve may report `ridge_used`, accumulated per row into
+  `BatchedIRLSFitResult.ridge_used`. At N=4096, n=8 (float64, CPU, 2 threads, on a shared
+  4-CPU host) it fits 260-730 rows/s for B=100..10,000, 4-12x a per-row loop over
+  `iteratively_reweighted_fit` in the same run (`tools/benchmark_batched_irls.py`;
+  `--max-outlier-fraction` draws per-row outlier fractions so rows converge at different
+  iterations and the compaction of finished rows shows in its row-solve count). The
+  controller holds about three `[B, N]` working buffers of the running rows (plus two
+  transients) on top of the caller's data.
 - `torchregress.algorithms.solve_normal_equations(normal, rhs, *, nonnegative=None, start=None,
-  ridge=1e-8, kkt_tol=1e-10, pivot_tol=None)`: many small least-squares problems from their normal
-  equations in one call. Jacobi-scaled batched Cholesky (no host sync) with a flagged ridge
-  fallback (taken where the factorisation fails or its smallest-to-largest pivot ratio is at
-  most `pivot_tol`, default `ridge`; solution and standard errors are then regularised) and standard errors; with a `nonnegative` mask, batched Lawson-Hanson NNLS on
-  the scaled normal equations with a warm-startable free set (each active-set step works
-  on the rows still pending, about one host sync per step). Empty columns are pinned at 0
-  with infinite standard error; singular or non-finite rows return `NaN` and are flagged.
+  ridge=1e-8, kkt_tol=1e-10, pivot_tol=None)`: many small least-squares problems from their
+  normal equations in one call. Jacobi-scaled batched Cholesky (no host sync) with a flagged
+  ridge fallback (taken where the factorisation fails or its smallest-to-largest pivot ratio
+  is at most `pivot_tol`, default `ridge`; solution and standard errors are then
+  regularised) and standard errors; with a `nonnegative` mask, batched Lawson-Hanson NNLS on
+  the scaled normal equations with a warm-startable free set (each active-set step works on
+  the rows still pending, about one host sync per step). Empty columns are pinned at 0 with
+  infinite standard error; singular or non-finite rows return `NaN` and are flagged.
 - `torchregress.models.MarginalContrastiveDensity`: Marginal Contrastive Discrimination
   (Meziani, Ndiaye & Riu 2022), `p(y|x) = p(y) r(x, y)` from an unconditional flow and a
   CNRE ratio classifier. Monte-Carlo-normalized `log_prob`, importance-resampled `sample`

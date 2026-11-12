@@ -153,10 +153,10 @@ with `nu=math.inf` giving the Gaussian. At $\eta = 0$ the weighted objective maj
 
 ### Convergence certificate
 
-A row converges when the **full** (undamped) step of its weighted solve at the current weights moves every parameter by less than `tol` of its standard error,
+A row converges when the **full** (undamped) step of its weighted solve at the current weights moves every parameter by less than `step_tol` of its standard error,
 
 $$
-\max_k \frac{\lvert \theta^{\text{full}}_{bk} - \theta^{(t)}_{bk}\rvert}{\mathrm{se}_{bk}} < \mathtt{tol},
+\max_k \frac{\lvert \theta^{\text{full}}_{bk} - \theta^{(t)}_{bk}\rvert}{\mathrm{se}_{bk}} < \mathtt{step\_tol},
 $$
 
 after at least `min_iter` iterations whenever the weights depend on the residuals. With a `damped_solve` (Levenberg–Marquardt \[7, 8\]) a full step is accepted only if it lowers the weighted objective (its value at the start of the iteration comes from the previous weight refresh, not from another model evaluation); otherwise the per-row damping grows ×10 until a damped step does. A damped or rejected step never certifies convergence: a short damped step says nothing about the distance to the fixed point. A row for which no damping helps stops as `STALLED`, unless the solver's `predicted_objective` predicts a non-negative decrease (up to round-off) and shows that the decrease still reachable is below the float resolution of the objective; a model that predicts an increase certifies nothing.
@@ -175,9 +175,9 @@ The caller owns the model and the weighted solve, so bounds, priors, Gauss–New
 
 `rows` is `None` when a callback gets the whole batch in order, otherwise the global indices of the rows it gets: finished rows leave the active set, so a batch costs $\sum_b \text{iterations}_b$ row solves. Every callback of one iteration (`solve`, the weight refresh's `predict` and `penalty`) receives the identical `rows` object, which is reused across iterations until rows finish; every callback of one decrease test or damping attempt (a subset of the rows) also shares one object. A caller can therefore cache its per-row gathers (basis, design, calibration polynomials) in a one-entry cache keyed on `rows is last_rows`, as the example below does. `weights` and `target` are the controller's working buffers, valid during the call only. Each controller iteration has one host synchronisation (with a `damped_solve`, plus one for the decrease test and one per damping attempt), excluding the caller's solve: the non-negative path of `solve_normal_equations` costs about one more per active-set step, at $O(b\,n^3)$ per step on the rows still pending (the unconstrained path has none).
 
-`BatchedIRLSConfig` sets `weight` (default `"student_t"`), `weight_params` (default `{}`; `nu=5` for `student_t` unless given), `eta`, `max_iter`, `tol` (in standard errors, default `1e-3`), `min_iter` (default 2), `min_observations` (default: parameters + 1) and the damping schedule (`max_damping`, `damping_start`, `damping_min`).
+`BatchedIRLSFitConfig` sets `weight` (default `"student_t"`), `weight_params` (default `{}`; `nu=5` for `student_t` unless given), `eta`, `max_iter`, `step_tol` (largest full-step change in standard errors, default `1e-3`; unlike the relative-norm `IRLSFitConfig.parameter_tol` it is per parameter), `min_iter` (default 2), `min_observations` (default: parameters + 1) and the damping schedule (`max_damping`, `damping_start`, `damping_min`).
 
-`BatchedIRLSResult` holds per-row `theta`, `standard_errors`, `model`, `weights`, `effective_precision`, `objective` (NLL + penalty), `penalty`, `status` (`IRLSRowStatus`: `CONVERGED`, `MAX_ITERATIONS`, `STALLED`, `FAILED`, `EMPTY`), `iterations`, `n_observations` and `ridge_used` (any solve of the row was regularised).
+`BatchedIRLSFitResult` holds per-row `theta`, `standard_errors`, `model`, `weights`, `effective_precision`, `objective` (NLL + penalty), `penalty`, `status` (`IRLSRowStatus`: `CONVERGED`, `MAX_ITERATIONS`, `STALLED`, `FAILED`, `EMPTY`; these map onto `IRLSTermination` as converged, max_iterations, —, breakdown/non_finite, empty), `iterations`, `n_observations` and `ridge_used` (any solve of the row was regularised).
 
 !!! warning "Standard errors are conditional, not asymptotic"
     `standard_errors` are those of the final weighted least-squares solve: they set the convergence scale. They are not asymptotic $t_\nu$ errors. The Student-$t$ weight $(\nu+1)/(\nu+u^2)$ is the IRLS/MM weight $\psi(u)/u$, whose mean is 1 under $t_\nu$ noise, so $X^\mathsf{T} W X$ estimates the Gaussian information $X^\mathsf{T}\Lambda_{\mathrm{eff}} X$ rather than the $t_\nu$ Fisher information $\tfrac{\nu+1}{\nu+3} X^\mathsf{T}\Lambda_{\mathrm{eff}} X$: the returned errors are too small by about $\sqrt{(\nu+3)/(\nu+1)}$ (15% at $\nu = 5$) under $t_\nu$ noise and by a few percent under Gaussian noise. For asymptotic errors, build the normal matrix from `result.effective_precision` without the IRLS weights and multiply it by [`student_t_efficiency(nu, noise)`](../../losses/robust.md#student-t-likelihood-with-known-precisions) before inverting, as in the example below, or use a sandwich estimate.
@@ -192,7 +192,7 @@ import math
 
 import torch
 from torchregress.algorithms import (
-    BatchedIRLSConfig,
+    BatchedIRLSFitConfig,
     BatchedIRLSProblem,
     BatchedIRLSStep,
     batched_iteratively_reweighted_fit,
@@ -245,7 +245,7 @@ result = batched_iteratively_reweighted_fit(
     target,
     precision,
     mask,
-    BatchedIRLSConfig(weight_params={"nu": 5.0}),
+    BatchedIRLSFitConfig(weight_params={"nu": 5.0}),
 )
 print(result.converged.all().item(), result.iterations.double().mean().item())
 # Asymptotic t_5 errors under Gaussian noise: efficiency x information at λ_eff.
@@ -255,7 +255,7 @@ se = torch.linalg.inv(info).diagonal(dim1=-2, dim2=-1).sqrt()
 print("max |pull|:", ((result.theta - truth) / se).abs().max().item())
 gaussian = batched_iteratively_reweighted_fit(
     problem, torch.zeros(B, n, dtype=torch.float64), target, precision, mask,
-    BatchedIRLSConfig(weight_params={"nu": math.inf}),
+    BatchedIRLSFitConfig(weight_params={"nu": math.inf}),
 )
 print("Gaussian NLL - Student-t NLL:", (gaussian.objective - result.objective).mean().item())
 ```

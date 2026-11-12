@@ -30,7 +30,7 @@ import torch
 from torch import Tensor
 
 from torchregress.algorithms import (
-    BatchedIRLSConfig,
+    BatchedIRLSFitConfig,
     BatchedIRLSProblem,
     BatchedIRLSStep,
     batched_iteratively_reweighted_fit,
@@ -206,8 +206,8 @@ def check_fits(uspm_op, b: int, p: int) -> None:  # type: ignore[no-untyped-def]
     design = (basis.unsqueeze(-1) * legendre.unsqueeze(-2)).reshape(b, p, k * (j + 1))
     for nu, eta in ((5.0, 0.0), (5.0, 0.03), (math.inf, 0.0)):
         cfg = uspm_op.IRLSConfig(nu=nu, eta=eta)
-        ours_cfg = BatchedIRLSConfig(
-            weight_params={"nu": nu}, eta=eta, tol=cfg.tol, max_iter=cfg.max_iter
+        ours_cfg = BatchedIRLSFitConfig(
+            weight_params={"nu": nu}, eta=eta, step_tol=cfg.tol, max_iter=cfg.max_iter
         )
         theta0 = torch.zeros(b, design.shape[-1], dtype=DTYPE)
         t0 = time.perf_counter()

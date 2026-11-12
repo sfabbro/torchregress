@@ -29,9 +29,9 @@ from .irls import (
     reweight_fixed_predictions,
 )
 from .irls_batched import (
-    BatchedIRLSConfig,
+    BatchedIRLSFitConfig,
+    BatchedIRLSFitResult,
     BatchedIRLSProblem,
-    BatchedIRLSResult,
     BatchedIRLSStep,
     IRLSRowStatus,
     batched_iteratively_reweighted_fit,
@@ -72,8 +72,8 @@ __all__ = [
     "batched_iteratively_reweighted_fit",
     "BatchedIRLSProblem",
     "BatchedIRLSStep",
-    "BatchedIRLSConfig",
-    "BatchedIRLSResult",
+    "BatchedIRLSFitConfig",
+    "BatchedIRLSFitResult",
     "IRLSRowStatus",
     "solve_normal_equations",
     "NormalEquationsSolution",

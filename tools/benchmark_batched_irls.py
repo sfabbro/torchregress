@@ -29,7 +29,7 @@ import time
 import torch
 
 from torchregress.algorithms import (
-    BatchedIRLSConfig,
+    BatchedIRLSFitConfig,
     BatchedIRLSProblem,
     BatchedIRLSStep,
     IRLSCallbacks,
@@ -98,7 +98,7 @@ def run_batched(
     theta0 = torch.zeros(rows, n, dtype=torch.float64)
     start = time.perf_counter()
     result = batched_iteratively_reweighted_fit(
-        problem, theta0, target, precision, config=BatchedIRLSConfig(weight_params={"nu": NU})
+        problem, theta0, target, precision, config=BatchedIRLSFitConfig(weight_params={"nu": NU})
     )
     seconds = time.perf_counter() - start
     return {

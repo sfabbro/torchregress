@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from torchregress.algorithms import (
-    BatchedIRLSConfig,
+    BatchedIRLSFitConfig,
     BatchedIRLSProblem,
     BatchedIRLSStep,
     IRLSCallbacks,
@@ -91,7 +91,7 @@ def _fit(design, target, precision, mask=None, config=None, **kwargs):  # type: 
 def test_student_t_fit_is_stationary_point_of_exact_nll() -> None:
     design, target, precision, truth = _data()
     nu = 4.0
-    config = BatchedIRLSConfig(weight_params={"nu": nu}, tol=1e-8, max_iter=200)
+    config = BatchedIRLSFitConfig(weight_params={"nu": nu}, step_tol=1e-8, max_iter=200)
     result = _fit(design, target, precision, config=config)
     assert result.converged.all()
     assert (result.iterations >= 2).all()
@@ -111,7 +111,7 @@ def test_student_t_fit_is_stationary_point_of_exact_nll() -> None:
 def test_batched_rows_equal_rows_fitted_alone() -> None:
     design, target, precision, _ = _data(batch=8, seed=1)
     mask = torch.rand(target.shape, generator=torch.Generator().manual_seed(2)) > 0.1
-    config = BatchedIRLSConfig(weight_params={"nu": 3.0}, eta=0.02)
+    config = BatchedIRLSFitConfig(weight_params={"nu": 3.0}, eta=0.02)
     batched = _fit(design, target, precision, mask, config)
     for row in range(design.shape[0]):
         sl = slice(row, row + 1)
@@ -135,7 +135,7 @@ def test_finished_rows_leave_the_active_set() -> None:
 
 def test_gaussian_exact_solve_takes_one_iteration_and_matches_wls() -> None:
     design, target, precision, _ = _data(seed=4)
-    config = BatchedIRLSConfig(weight_params={"nu": math.inf})
+    config = BatchedIRLSFitConfig(weight_params={"nu": math.inf})
     result = _fit(design, target, precision, config=config)
     assert result.converged.all() and (result.iterations == 1).all()
     root = precision.sqrt()
@@ -236,7 +236,7 @@ def _overshooting_problem(
 def test_damped_steps_never_count_as_converged() -> None:
     design, target, precision, _ = _data(batch=4, seed=7)
     theta0 = torch.zeros(4, 3, dtype=DTYPE)
-    config = BatchedIRLSConfig(weight_params={"nu": math.inf}, max_iter=6)
+    config = BatchedIRLSFitConfig(weight_params={"nu": math.inf}, max_iter=6)
     # The full step overshoots 3x (raises the objective); the damped step moves only
     # 1e-9 of the way, far below tol in standard errors, yet lowers the objective.
     problem = _overshooting_problem(design, factor=3.0, damped_fraction=1e-9)
@@ -252,9 +252,9 @@ def test_damped_steps_never_count_as_converged() -> None:
 def test_rows_without_any_decrease_stall_unless_at_round_off() -> None:
     design, target, precision, _ = _data(batch=3, seed=8)
     exact = _fit(
-        design, target, precision, config=BatchedIRLSConfig(weight_params={"nu": math.inf})
+        design, target, precision, config=BatchedIRLSFitConfig(weight_params={"nu": math.inf})
     )
-    config = BatchedIRLSConfig(weight_params={"nu": math.inf}, max_iter=5, max_damping=3)
+    config = BatchedIRLSFitConfig(weight_params={"nu": math.inf}, max_iter=5, max_damping=3)
     # Start next to the optimum; the full step overshoots by 1e8 so it is far above tol.
     problem = _overshooting_problem(design, factor=-1e8, damped_fraction=None)
     start = exact.theta + 1e-9 * exact.standard_errors
@@ -284,7 +284,7 @@ def test_lm_damping_recovers_from_overshoot() -> None:
         return theta + fraction * (step.theta - theta)
 
     problem = replace(linear, solve=solve, damped_solve=damped, exact_solve=False)
-    config = BatchedIRLSConfig(weight_params={"nu": 5.0}, max_iter=200, damping_start=0.1)
+    config = BatchedIRLSFitConfig(weight_params={"nu": 5.0}, max_iter=200, damping_start=0.1)
     result = batched_iteratively_reweighted_fit(
         problem, torch.zeros(4, 3, dtype=DTYPE), target, precision, None, config
     )
@@ -298,7 +298,7 @@ def test_lm_damping_recovers_from_overshoot() -> None:
 def test_eta_variance_model_and_fixed_point() -> None:
     design, target, precision, _ = _data(seed=10)
     eta, nu = 0.05, 5.0
-    config = BatchedIRLSConfig(weight_params={"nu": nu}, eta=eta, tol=1e-9, max_iter=300)
+    config = BatchedIRLSFitConfig(weight_params={"nu": nu}, eta=eta, step_tol=1e-9, max_iter=300)
     result = _fit(design, target, precision, config=config)
     assert result.converged.all()
     model = (design @ result.theta.unsqueeze(-1)).squeeze(-1)
@@ -330,7 +330,7 @@ def test_nonnegative_solves_through_the_controller() -> None:
     design, target, precision, _ = _data(seed=12)
     target = target - 3.0 * design[..., 2]  # pushes the last coefficient negative
     bounds = torch.tensor([False, False, True])
-    gauss = BatchedIRLSConfig(weight_params={"nu": math.inf})
+    gauss = BatchedIRLSFitConfig(weight_params={"nu": math.inf})
     result = _fit(design, target, precision, config=gauss, nonnegative=bounds)
     assert result.converged.all() and (result.iterations == 1).all()
     assert torch.equal(result.theta[:, 2], torch.zeros(6, dtype=DTYPE))
@@ -340,14 +340,14 @@ def test_nonnegative_solves_through_the_controller() -> None:
     assert (score[:, :2].abs() * result.standard_errors[:, :2]).max() < 1e-8
     assert (score[:, 2] < 0).all()
     robust = _fit(
-        design, target, precision, config=BatchedIRLSConfig(max_iter=300), nonnegative=bounds
+        design, target, precision, config=BatchedIRLSFitConfig(max_iter=300), nonnegative=bounds
     )
     assert robust.converged.all() and (robust.theta[:, 2] >= 0).all()
 
 
 def test_huber_family_objective_and_weights() -> None:
     design, target, precision, _ = _data(seed=13)
-    config = BatchedIRLSConfig(weight="huber", weight_params={"delta": 1.345})
+    config = BatchedIRLSFitConfig(weight="huber", weight_params={"delta": 1.345})
     result = _fit(design, target, precision, config=config)
     assert result.converged.all()
     model = (design @ result.theta.unsqueeze(-1)).squeeze(-1)
@@ -361,7 +361,7 @@ def test_huber_family_objective_and_weights() -> None:
 
 def test_warm_start_weights_reach_the_same_fixed_point() -> None:
     design, target, precision, _ = _data(seed=14)
-    config = BatchedIRLSConfig(weight_params={"nu": 4.0}, tol=1e-6)
+    config = BatchedIRLSFitConfig(weight_params={"nu": 4.0}, step_tol=1e-6)
     cold = _fit(design, target, precision, config=config)
     initial = cold.weights.clone()
     initial[0, 0] = -1.0  # invalid row: falls back to the precision
@@ -383,7 +383,7 @@ def test_warm_start_weights_reach_the_same_fixed_point() -> None:
 def test_matches_existing_controller_row_by_row() -> None:
     design, target, precision, _ = _data(batch=3, seed=15)
     nu = 4.0
-    config = BatchedIRLSConfig(weight_params={"nu": nu}, tol=1e-10, max_iter=300)
+    config = BatchedIRLSFitConfig(weight_params={"nu": nu}, step_tol=1e-10, max_iter=300)
     batched = _fit(design, target, precision, config=config)
     for row in range(3):
         x, y, lam = design[row], target[row], precision[row]
@@ -414,12 +414,12 @@ def test_matches_existing_controller_row_by_row() -> None:
 
 def test_config_and_input_validation() -> None:
     design, target, precision, _ = _data(batch=2)
-    with pytest.raises(ValueError, match="tol"):
-        BatchedIRLSConfig(tol=0.0)
+    with pytest.raises(ValueError, match="step_tol"):
+        BatchedIRLSFitConfig(step_tol=0.0)
     with pytest.raises(ValueError, match="nu"):
-        BatchedIRLSConfig(weight_params={"nu": -1.0})
+        BatchedIRLSFitConfig(weight_params={"nu": -1.0})
     with pytest.raises(ValueError, match="eta"):
-        BatchedIRLSConfig(eta=-0.1)
+        BatchedIRLSFitConfig(eta=-0.1)
     theta0 = torch.zeros(2, 3, dtype=DTYPE)
     problem = _linear_problem(design)
     with pytest.raises(ValueError, match="precision shape"):
@@ -460,7 +460,7 @@ def test_result_evaluated_in_row_chunks(monkeypatch: pytest.MonkeyPatch) -> None
     import torchregress.algorithms.irls_batched as module
 
     design, target, precision, _ = _data(batch=7, seed=18)
-    config = BatchedIRLSConfig(weight_params={"nu": 3.0}, eta=0.03)
+    config = BatchedIRLSFitConfig(weight_params={"nu": 3.0}, eta=0.03)
     whole = _fit(design, target, precision, config=config)
     monkeypatch.setattr(module, "_RESULT_CHUNK", 3)
     chunked = _fit(design, target, precision, config=config)
@@ -483,7 +483,7 @@ def test_exact_fixed_weight_solve_is_taken_even_from_an_infeasible_start() -> No
         return linear.solve(theta, weights, target_, rows).theta
 
     problem = replace(linear, damped_solve=damped)
-    config = BatchedIRLSConfig(weight_params={"nu": math.inf})
+    config = BatchedIRLSFitConfig(weight_params={"nu": math.inf})
     start = torch.full((2, 1), -1.0, dtype=DTYPE)
     result = batched_iteratively_reweighted_fit(problem, start, target, precision, None, config)
     assert (result.status == IRLSRowStatus.CONVERGED).all()
@@ -493,7 +493,7 @@ def test_exact_fixed_weight_solve_is_taken_even_from_an_infeasible_start() -> No
 
 def test_round_off_certificate_rejects_a_predicted_increase() -> None:
     design, target, precision, _ = _data(batch=3, seed=8)
-    gauss = BatchedIRLSConfig(weight_params={"nu": math.inf})
+    gauss = BatchedIRLSFitConfig(weight_params={"nu": math.inf})
     exact = _fit(design, target, precision, config=gauss)
     config = replace(gauss, max_iter=5, max_damping=3)
     overshoot = _overshooting_problem(design, factor=-1e8, damped_fraction=None)
@@ -526,7 +526,7 @@ def test_non_finite_model_off_the_likelihood_is_ignored(eta: float) -> None:
         # A template undefined outside the observed range.
         return linear.predict(theta, rows).masked_fill(_take(off, rows), math.nan)
 
-    config = BatchedIRLSConfig(weight_params={"nu": 4.0}, eta=eta)
+    config = BatchedIRLSFitConfig(weight_params={"nu": 4.0}, eta=eta)
     theta0 = torch.zeros(4, 3, dtype=DTYPE)
     control = batched_iteratively_reweighted_fit(linear, theta0, target, precision, mask, config)
     result = batched_iteratively_reweighted_fit(
@@ -561,15 +561,17 @@ def test_ridge_used_by_any_solve_is_reported_per_row() -> None:
 def test_default_config_is_student_t_nu5_and_callable_weights_need_no_params() -> None:
     design, target, precision, _ = _data(seed=21)
     default = _fit(design, target, precision)
-    explicit = _fit(design, target, precision, config=BatchedIRLSConfig(weight_params={"nu": 5.0}))
+    explicit = _fit(
+        design, target, precision, config=BatchedIRLSFitConfig(weight_params={"nu": 5.0})
+    )
     for name in ("theta", "objective", "weights"):
         assert torch.equal(getattr(default, name), getattr(explicit, name))
 
     def huber(u: torch.Tensor) -> torch.Tensor:
         return torch.where(u <= 1.345, torch.ones_like(u), 1.345 / u)
 
-    config = BatchedIRLSConfig(weight=huber)
-    by_name = _fit(design, target, precision, config=BatchedIRLSConfig(weight="huber"))
+    config = BatchedIRLSFitConfig(weight=huber)
+    by_name = _fit(design, target, precision, config=BatchedIRLSFitConfig(weight="huber"))
     custom = _fit(design, target, precision, config=config)
     assert custom.converged.all()
     torch.testing.assert_close(custom.theta, by_name.theta, rtol=1e-12, atol=1e-14)
@@ -597,10 +599,8 @@ def test_damped_controller_does_not_repredict_the_start_of_an_iteration() -> Non
     def damped(theta, weights, target_, rows, damping):  # type: ignore[no-untyped-def]
         return linear.solve(theta, weights, target_, rows).theta
 
-    problem = replace(
-        linear, predict=predict, solve=solve, damped_solve=damped, exact_solve=False
-    )
-    config = BatchedIRLSConfig(weight_params={"nu": 4.0}, tol=1e-6)
+    problem = replace(linear, predict=predict, solve=solve, damped_solve=damped, exact_solve=False)
+    config = BatchedIRLSFitConfig(weight_params={"nu": 4.0}, step_tol=1e-6)
     result = batched_iteratively_reweighted_fit(
         problem, torch.zeros(5, 3, dtype=DTYPE), target, precision, None, config
     )

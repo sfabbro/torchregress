@@ -207,8 +207,8 @@ EXPECTED_EXPORTS = {
         "batched_iteratively_reweighted_fit",
         "BatchedIRLSProblem",
         "BatchedIRLSStep",
-        "BatchedIRLSConfig",
-        "BatchedIRLSResult",
+        "BatchedIRLSFitConfig",
+        "BatchedIRLSFitResult",
         "IRLSRowStatus",
         "solve_normal_equations",
         "NormalEquationsSolution",
@@ -363,8 +363,8 @@ EXPECTED_SIGNATURES = {
     "algorithms.batched_iteratively_reweighted_fit": (
         "(problem: 'BatchedIRLSProblem', initial_theta: 'Tensor', target: 'Tensor', "
         "precision: 'Tensor', mask: 'Tensor | None' = None, "
-        "config: 'BatchedIRLSConfig | None' = None, *, "
-        "initial_weights: 'Tensor | None' = None) -> 'BatchedIRLSResult'"
+        "config: 'BatchedIRLSFitConfig | None' = None, *, "
+        "initial_weights: 'Tensor | None' = None) -> 'BatchedIRLSFitResult'"
     ),
     "algorithms.solve_normal_equations": (
         "(normal: 'Tensor', rhs: 'Tensor', *, nonnegative: 'Tensor | None' = None, "
