@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
 import pytest
@@ -445,7 +446,7 @@ def test_ridging_only_the_failed_rows_matches_ridging_every_row(
     normal, rhs = _ridge_batch()
     normal[5, 0, 0] = math.nan  # one non-finite row: the swap path runs too
     start = torch.ones_like(rhs)
-    kwargs = {"nonnegative": nonnegative, "start": start, "rank_tol": rank_tol}
+    kwargs: dict[str, Any] = {"nonnegative": nonnegative, "start": start, "rank_tol": rank_tol}
     out = solve_normal_equations(normal, rhs, **kwargs)
     assert out.ridge_used.any() and not out.ridge_used.all() and out.singular[5]
     ridge_failed_rows = module._ridge_failed_rows
@@ -471,7 +472,11 @@ def test_standard_errors_reuse_equals_a_fresh_final_factorisation(
     normal, rhs = torch.cat([normal, normal2]), torch.cat([rhs, rhs2])
     mask = torch.tensor([True, True, True, False])
     # From a positive start the collinear block is freed (and needs the ridge).
-    kwargs = {"nonnegative": mask, "start": torch.ones_like(rhs), "rank_tol": rank_tol}
+    kwargs: dict[str, Any] = {
+        "nonnegative": mask,
+        "start": torch.ones_like(rhs),
+        "rank_tol": rank_tol,
+    }
     out = solve_normal_equations(normal, rhs, **kwargs)
     assert out.ridge_used.any() and (out.free != mask).any()
 
@@ -494,3 +499,129 @@ def test_standard_errors_reuse_equals_a_fresh_final_factorisation(
         inv_diag = torch.diagonal(torch.cholesky_inverse(chol), dim1=-2, dim2=-1)
         se = torch.where(out.free, inv_diag.clamp_min(0.0).sqrt(), torch.ones_like(rhs))
         assert torch.equal(out.standard_errors, se / scale)
+
+
+# A float32 row (collinear design, n = 4) whose active set cycles in round-off
+# until the outer step budget runs out, after freeing a variable: its last
+# factor is of an earlier free set (``fresh`` False), and reusing it would give
+# standard errors about 1000 times too small.
+_CYCLING_NORMAL = [
+    [6.9246954917907715, -1.076127290725708, 5.848568439483643, -2.3021910190582275],
+    [-1.076127290725708, 7.810089588165283, 6.733962059020996, 0.36241087317466736],
+    [5.848568439483643, 6.733962059020996, 12.582530975341797, -1.9397801160812378],
+    [-2.3021910190582275, 0.36241087317466736, -1.9397801160812378, 4.4359636306762695],
+]
+_CYCLING_RHS = [3.270312786102295, 3.8759334087371826, 7.146246433258057, 0.9713197946548462]
+
+
+def _stale_batch(single: bool) -> tuple[torch.Tensor, torch.Tensor]:
+    """The cycling row, alone or followed by more collinear float32 rows."""
+    normal = torch.tensor([_CYCLING_NORMAL], dtype=torch.float32)
+    rhs = torch.tensor([_CYCLING_RHS], dtype=torch.float32)
+    if single:
+        return normal, rhs
+    generator = torch.Generator().manual_seed(99)
+    design = torch.randn(127, 11, 4, generator=generator, dtype=torch.float64)
+    design[..., 2] = design[..., 0] + design[..., 1]
+    target = torch.randn(127, 11, generator=generator, dtype=torch.float64)
+    weights = 0.1 + torch.rand(127, 11, generator=generator, dtype=torch.float64)
+    xw = design * weights.unsqueeze(-1)
+    more_normal = (design.transpose(1, 2) @ xw).to(torch.float32)
+    more_rhs = (xw * target.unsqueeze(-1)).sum(1).to(torch.float32)
+    return torch.cat([normal, more_normal]), torch.cat([rhs, more_rhs])
+
+
+@pytest.mark.parametrize("single", [True, False])
+def test_rows_whose_free_set_changed_after_their_last_factor_are_refactorised(
+    monkeypatch: pytest.MonkeyPatch, single: bool
+) -> None:
+    import torchregress.algorithms.normal_equations as module
+
+    normal, rhs = _stale_batch(single)
+    mask = torch.ones(4, dtype=torch.bool)
+    active_set = module._active_set
+    stale_rows: list[int] = []
+
+    def counting(*args):  # type: ignore[no-untyped-def]
+        result = active_set(*args)
+        stale_rows.append(int((~result[-1]).sum()))
+        return result
+
+    monkeypatch.setattr(module, "_active_set", counting)
+    out = solve_normal_equations(normal, rhs, nonnegative=mask)
+    # Some row ran out of steps after its last factorisation (alone, every step
+    # is on every row; in the batch, the other rows finish earlier).
+    assert sum(stale_rows) >= 1
+
+    def all_stale(*args):  # type: ignore[no-untyped-def]
+        *head, fresh = active_set(*args)
+        return (*head, torch.zeros_like(fresh))
+
+    monkeypatch.setattr(module, "_active_set", all_stale)
+    _assert_identical(solve_normal_equations(normal, rhs, nonnegative=mask), out)
+    monkeypatch.undo()
+
+    # The standard errors are those of a fresh factorisation of the final free block.
+    scaled, _, scale, _ = module._jacobi_scale(normal, rhs)
+    chol, _, _ = module._free_block_cholesky(scaled, out.free, 1e-8)
+    inv_diag = torch.diagonal(torch.cholesky_inverse(chol), dim1=-2, dim2=-1)
+    se = torch.where(out.free, inv_diag.clamp_min(0.0).sqrt(), torch.ones_like(rhs)) / scale
+    ok = ~out.singular
+    assert torch.equal(out.standard_errors[ok], se[ok])
+
+
+def test_nonnegative_solve_backpropagates_when_rows_finish_at_different_steps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import torchregress.algorithms.normal_equations as module
+
+    _, _, _, (normal, rhs) = _least_squares_batch(9, 15, 6, seed=7)
+    mask = torch.tensor([True, True, False, True, True, False])
+    sizes: list[int] = []
+    factor = module._free_block_cholesky
+
+    def recording(scaled, free, ridge):  # type: ignore[no-untyped-def]
+        sizes.append(scaled.shape[0])
+        return factor(scaled, free, ridge)
+
+    monkeypatch.setattr(module, "_free_block_cholesky", recording)
+    normal = normal.clone().requires_grad_(True)
+    rhs = rhs.clone().requires_grad_(True)
+    out = solve_normal_equations(normal, rhs, nonnegative=mask)
+    # A step on every row is followed by one on some rows only: its factor is
+    # written into, after autograd saved it.
+    assert sizes[0] == 9 and min(sizes) < 9
+    # Raises if that factor was modified in place.
+    (out.solution.sum() + out.standard_errors.sum()).backward()
+    assert normal.grad is not None and rhs.grad is not None
+
+
+@pytest.mark.parametrize("nonnegative", [None, torch.tensor([True, True, False])])
+def test_rows_singular_even_with_the_ridge_fail_closed_on_the_gathered_path(
+    nonnegative: torch.Tensor | None,
+) -> None:
+    # Row 1 has two identical columns. In float32 the relative ridge is lost in
+    # round-off (1 + 1e-8 == 1), so the ridged factorisation fails too, with a
+    # zero pivot. Rows 0 and 2 are regular.
+    normal = torch.tensor(
+        [
+            [[4.0, 1.0, 0.0], [1.0, 3.0, 1.0], [0.0, 1.0, 2.0]],
+            [[4.0, 4.0, 1.0], [4.0, 4.0, 1.0], [1.0, 1.0, 3.0]],
+            [[2.0, 0.5, 0.0], [0.5, 2.0, 0.5], [0.0, 0.5, 2.0]],
+        ],
+        dtype=torch.float32,
+    )
+    rhs = torch.tensor([[1.0, -1.0, 0.5], [1.0, 1.0, 1.0], [0.5, 1.0, -0.5]], dtype=torch.float32)
+    start = torch.ones_like(rhs)  # frees the duplicated pair in the first step
+    out = solve_normal_equations(normal, rhs, nonnegative=nonnegative, start=start)
+    assert out.singular.tolist() == [False, True, False]
+    assert out.ridge_used[1]
+    assert torch.isnan(out.solution[1]).all() and torch.isnan(out.standard_errors[1]).all()
+    assert not out.free[1].any()
+    for row in (0, 2):
+        alone = solve_normal_equations(
+            normal[row : row + 1], rhs[row : row + 1], nonnegative=nonnegative, start=start[:1]
+        )
+        _assert_identical(
+            type(out)(*(getattr(out, name)[row : row + 1] for name in _FIELDS)), alone
+        )
