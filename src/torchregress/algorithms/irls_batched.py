@@ -83,6 +83,13 @@ class BatchedIRLSProblem:
     buffers, valid for the duration of the call only (they are compacted and
     overwritten in place later): do not keep or modify them.
 
+    Contract on ``rows``: every callback of one iteration (``solve``, the
+    weight refresh's ``predict`` and ``penalty``) receives the identical object,
+    and the object is reused across iterations until rows finish; the callbacks
+    of one decrease test or one damping attempt (on a subset of the rows) also
+    share one object. Per-row gathers of the caller's operator (basis, design,
+    calibration polynomials) can thus be cached on ``rows is last_rows``.
+
     Attributes:
         predict: ``predict(theta, rows) -> model`` ``[b, N]``.
         solve: ``solve(theta, weights, target, rows) -> BatchedIRLSStep``. The full

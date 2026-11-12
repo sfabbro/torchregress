@@ -173,7 +173,7 @@ The caller owns the model and the weighted solve, so bounds, priors, Gauss–New
 | `penalty` | `(theta, rows) -> [b]` | Optional penalty $\Pi_b$ in NLL units |
 | `exact_solve` | `bool` | `solve` is the exact minimiser (linear LS, NNLS): one solve converges when the weights are fixed, and is taken without the decrease test |
 
-`rows` is `None` when a callback gets the whole batch in order, otherwise the global indices of the rows it gets: finished rows leave the active set, so a batch costs $\sum_b \text{iterations}_b$ row solves. Each controller iteration has one host synchronisation (with a `damped_solve`, plus one for the decrease test and one per damping attempt), excluding the caller's solve: the non-negative path of `solve_normal_equations` costs about one more per active-set step, at $O(b\,n^3)$ per step on the rows still pending (the unconstrained path has none).
+`rows` is `None` when a callback gets the whole batch in order, otherwise the global indices of the rows it gets: finished rows leave the active set, so a batch costs $\sum_b \text{iterations}_b$ row solves. Every callback of one iteration (`solve`, the weight refresh's `predict` and `penalty`) receives the identical `rows` object, which is reused across iterations until rows finish; every callback of one decrease test or damping attempt (a subset of the rows) also shares one object. A caller can therefore cache its per-row gathers (basis, design, calibration polynomials) in a one-entry cache keyed on `rows is last_rows`, as the example below does. `weights` and `target` are the controller's working buffers, valid during the call only. Each controller iteration has one host synchronisation (with a `damped_solve`, plus one for the decrease test and one per damping attempt), excluding the caller's solve: the non-negative path of `solve_normal_equations` costs about one more per active-set step, at $O(b\,n^3)$ per step on the rows still pending (the unconstrained path has none).
 
 `BatchedIRLSConfig` sets `weight` (default `"student_t"`), `weight_params` (default `{}`; `nu=5` for `student_t` unless given), `eta`, `max_iter`, `tol` (in standard errors, default `1e-3`), `min_iter` (default 2), `min_observations` (default: parameters + 1) and the damping schedule (`max_damping`, `damping_start`, `damping_min`).
 
@@ -211,16 +211,25 @@ target[:, ::37] += 1.0  # outliers
 mask = torch.rand(B, N) > 0.05  # missing pixels
 
 
-def take(tensor, rows):
-    return tensor if rows is None else tensor[rows]
+gathered = {"rows": None, "design": design}
+
+
+def take_design(rows):
+    # Callbacks of one iteration (and of one damping attempt) get the same `rows`
+    # object, which only changes when rows finish: gather the design once per set.
+    if rows is None:
+        return design
+    if gathered["rows"] is not rows:
+        gathered["rows"], gathered["design"] = rows, design[rows]
+    return gathered["design"]
 
 
 def predict(theta, rows):
-    return (take(design, rows) @ theta.unsqueeze(-1)).squeeze(-1)
+    return (take_design(rows) @ theta.unsqueeze(-1)).squeeze(-1)
 
 
 def solve(theta, weights, y, rows):
-    x = take(design, rows)
+    x = take_design(rows)
     normal = x.transpose(1, 2) @ (x * weights.unsqueeze(-1))
     rhs = (x.transpose(1, 2) @ (weights * y).unsqueeze(-1)).squeeze(-1)
     out = solve_normal_equations(normal, rhs)

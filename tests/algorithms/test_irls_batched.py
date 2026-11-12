@@ -675,3 +675,47 @@ def test_controller_keeps_about_three_row_buffers(damped: bool) -> None:
     # Elsewhere: two more transients at most (the decrease test's gathered rows,
     # or the result's chunk next to its three outputs).
     assert peak["any"] <= 5.0
+
+
+@pytest.mark.parametrize("damped", [False, True])
+def test_callbacks_of_one_iteration_share_the_rows_object(damped: bool) -> None:
+    design, target, precision, _ = _data(batch=8, seed=24)
+    target[0] = (design[0] @ torch.ones(3, dtype=DTYPE)).clone()  # finishes early
+    linear = _linear_problem(design)
+    calls: list[tuple[str, torch.Tensor | None]] = []
+
+    def solve(theta, weights, target_, rows):  # type: ignore[no-untyped-def]
+        calls.append(("solve", rows))
+        return linear.solve(theta, weights, target_, rows)
+
+    def predict(theta, rows):  # type: ignore[no-untyped-def]
+        calls.append(("predict", rows))
+        return linear.predict(theta, rows)
+
+    def damped_solve(theta, weights, target_, rows, damping):  # type: ignore[no-untyped-def]
+        return linear.solve(theta, weights, target_, rows).theta
+
+    problem = replace(
+        linear,
+        solve=solve,
+        predict=predict,
+        damped_solve=damped_solve if damped else None,
+        exact_solve=not damped,
+    )
+    result = batched_iteratively_reweighted_fit(
+        problem, torch.zeros(8, 3, dtype=DTYPE), target, precision
+    )
+    assert result.converged.all()
+    solves = [i for i, (name, _) in enumerate(calls) if name == "solve"]
+    for start, stop in zip(solves, solves[1:] + [len(calls)], strict=True):
+        rows = calls[start][1]
+        # The refresh is the last model evaluation of the iteration (before the
+        # result's chunked evaluation, which follows the last solve).
+        refresh = [r for name, r in calls[start + 1 : stop] if name == "predict"]
+        if stop != len(calls):
+            assert refresh and refresh[-1] is rows
+    objects = [calls[i][1] for i in solves]
+    compactions = sum(a is not b for a, b in zip(objects, objects[1:], strict=False))
+    sizes = [8 if r is None else r.numel() for r in objects]
+    assert compactions == sum(a != b for a, b in zip(sizes, sizes[1:], strict=False))
+    assert compactions >= 1
