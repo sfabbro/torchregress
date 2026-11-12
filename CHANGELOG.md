@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `torchregress.losses.structural_similarity_1d` and `StructuralSimilarity1dLoss` (`1 - SSIM`):
+  structural similarity along the last dimension of `[..., N]` sequences (spectra, light
+  curves, profiles), batched over leading dimensions. Masks and per-sample weights (e.g.
+  inverse variances) enter every local mean, variance and covariance by normalised
+  convolution; windows with less than `min_coverage` of their kernel mass valid are
+  excluded; masked samples may hold `NaN`. Gaussian or uniform window, `padding="valid"`
+  (default), `"same"` (sequence masked beyond its ends) or `"reflect"` (reproduces
+  `torchmetrics` 2-D SSIM on `[B, 1, N, 1]` with a `(k, 1)` kernel to round-off); per-row
+  `data_range` (default: the target row's valid range, independent of the batch);
+  `return_map`. Documented as a similarity index without a noise model, dependent on
+  `data_range`, and insensitive to local gain/offset.
+- `torchregress.losses.marginalize_linear_nuisance` and `MarginalizedNuisanceGaussianNLLLoss`:
+  exact Gaussian NLL of `[..., N]` rows with known per-sample precision and a linear
+  nuisance `U a` (continuum, baseline, calibration polynomial) integrated out (Rybicki &
+  Press 1992), via Woodbury and the matrix determinant lemma: one Jacobi-scaled `m x m`
+  Cholesky per row, never an `N x N` matrix. Shared `[N, m]` or per-row bases, full prior
+  covariance or diagonal prior precision with flat (improper) directions giving the
+  restricted likelihood, exact masking, and the posterior nuisance coefficients, their
+  covariance, the fitted nuisance and the conditional residual (`LinearNuisanceMarginal`).
+  Rows whose flat directions are not constrained by the unmasked data raise instead of
+  being regularised. Forward + backward at N=10,000, m=50, float64, 2 threads on a shared
+  host: about 1,000 rows/s with a shared basis (`tools/benchmark_linear_nuisance.py`).
 - Student-t family with known per-observation precision:
   `torchregress.losses.student_t_nll(residual, precision, nu, *, mask=None, dim=-1)` is
   the exact `t_nu(0, 1/precision)` NLL with all constants, masked and summed per row

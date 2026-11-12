@@ -355,6 +355,43 @@ _METHODS: tuple[MethodMetadata, ...] = (
         calibration="partial",
     ),
     MethodMetadata(
+        name="MarginalizedNuisanceGaussianNLLLoss",
+        family="probabilistic_loss",
+        public_path="torchregress.losses.MarginalizedNuisanceGaussianNLLLoss",
+        task_tags=("sequence", "known_noise", "nuisance_marginalization", "missing_labels"),
+        maturity="Available",
+        multi_target="yes",
+        non_gaussian="no",
+        aleatoric="partial",
+        calibration="partial",
+        notes=(
+            "Exact Gaussian NLL of [B, N] rows with known per-sample precision and a linear "
+            "nuisance (continuum, baseline, calibration polynomial) integrated out by "
+            "Woodbury: one m x m Cholesky per row, exact masking, flat priors as the "
+            "restricted likelihood (fail closed when unidentified). "
+            "marginalize_linear_nuisance also returns the posterior nuisance and the "
+            "conditional residual. Noise is known, not learned."
+        ),
+    ),
+    MethodMetadata(
+        name="StructuralSimilarity1dLoss",
+        family="point_loss",
+        public_path="torchregress.losses.StructuralSimilarity1dLoss",
+        task_tags=("sequence", "shape_similarity", "missing_labels"),
+        maturity="Available",
+        multi_target="yes",
+        non_gaussian="partial",
+        calibration="no",
+        ood_support="no",
+        notes=(
+            "1 - SSIM along the last dim of [..., N] sequences with masked/weighted local "
+            "moments (normalised convolution) and coverage-based window exclusion; matches "
+            "torchmetrics on [B, 1, N, 1] with padding='reflect'. A similarity index, not a "
+            "likelihood: no noise model, depends on data_range, insensitive to local "
+            "gain/offset. Pair with a likelihood loss for calibrated fits."
+        ),
+    ),
+    MethodMetadata(
         name="QuantileLoss",
         family="quantile",
         public_path="torchregress.losses.QuantileLoss",

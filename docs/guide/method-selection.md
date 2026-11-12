@@ -116,10 +116,10 @@ _Generated date_: `2026-11-12`
 | `multivariate` (1) | yes | no | partial | no | no | no | partial | partial | no | no |
 | `observation_mapping` (3) | yes | no | partial | no | no | no | partial | partial | no | no |
 | `ordinal` (2) | yes | no | yes | no | no | no | partial | partial | no | no |
-| `point_loss` (1) | yes | no | no | no | no | no | partial | partial | no | no |
+| `point_loss` (2) | yes | no | partial | no | no | no | partial | partial | no | no |
 | `poisson` (4) | yes | no | yes | no | no | no | partial | partial | no | no |
 | `poisson_gaussian` (4) | yes | yes | yes | no | no | no | partial | partial | no | no |
-| `probabilistic_loss` (11) | yes | no | partial | no | yes | no | partial | partial | no | no |
+| `probabilistic_loss` (12) | yes | no | partial | no | yes | no | partial | partial | no | no |
 | `quantile` (2) | yes | no | yes | no | no | no | yes | partial | no | no |
 | `representation_regularizer` (1) | no | no | partial | no | no | no | no | partial | yes | no |
 | `robust_algorithm` (2) | yes | no | partial | no | no | no | partial | partial | no | no |
@@ -268,6 +268,7 @@ _Generated date_: `2026-11-12`
 | `RelativeSurveySplineHead` | `observation_mapping` | `Available` | yes | no | no | no | no | partial | partial |
 | `CumulativeLinkLoss` | `ordinal` | `Available` | yes | no | no | no | no | partial | partial |
 | `OrdinalCrossEntropyLoss` | `ordinal` | `Available` | yes | no | no | no | no | partial | partial |
+| `StructuralSimilarity1dLoss` | `point_loss` | `Available` | yes | no | no | no | no | no | no |
 | `WeightedMSELoss` | `point_loss` | `Core` | yes | no | no | no | no | partial | partial |
 | `NegativeBinomialNLLLoss` | `poisson` | `Available` | yes | no | no | no | no | partial | partial |
 | `PoissonDevianceLoss` | `poisson` | `Available` | yes | no | no | no | no | partial | partial |
@@ -285,6 +286,7 @@ _Generated date_: `2026-11-12`
 | `GaussianWassersteinBoundLoss` | `probabilistic_loss` | `Available` | yes | no | no | partial | no | partial | partial |
 | `LowRankGaussianLoss` | `probabilistic_loss` | `Strong` | yes | no | no | yes | no | partial | partial |
 | `MarginalizedMultiSourceGaussianNLLLoss` | `probabilistic_loss` | `Available` | yes | no | no | yes | no | partial | partial |
+| `MarginalizedNuisanceGaussianNLLLoss` | `probabilistic_loss` | `Available` | yes | no | no | partial | no | partial | partial |
 | `MultivariateGaussianLoss` | `probabilistic_loss` | `Strong` | yes | no | no | yes | no | partial | partial |
 | `NeighborhoodCovariancePseudoLabeler` | `probabilistic_loss` | `Available` | yes | no | no | partial | no | partial | partial |
 | `RobustMultiSourceGaussianNLLLoss` | `probabilistic_loss` | `Available` | yes | no | no | yes | no | partial | partial |
@@ -358,10 +360,10 @@ Peer-method check: `SWAG`, `BayesianNeuralNetwork`, `MixtureDensityLoss`
 | `multivariate` | 1 | yes | no | partial | no | no | no | partial | partial | no | no |
 | `observation_mapping` | 3 | yes | no | partial | no | no | no | partial | partial | no | no |
 | `ordinal` | 2 | yes | no | yes | no | no | no | partial | partial | no | no |
-| `point_loss` | 1 | yes | no | no | no | no | no | partial | partial | no | no |
+| `point_loss` | 2 | yes | no | partial | no | no | no | partial | partial | no | no |
 | `poisson` | 4 | yes | no | yes | no | no | no | partial | partial | no | no |
 | `poisson_gaussian` | 4 | yes | yes | yes | no | no | no | partial | partial | no | no |
-| `probabilistic_loss` | 11 | yes | no | partial | no | yes | no | partial | partial | no | no |
+| `probabilistic_loss` | 12 | yes | no | partial | no | yes | no | partial | partial | no | no |
 | `quantile` | 2 | yes | no | yes | no | no | no | yes | partial | no | no |
 | `representation_regularizer` | 1 | no | no | partial | no | no | no | no | partial | yes | no |
 | `robust_algorithm` | 2 | yes | no | partial | no | no | no | partial | partial | no | no |

@@ -96,6 +96,22 @@ $$\mathcal{L}_{\text{Huber}}(r;\delta) = \begin{cases} \frac{1}{2}r^2 & |r| \le 
 
 ---
 
+## Sequence shape losses
+
+→ **Guides:** [1-D structural similarity](../losses/structural_similarity.md) · [Linear-nuisance marginal likelihood](../losses/linear_nuisance.md)
+
+For `[..., N]` sequences (spectra, light curves, profiles), batched over the leading dimensions.
+
+| Symbol | Signature | Description |
+|:-------|:----------|:------------|
+| `structural_similarity_1d` | `structural_similarity_1d(y_pred, target, *, kernel_size=11, sigma=1.5, data_range=None, k1=0.01, k2=0.03, padding="valid", min_coverage=0.5, mask=None, weights=None, reduction="mean", return_map=False)` | SSIM along the last dim; masked/weighted local moments by normalised convolution; `padding="reflect"` matches `torchmetrics` on `[B, 1, N, 1]` |
+| `StructuralSimilarity1dLoss` | `StructuralSimilarity1dLoss(kernel_size=11, sigma=1.5, data_range=None, k1=0.01, k2=0.03, padding="valid", min_coverage=0.5, reduction="mean")` | `1 - SSIM` per row; `weights` are per-sample moment weights, not row weights |
+| `marginalize_linear_nuisance` | `marginalize_linear_nuisance(y_pred, target, precision, basis, *, prior_precision=None, prior_covariance=None, mask=None) → LinearNuisanceMarginal` | Exact Gaussian NLL of `N(0, diag(1/precision) + U S Uᵀ)` per row via Woodbury (one `m×m` Cholesky per row), plus posterior coefficients, their covariance, fitted nuisance and conditional residual; flat priors give the restricted likelihood |
+| `MarginalizedNuisanceGaussianNLLLoss` | `MarginalizedNuisanceGaussianNLLLoss(reduction="mean")`; `forward(y_pred, target, precision, basis, prior_precision=None, prior_covariance=None, mask=None, weights=None)` | Reducing loss over rows (per-row `weights`) |
+| `LinearNuisanceMarginal` | `NamedTuple(nll, coefficients, coefficient_covariance, nuisance, residual)` | Result of `marginalize_linear_nuisance` |
+
+---
+
 ## Quantile, expectile, distributional
 
 → **Guides:** [Quantile & expectile](../losses/quantile_expectile.md) · [MDN](../losses/mdn.md) · [Flows](../losses/nflows.md) · [Evidential](../losses/advanced.md)
