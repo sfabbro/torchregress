@@ -358,6 +358,22 @@ def test_effective_precision_variance_model() -> None:
         effective_precision(precision, model, -0.1)
 
 
+@pytest.mark.parametrize("bad", [-0.1, math.nan, math.inf])
+def test_effective_precision_rejects_invalid_tensor_eta(bad: float) -> None:
+    precision = torch.ones(3, 4, dtype=torch.float64)
+    model = torch.ones(3, 4, dtype=torch.float64)
+    eta = torch.full((3, 1), 0.1, dtype=torch.float64)
+    eta[1, 0] = bad
+    with pytest.raises(ValueError, match="eta must be finite"):
+        effective_precision(precision, model, eta)
+
+
+def test_effective_precision_tensor_eta_must_broadcast_to_precision() -> None:
+    precision = torch.ones(3, 4, dtype=torch.float64)
+    with pytest.raises(ValueError, match="broadcast"):
+        effective_precision(precision, precision, torch.full((2, 3, 1), 0.1, dtype=torch.float64))
+
+
 @pytest.mark.parametrize("nu", [1.0, 3.0, 5.0, 10.0])
 def test_student_t_efficiency_matches_quadrature(nu: float) -> None:
     from scipy import integrate, stats

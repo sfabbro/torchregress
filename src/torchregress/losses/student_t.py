@@ -141,7 +141,8 @@ def effective_precision(precision: Tensor, model: Tensor, eta: float | Tensor) -
 
     i.e. known noise plus an error proportional to the model ``m`` (a
     fractional template or calibration error ``η``). Zero precision (no
-    information) stays zero. For ``eta == 0`` (a Python number) ``precision``
+    information) stays zero for a finite model; non-finite model values
+    propagate (fail closed). For ``eta == 0`` (a Python number) ``precision``
     itself is returned, not a copy.
 
     Args:
@@ -149,10 +150,23 @@ def effective_precision(precision: Tensor, model: Tensor, eta: float | Tensor) -
         model: Model values ``m`` (broadcastable to ``precision``), usually frozen
             at the previous iterate of an IRLS fit.
         eta: Fractional model error ``η ≥ 0``: a float, or a tensor broadcastable
-            to ``precision`` (e.g. one value per row, ``[B, 1]``).
+            to ``precision`` (e.g. one value per row, ``[B, 1]``) whose entries
+            are all finite and non-negative.
+
+    Raises:
+        ValueError: ``eta`` is negative or non-finite, or a tensor ``eta`` does
+            not broadcast to the shape of ``precision``.
     """
     if isinstance(eta, Tensor):
-        eta2 = eta.to(dtype=precision.dtype, device=precision.device).square()
+        eta = eta.to(dtype=precision.dtype, device=precision.device)
+        if torch.broadcast_shapes(eta.shape, precision.shape) != precision.shape:
+            raise ValueError(
+                f"eta shape {tuple(eta.shape)} must broadcast to precision shape "
+                f"{tuple(precision.shape)}"
+            )
+        if not bool((torch.isfinite(eta) & (eta >= 0.0)).all()):
+            raise ValueError("eta must be finite and >= 0")
+        eta2 = eta.square()
     else:
         value = float(eta)
         if not math.isfinite(value) or value < 0.0:
