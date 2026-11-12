@@ -34,9 +34,16 @@ from .loss_registry import register_regression_loss
 
 _HALF_LOG_2PI = 0.5 * math.log(2.0 * math.pi)
 
-#: Gauss--Hermite nodes of :func:`student_t_efficiency` (smooth integrands; the
-#: 200-node rule is exact to float64 round-off for ``nu >= 0.5``).
+#: Gauss--Hermite nodes of :func:`student_t_efficiency` for ``nu >= 3``. The
+#: integrands have poles at ``±i√nu``, so the rule converges slowly for small
+#: ``nu`` (``1e-6`` relative error at 0.5, 3% at 0.1); from ``nu = 3`` it is at
+#: float64 round-off (``≈ 1e-15`` against mpmath).
 _HERMITE_NODES = 200
+
+#: Below this ``nu`` :func:`student_t_efficiency` uses the closed form, which is at
+#: round-off there (``≲ 3e-15``) but loses digits to cancellation as ``nu`` grows
+#: (``3e-14`` at 10, ``2e-11`` at 100).
+_EFFICIENCY_CLOSED_FORM_NU = 3.0
 
 
 def _validated_nu(nu: float) -> float:
@@ -165,8 +172,10 @@ def student_t_efficiency(nu: float, noise: Literal["gaussian", "student_t"] = "g
     asymptotic variance is ``σ² E[ψ²]/E[ψ']²``, so the ratio is the information the
     ``t_ν`` M-estimator extracts per unit Gaussian information ``1/σ²``:
 
-    * ``noise="gaussian"`` -- the noise is ``N(0, σ²)``; evaluated by 200-node
-      Gauss--Hermite quadrature (exact to round-off; ``≈ 0.942`` at ``ν = 5``);
+    * ``noise="gaussian"`` -- the noise is ``N(0, σ²)``; a closed form in
+      ``erfc`` for ``ν < 3`` and 200-node Gauss--Hermite quadrature above, both
+      within a few ``1e-15`` (relative) of high-precision quadrature
+      (``≈ 0.942`` at ``ν = 5``, ``→ 0`` like ``√ν`` as ``ν → 0``);
     * ``noise="student_t"`` -- the noise is ``t_ν(0, σ²)``; the estimator is the
       MLE and the ratio is the Fisher factor ``(ν + 1)/(ν + 3)`` (``0.75`` at ``ν = 5``).
 
@@ -180,6 +189,16 @@ def student_t_efficiency(nu: float, noise: Literal["gaussian", "student_t"] = "g
         return 1.0
     if noise == "student_t":
         return (nu + 1.0) / (nu + 3.0)
+    if nu < _EFFICIENCY_CLOSED_FORM_NU:
+        # With J₁ = E[1/(ν+Z²)] = √(π/(2ν)) e^{ν/2} erfc(√(ν/2)) and, by parts,
+        # J₂ = E[1/(ν+Z²)²] = (1 − (ν−1)J₁)/(2ν):
+        # E[ψ²] = (ν+1)²(J₁ − νJ₂) = (ν+1)²((ν+1)J₁ − 1)/2 and
+        # E[ψ'] = (ν+1)(2νJ₂ − J₁) = (ν+1)(1 − νJ₁).
+        s = math.sqrt(0.5 * nu)
+        tail = math.exp(s * s) * math.erfc(s)
+        j1 = math.sqrt(0.5 * math.pi) / math.sqrt(nu) * tail
+        nu_j1 = math.sqrt(0.5 * math.pi * nu) * tail
+        return 2.0 * (1.0 - nu_j1) ** 2 / ((nu + 1.0) * j1 - 1.0)
     x, w = np.polynomial.hermite.hermgauss(_HERMITE_NODES)
     r = math.sqrt(2.0) * x
     psi = (nu + 1.0) * r / (nu + r * r)

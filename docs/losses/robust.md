@@ -133,7 +133,7 @@ $$
 \lambda_{\mathrm{eff},i} = \frac{1}{1/\lambda_i + \eta^2 m_i^2} = \frac{\lambda_i}{1 + \eta^2 m_i^2 \lambda_i}.
 $$
 
-**Efficiency.** [`student_t_efficiency`](../api/losses.md#robust-losses) returns $E[\psi']^2/E[\psi^2]$ for the score $\psi(z) = (\nu+1)z/(\nu+z^2)$: the information the $t_\nu$ estimator extracts per unit Gaussian information. Under $t_\nu$ noise (`noise="student_t"`) it is the Fisher factor $(\nu+1)/(\nu+3)$; under Gaussian noise (`noise="gaussian"`, the default) it is evaluated by Gauss–Hermite quadrature ($0.942$ at $\nu = 5$). Use it to turn a Gaussian Fisher information into the asymptotic information of a $t_\nu$ fit.
+**Efficiency.** [`student_t_efficiency`](../api/losses.md#robust-losses) returns $E[\psi']^2/E[\psi^2]$ for the score $\psi(z) = (\nu+1)z/(\nu+z^2)$: the information the $t_\nu$ estimator extracts per unit Gaussian information. Under $t_\nu$ noise (`noise="student_t"`) it is the Fisher factor $(\nu+1)/(\nu+3)$; under Gaussian noise (`noise="gaussian"`, the default) it is a closed form in $\operatorname{erfc}$ for $\nu < 3$ and 200-node Gauss–Hermite quadrature above, both within a few $10^{-15}$ (relative) of high-precision quadrature for every $\nu > 0$ ($0.942$ at $\nu = 5$; it falls like $\sqrt\nu$ as $\nu \to 0$). Use it to turn a Gaussian Fisher information into the asymptotic information of a $t_\nu$ fit.
 
 ```python
 import math

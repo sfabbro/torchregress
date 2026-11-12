@@ -377,6 +377,30 @@ def test_student_t_efficiency_matches_quadrature(nu: float) -> None:
     assert student_t_efficiency(nu, "student_t") == (nu + 1.0) / (nu + 3.0)
 
 
+# E[ψ']²/E[ψ²] under N(0, 1), mpmath quadrature at 40 digits split at ±√ν
+# (the integrands are sharply peaked there for small ν).
+_GAUSSIAN_EFFICIENCY = {
+    1e-4: 0.015813318678772718,
+    0.01: 0.14597427213807549,
+    0.05: 0.2939222207513924,
+    0.1: 0.38566324700044832,
+    0.5: 0.64824609018873961,
+    1.0: 0.76154243304489677,
+    1.5: 0.82029895220324634,
+    2.0: 0.85705210814757343,
+    2.5: 0.88233723459860524,
+    3.0: 0.90079766745498764,
+    5.0: 0.94196183456315327,
+    30.0: 0.99545966064580325,
+    1e3: 0.99999408281288983,
+}
+
+
+@pytest.mark.parametrize("nu", sorted(_GAUSSIAN_EFFICIENCY))
+def test_student_t_gaussian_efficiency_matches_high_precision_reference(nu: float) -> None:
+    assert student_t_efficiency(nu) == pytest.approx(_GAUSSIAN_EFFICIENCY[nu], rel=1e-13, abs=0)
+
+
 def test_student_t_efficiency_limits_and_validation() -> None:
     assert student_t_efficiency(math.inf) == 1.0
     assert student_t_efficiency(math.inf, "student_t") == 1.0
