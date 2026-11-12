@@ -232,7 +232,7 @@
           "tests/losses/test_linear_nuisance.py::TestFlatPrior::test_flat_limit_equals_profile_plus_log_det"
         ],
         "known_divergences": [
-          "flat prior directions return the restricted likelihood (the improper-prior constant is dropped); torch.distributions has no improper priors",
+          "flat prior directions return the improper p(a)=1 marginal, i.e. the restricted likelihood (REML) with its constants (tested against error contrasts); torch.distributions has no improper priors",
           "rows whose posterior precision is not numerically positive definite raise instead of returning a jittered value"
         ]
       }

@@ -14,8 +14,9 @@ exact and costs one $m\times m$ Cholesky factorisation per row.
 |:-:|:----------|
 | 1 | Rybicki, G. B. & Press, W. H. (1992). *Interpolation, realization, and reconstruction of noisy, irregularly sampled data*. ApJ 398, 169–176. |
 | 2 | Patterson, H. D. & Thompson, R. (1971). *Recovery of inter-block information when block sizes are unequal*. Biometrika 58(3), 545–554. (restricted likelihood) |
-| 3 | Woodbury, M. A. (1950). *Inverting modified matrices*. Memorandum Rept. 42, Statistical Research Group, Princeton. |
-| 4 | Harville, D. A. (1997). *Matrix Algebra From a Statistician's Perspective*. Springer. (matrix determinant lemma) |
+| 3 | Harville, D. A. (1974). *Bayesian inference for variance components using only error contrasts*. Biometrika 61(2), 383–385. (REML as the flat-prior marginal) |
+| 4 | Woodbury, M. A. (1950). *Inverting modified matrices*. Memorandum Rept. 42, Statistical Research Group, Princeton. |
+| 5 | Harville, D. A. (1997). *Matrix Algebra From a Statistician's Perspective*. Springer. (matrix determinant lemma) |
 
 → API: [`marginalize_linear_nuisance`, `MarginalizedNuisanceGaussianNLLLoss`, `LinearNuisanceMarginal`](../api/losses.md#sequence-shape-losses)
 
@@ -37,7 +38,7 @@ The Woodbury identity and the matrix determinant lemma reduce its negative
 log-likelihood over the $n$ unmasked samples to $m\times m$ algebra:
 
 $$
--\log p(r) = \tfrac12\Big[\,n\log 2\pi - \sum_i\log\lambda_i + \log\lvert A\rvert - \log\lvert P\rvert
+-\log p(r) = \tfrac12\Big[\,(n - m_0)\log 2\pi - \sum_i\log\lambda_i + \log\lvert A\rvert - \log\lvert P\rvert
 + (r - U\hat a)^\top\Lambda\,(r - U\hat a) + \hat a^\top P\,\hat a\,\Big],
 $$
 
@@ -59,18 +60,24 @@ without the cancellation that appears when the nuisance explains most of $r$.
 | `prior_precision=p` (float, `[m]` or per row) | diagonal $P = \operatorname{diag}(p)$, $p_j\ge0$ |
 | neither (default) | flat prior in every direction ($p = 0$) |
 
-A **flat direction** ($p_j = 0$) is the improper-prior limit. Its $\log p_j$ is
-dropped from $\log\lvert P\rvert$, which makes the result the *restricted*
-likelihood (REML):
+A **flat direction** ($p_j = 0$) is the improper prior $p(a_j) = 1$; $m_0$ counts
+them ($m_0 = 0$ for a proper prior). Its $\log p_j$ is dropped from
+$\log\lvert P\rvert$ and it removes one $\log 2\pi$. For an all-flat prior this is
+the *restricted* likelihood (REML; Patterson & Thompson 1971, Harville 1974), with
+its constants:
 
 $$
--\log p_{\text{flat}}(r) = \lim_{\epsilon\to0}\Big[-\log p_{\epsilon}(r) + \tfrac12\log\epsilon\Big]
-= \text{profile NLL} + \tfrac12\log\lvert U^\top\Lambda U\rvert .
+-\log p_{\text{flat}}(r) = \lim_{\epsilon\to0}\Big[-\log p_{\epsilon}(r) + \tfrac12 m_0\log\frac{\epsilon}{2\pi}\Big]
+= \text{profile NLL} + \tfrac12\log\lvert U^\top\Lambda U\rvert - \tfrac12 m_0\log 2\pi ,
 $$
+
+where $p_\epsilon$ uses the proper prior precision $\epsilon$ in the flat directions.
+It equals the Gaussian likelihood of the error contrasts $K^\top r$ ($K^\top U = 0$,
+$K^\top K = I$) plus $\tfrac12\log\lvert U^\top U\rvert$ (tested).
 
 The profile NLL fixes the nuisance at its weighted least-squares value. The extra
-$\tfrac12\log\lvert U^\top\Lambda U\rvert$ does not depend on `y_pred`, so gradients
-for the model are identical; it matters only when $\Lambda$ or $U$ are learned. With
+terms do not depend on `y_pred`, so gradients for the model are identical; they
+matter only when $\Lambda$ or $U$ are learned. With
 a flat prior the NLL is **exactly invariant** to adding any $U a$ to the target.
 
 ### Masks and fail-closed conditions

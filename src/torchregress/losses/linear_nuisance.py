@@ -25,6 +25,8 @@ References:
     noisy, irregularly sampled data." ApJ 398: 169-176.
     Patterson & Thompson (1971): "Recovery of inter-block information when
     block sizes are unequal." Biometrika 58(3): 545-554.
+    Harville (1974): "Bayesian inference for variance components using only
+    error contrasts." Biometrika 61(2): 383-385.
 """
 
 from __future__ import annotations
@@ -97,7 +99,7 @@ def marginalize_linear_nuisance(
 
     .. math::
 
-        -\log p(r) = \tfrac12\Big[n\log 2\pi - \sum_i \log\lambda_i
+        -\log p(r) = \tfrac12\Big[(n - m_0)\log 2\pi - \sum_i \log\lambda_i
         + \log\lvert A\rvert - \log\lvert P\rvert
         + (r - U\hat a)^\top\Lambda(r - U\hat a) + \hat a^\top P\hat a\Big],
 
@@ -113,13 +115,17 @@ def marginalize_linear_nuisance(
     algebra runs in whitened coordinates :math:`a = Lc` (``P = I``), so ``S``
     is never inverted.
 
-    Flat directions (``prior_precision`` entries equal to 0) are the
-    improper-prior limit: their :math:`\log p_j` is dropped from
-    :math:`\log\lvert P\rvert`, which makes the result the *restricted*
-    likelihood (REML; Patterson & Thompson 1971). It differs from the profile
-    likelihood (nuisance fixed at its least-squares value) by
-    :math:`\tfrac12\log\lvert U^\top\Lambda U\rvert` in those directions, a
-    term that does not depend on ``y_pred``.
+    Flat directions (``prior_precision`` entries equal to 0; :math:`m_0` of
+    them, :math:`m_0 = 0` for a proper prior) are the improper prior
+    :math:`p(a_j) = 1`: their :math:`\log p_j` is dropped from
+    :math:`\log\lvert P\rvert` and each removes one :math:`\log 2\pi`, i.e.
+    :math:`-\log p_{\text{flat}} = \lim_{\epsilon\to0}[-\log p_\epsilon
+    + \tfrac12 m_0\log(\epsilon/2\pi)]`. In a fully flat prior this is the
+    restricted likelihood (REML; Patterson & Thompson 1971, Harville 1974),
+    constants included. It differs from the profile likelihood (nuisance fixed
+    at its least-squares value) by
+    :math:`\tfrac12\log\lvert U^\top\Lambda U\rvert - \tfrac12 m_0\log 2\pi`,
+    which does not depend on ``y_pred``.
 
     Args:
         y_pred: Predictions ``[..., N]``.
@@ -279,6 +285,7 @@ def _marginalize(
         b = (chol_s.mT @ b.unsqueeze(-1)).squeeze(-1)
         p = torch.ones((rows, m), dtype=dtype, device=device)
         log_det_prior = torch.zeros((rows,), dtype=dtype, device=device)
+        n_flat = torch.zeros((rows,), dtype=dtype, device=device)
     else:
         raw = 0.0 if prior_precision is None else prior_precision
         p_t = torch.as_tensor(raw, dtype=dtype, device=device)
@@ -289,6 +296,7 @@ def _marginalize(
         log_det_prior = torch.where(
             positive, torch.log(torch.where(positive, p, torch.ones_like(p))), 0.0
         ).sum(-1)
+        n_flat = (~positive).sum(-1).to(dtype)  # improper p(a_j) = 1: no (2 pi)^(-1/2)
 
     # A = diag(p) + G, Jacobi-scaled Cholesky. A pivot^2 below m * eps of the
     # unit-diagonal matrix means a direction is fixed only to round-off.
@@ -326,7 +334,7 @@ def _marginalize(
         fit = (u_rows @ coef.unsqueeze(-1)).squeeze(-1)
     cond = r - fit
     chi2 = (lam * cond * cond).sum(-1) + (p * coef_w * coef_w).sum(-1)
-    nll = 0.5 * (n_obs * _LOG_2PI - log_lam.sum(-1) + log_det_a - log_det_prior + chi2)
+    nll = 0.5 * ((n_obs - n_flat) * _LOG_2PI - log_lam.sum(-1) + log_det_a - log_det_prior + chi2)
     nll_out = nll.reshape(lead)
     if not need_extras:
         return nll_out, None

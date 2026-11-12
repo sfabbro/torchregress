@@ -204,9 +204,9 @@ class TestFlatPrior:
             chi2 = (precision[i] * (resid[i] - basis @ coef) ** 2).sum()
             profile = 0.5 * (40 * math.log(2 * math.pi) - precision[i].log().sum() + chi2)
             gram = basis.T @ (precision[i, :, None] * basis)
-            torch.testing.assert_close(
-                flat.nll[i], profile + 0.5 * torch.logdet(gram), atol=1e-11, rtol=0
-            )
+            # Improper p(a) = 1: + 1/2 log|U^T Lambda U| - m/2 log(2 pi).
+            expected = profile + 0.5 * torch.logdet(gram) - 0.5 * 4 * math.log(2 * math.pi)
+            torch.testing.assert_close(flat.nll[i], expected, atol=1e-11, rtol=0)
             torch.testing.assert_close(
                 flat.coefficient_covariance[i], torch.linalg.inv(gram), atol=1e-11, rtol=0
             )
@@ -219,10 +219,31 @@ class TestFlatPrior:
             proper = marginalize_linear_nuisance(
                 y_pred, target, precision, basis, prior_precision=eps
             )
-            # Restricted-likelihood convention: drop -1/2 log|P| = -1/2 m log(eps).
-            errors.append((proper.nll + 0.5 * 3 * math.log(eps) - flat.nll).abs().max().item())
+            # Improper p(a) = 1 is the limit of p_eps / (eps / 2 pi)^(m/2).
+            limit = proper.nll + 0.5 * 3 * math.log(eps / (2 * math.pi))
+            errors.append((limit - flat.nll).abs().max().item())
         assert errors[0] > errors[1] > errors[2]
         assert errors[2] < 1e-5
+
+    @pytest.mark.parametrize("masked", [False, True])
+    def test_flat_prior_equals_reml_on_error_contrasts(self, masked: bool) -> None:
+        """Harville (1974): -log N(K^T r; 0, K^T Lambda^-1 K) + 1/2 log|U^T U|, K^T U = 0."""
+        y_pred, target, precision, basis = _problem(rows=3, n=30, m=4)
+        mask = torch.rand(3, 30, generator=torch.Generator().manual_seed(5)) > 0.2
+        if not masked:
+            mask = torch.ones_like(mask)
+        flat = marginalize_linear_nuisance(y_pred, target, precision, basis, mask=mask)
+        for i in range(3):
+            keep = mask[i]
+            u = basis[keep]
+            q, _ = torch.linalg.qr(u, mode="complete")
+            k = q[:, u.shape[1] :]  # orthonormal error contrasts, K^T U = 0
+            r = (target[i] - y_pred[i])[keep]
+            cov = k.T @ torch.diag(1.0 / precision[i, keep]).to(dtype=F64) @ k
+            zero = torch.zeros(k.shape[1], dtype=F64)
+            reml = -MultivariateNormal(zero, covariance_matrix=cov).log_prob(k.T @ r)
+            reml = reml + 0.5 * torch.logdet(u.T @ u)
+            torch.testing.assert_close(flat.nll[i], reml, atol=1e-10, rtol=0)
 
     def test_flat_nll_is_invariant_to_nuisance_shifts(self) -> None:
         y_pred, target, precision, basis = _problem()
@@ -238,7 +259,9 @@ class TestFlatPrior:
         res = marginalize_linear_nuisance(y_pred, target, precision, basis, prior_precision=mixed)
         eps = 1e-7
         cov = torch.diag_embed(1.0 / torch.tensor([eps, 3.0, 0.5], dtype=F64)).to(dtype=F64)
-        ref = _dense_nll(y_pred, target, precision, basis, cov) + 0.5 * math.log(eps)
+        ref = _dense_nll(y_pred, target, precision, basis, cov) + 0.5 * math.log(
+            eps / (2 * math.pi)
+        )
         torch.testing.assert_close(res.nll, ref, atol=1e-5, rtol=0)
 
 
