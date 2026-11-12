@@ -149,6 +149,32 @@ class TestMasking:
         assert pred.grad is not None and torch.isfinite(pred.grad).all()
         assert (pred.grad[~mask] == 0).all()
 
+    @pytest.mark.parametrize("output", ["residual", "nuisance"])
+    def test_nan_basis_at_masked_samples_does_not_poison_output_gradients(self, output) -> None:
+        y_pred, target, precision, basis = _problem(rows=3, n=20)
+        mask = torch.ones_like(target, dtype=torch.bool)
+        mask[0, 4] = False
+        mask[2, 10:12] = False
+        u = basis.expand(3, *basis.shape).clone()
+        u[0, 4, 1] = float("nan")  # documented as ignored at a masked sample
+        u[2, 10] = float("inf")
+        pred = y_pred.clone().requires_grad_(True)
+        lam = precision.clone().requires_grad_(True)
+        u = u.requires_grad_(True)
+        res = marginalize_linear_nuisance(pred, target, lam, u, prior_precision=0.5, mask=mask)
+        value = getattr(res, output)
+        assert torch.isfinite(value[mask]).all()
+        assert torch.isnan(res.nuisance[0, 4]) and torch.isfinite(res.nuisance[2, 11])
+        objective = (value[mask] ** 2).sum() if output == "residual" else value[mask].sum()
+        # The fitted nuisance at a masked sample with a finite basis keeps its gradient.
+        objective = objective + res.nuisance[2, 11]
+        objective.backward()
+        for grad in (pred.grad, lam.grad):
+            assert grad is not None and torch.isfinite(grad[mask]).all()
+        assert u.grad is not None and torch.isfinite(u.grad[mask]).all()
+        assert torch.isfinite(u.grad[2, 11]).all() and (u.grad[2, 11] != 0).any()
+        assert (u.grad[0, 4] == 0).all() and (u.grad[2, 10] == 0).all()
+
     def test_empty_row_with_proper_prior_is_zero_and_dropped(self) -> None:
         y_pred, target, precision, basis = _problem(rows=3)
         mask = torch.ones_like(target, dtype=torch.bool)

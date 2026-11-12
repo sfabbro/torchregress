@@ -52,7 +52,10 @@ class LinearNuisanceMarginal(NamedTuple):
         coefficient_covariance: Posterior covariance of the coefficients
             ``[..., m, m]``.
         nuisance: Fitted nuisance ``U @ coefficients`` at every sample ``[..., N]``,
-            masked samples included (evaluated with the basis as given).
+            masked samples included (evaluated with the basis as given; where a
+            per-row basis is non-finite at a masked sample the value is
+            non-finite and carries no gradient, so it cannot reach the
+            gradients of observed samples).
         residual: Conditional residual ``target - y_pred - nuisance`` ``[..., N]``;
             masked entries carry whatever the inputs held there.
     """
@@ -340,7 +343,18 @@ def _marginalize(
         nuisance = coef_out @ u.mT
     else:
         # Not `fit`: the fitted nuisance is also evaluated at masked samples.
-        nuisance = (torch.broadcast_to(u, (*lead, n, m)) @ coef_out.unsqueeze(-1)).squeeze(-1)
+        u_full = torch.broadcast_to(u, (*lead, n, m))
+        if valid is None:
+            nuisance = (u_full @ coef_out.unsqueeze(-1)).squeeze(-1)
+        else:
+            # A per-row basis may be non-finite at masked samples. Keep it out of
+            # the graph there (0 * NaN in a backward would poison every
+            # gradient), but return the documented "basis as given" value.
+            finite = torch.isfinite(u_full)
+            u_safe = torch.where(finite, u_full, torch.zeros((), dtype=dtype, device=device))
+            nuisance = (u_safe @ coef_out.unsqueeze(-1)).squeeze(-1)
+            raw = (u_full.detach() @ coef_out.detach().unsqueeze(-1)).squeeze(-1)
+            nuisance = torch.where(finite.all(-1), nuisance, raw)
     residual = y_obs - y_hat - nuisance
     return nll_out, LinearNuisanceMarginal(
         nll=nll_out,
