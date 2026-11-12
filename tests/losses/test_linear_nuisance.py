@@ -328,6 +328,35 @@ class TestGradients:
         torch.testing.assert_close(r32.nll.double(), r64.nll, rtol=1e-5, atol=1e-4)
 
 
+class TestAutocast:
+    @pytest.mark.parametrize("per_row", [False, True])
+    def test_bfloat16_autocast_does_not_demote_the_solve(self, per_row: bool) -> None:
+        rows = 16  # > (m + 1) / 2: the shared basis takes the packed-Gram path
+        y_pred, target, precision, basis = _problem(rows=rows, n=200, m=4, dtype=torch.float32)
+        b = basis.expand(rows, *basis.shape).clone() if per_row else basis
+        mask = torch.rand(rows, 200, generator=torch.Generator().manual_seed(2)) > 0.1
+        kw = {"prior_precision": torch.tensor([0.0, 1.0, 2.0, 0.5]), "mask": mask}
+        ref = marginalize_linear_nuisance(y_pred, target, precision, b, **kw)
+        loss_ref = MarginalizedNuisanceGaussianNLLLoss()(y_pred, target, precision, b, **kw)
+        with torch.autocast("cpu", dtype=torch.bfloat16):
+            res = marginalize_linear_nuisance(y_pred, target, precision, b, **kw)
+            loss = MarginalizedNuisanceGaussianNLLLoss()(y_pred, target, precision, b, **kw)
+        for got, want in zip(res, ref):
+            assert got.dtype == torch.float32
+            torch.testing.assert_close(got, want, rtol=1e-5, atol=1e-5)
+        assert loss.dtype == torch.float32
+        torch.testing.assert_close(loss, loss_ref, rtol=1e-5, atol=1e-5)
+
+    def test_half_precision_inputs_compute_in_float32(self) -> None:
+        y_pred, target, precision, basis = _problem(rows=3, n=50, m=3, dtype=torch.float32)
+        args = [t.bfloat16() for t in (y_pred, target, precision, basis)]
+        res = marginalize_linear_nuisance(*args, prior_precision=1.0)
+        ref = marginalize_linear_nuisance(*[t.float() for t in args], prior_precision=1.0)
+        for got, want in zip(res, ref):
+            assert got.dtype == torch.float32
+            torch.testing.assert_close(got, want)
+
+
 class TestLossClass:
     def test_reductions_and_row_weights(self) -> None:
         y_pred, target, precision, basis = _problem()

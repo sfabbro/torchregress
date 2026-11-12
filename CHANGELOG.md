@@ -29,7 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restricted likelihood, exact masking, and the posterior nuisance coefficients, their
   covariance, the fitted nuisance and the conditional residual (`LinearNuisanceMarginal`).
   Rows whose flat directions are not constrained by the unmasked data raise instead of
-  being regularised. Forward + backward at N=10,000, m=50, float64, 2 threads on a shared
+  being regularised. Runs in at least float32 with autocast disabled, so AMP does not
+  demote the Gram products and solves. Forward + backward at N=10,000, m=50, float64, 2 threads on a shared
   host: about 1,000 rows/s with a shared basis (`tools/benchmark_linear_nuisance.py`).
 - Student-t family with known per-observation precision:
   `torchregress.losses.student_t_nll(residual, precision, nu, *, mask=None, dim=-1)` is

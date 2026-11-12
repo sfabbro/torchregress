@@ -150,7 +150,35 @@ def marginalize_linear_nuisance(
             collinear columns), or non-finite precision/basis on unmasked
             samples. Non-finite ``y_pred``/``target`` on unmasked samples
             propagate to ``NaN`` instead.
+
+    The computation runs in at least float32 with autocast disabled: an outer
+    AMP context does not demote the Gram products and solves, and float16 /
+    bfloat16 inputs return float32 results.
     """
+    # An outer AMP context must not demote the Gram products and Cholesky solves.
+    with torch.autocast(device_type=y_pred.device.type, enabled=False):
+        return _marginalize(
+            y_pred,
+            target,
+            precision,
+            basis,
+            prior_precision=prior_precision,
+            prior_covariance=prior_covariance,
+            mask=mask,
+        )
+
+
+def _marginalize(
+    y_pred: Tensor,
+    target: Tensor,
+    precision: Tensor,
+    basis: Tensor,
+    *,
+    prior_precision: float | Tensor | None,
+    prior_covariance: Optional[Tensor],
+    mask: Optional[Tensor],
+) -> LinearNuisanceMarginal:
+    """Body of :func:`marginalize_linear_nuisance`; call with autocast disabled."""
     if prior_precision is not None and prior_covariance is not None:
         raise ValueError("pass at most one of prior_precision and prior_covariance")
     if basis.dim() < 2:
@@ -161,6 +189,7 @@ def marginalize_linear_nuisance(
     dtype = torch.promote_types(torch.promote_types(y_pred.dtype, target.dtype), basis.dtype)
     if not dtype.is_floating_point:
         raise TypeError("y_pred, target and basis must be floating-point tensors")
+    dtype = torch.promote_types(dtype, torch.float32)  # never solve in half precision
     device = y_pred.device
 
     obs_shape = torch.broadcast_shapes(y_pred.shape, target.shape, precision.shape)
@@ -366,4 +395,5 @@ class MarginalizedNuisanceGaussianNLLLoss(DistributionLoss):
         if mask is not None:
             full = (*result.nll.shape, basis.shape[-2])
             row_mask = torch.broadcast_to(mask.to(result.nll.device), full).any(-1)
-        return self._reduce(result.nll, row_mask, weights)
+        with torch.autocast(device_type=result.nll.device.type, enabled=False):
+            return self._reduce(result.nll, row_mask, weights)
