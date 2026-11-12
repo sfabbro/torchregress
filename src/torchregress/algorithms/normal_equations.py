@@ -8,9 +8,13 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor
 
-#: Default KKT tolerance of the non-negative solve, relative to the largest entry
-#: of the Jacobi-scaled right-hand side: freeing a variable whose scaled gradient
-#: is below it lowers the objective by less than ``½ (tol |g|_∞)²``.
+#: Default KKT tolerance of the non-negative solve. A constrained variable at its
+#: bound is freed only while its multiplier ``μ_j`` on the Jacobi-scaled equations
+#: exceeds ``kkt_tol · (1 + |g_s|_∞)``: a mixed absolute/relative threshold, in
+#: units of σ when the weights are true precisions. Freeing a variable with
+#: multiplier ``μ_j`` lowers the objective by ``μ_j² / (2 S_j) ≥ μ_j² / 2``, where
+#: ``S_j ≤ 1`` is the Schur complement of its scaled diagonal on the free block,
+#: so collinear columns (small ``S_j``) amplify the forgone decrease.
 NNLS_KKT_TOL = 1.0e-10
 
 
@@ -99,7 +103,8 @@ def solve_normal_equations(
             successful factorisation counts as rank-deficient and takes the
             ridge. ``None`` (default) uses ``ridge``; ``0`` takes the ridge only
             where the factorisation fails.
-        kkt_tol: positive relative KKT tolerance of the non-negative solve.
+        kkt_tol: positive KKT tolerance of the non-negative solve (threshold
+            ``kkt_tol · (1 + |g_s|_∞)`` on the scaled multipliers).
 
     Returns:
         :class:`NormalEquationsSolution`.
