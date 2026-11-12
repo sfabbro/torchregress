@@ -1,20 +1,21 @@
-"""Parity of torchregress's Student-t / batched IRLS primitives with a uspm checkout.
+"""Parity of torchregress's Student-t / batched IRLS primitives with uspm's own IRLS.
 
-uspm (a downstream spectral-fitting package) carries its own Student-t IRLS. This
-script checks that the torchregress replacements reproduce it, so uspm can import
-them instead:
+uspm (a downstream spectral-fitting package) carried its own Student-t IRLS until
+commit b461f8f and now imports the torchregress replacements, so the reference is
+that implementation, frozen in ``scripts/uspm_b461f8f_reference.py``:
 
-* ``student_t_nll`` vs ``uspm.v2.operator.student_t_nll``;
+* ``student_t_nll`` vs ``student_t_nll``;
 * ``effective_precision`` x ``robust_weights(..., "student_t")`` vs ``_irls_weights``;
-* ``student_t_efficiency`` vs ``uspm.v2.refine.student_t_fisher_factor`` /
+* ``student_t_efficiency`` vs ``student_t_fisher_factor`` /
   ``student_t_gaussian_efficiency``;
-* ``solve_normal_equations(nonnegative=...)`` vs ``nnls_normal``;
+* ``solve_normal_equations(nonnegative=...)`` vs ``nnls_normal`` (cold and warm
+  starts, partly constrained, rows that take the ridge, a single row);
 * ``batched_iteratively_reweighted_fit`` with a linear solve vs ``irls_fit`` and with
   uspm's bilinear Gauss--Newton/LM solve as callbacks vs ``irls_fit_shared``.
 
-It is not part of the test suite (uspm is not a torchregress dependency)::
+It is not part of the test suite (it times the fits and takes about a minute)::
 
-    PYTHONPATH=src:/path/to/uspm/src python scripts/check_uspm_irls_parity.py
+    PYTHONPATH=src python scripts/check_uspm_irls_parity.py
 
 Exit status 1 if any check fails.
 """
@@ -91,16 +92,31 @@ def check_elementwise(uspm_op, uspm_refine) -> None:  # type: ignore[no-untyped-
 
 def check_nnls(uspm_op) -> None:  # type: ignore[no-untyped-def]
     g = torch.Generator().manual_seed(1)
-    b, p, n, k = 256, 80, 9, 6
+    b, p, n = 256, 80, 9
     x = torch.randn(b, p, n, generator=g, dtype=DTYPE)
     y = torch.randn(b, p, generator=g, dtype=DTYPE)
-    normal = x.transpose(1, 2) @ x
-    rhs = (x * y.unsqueeze(-1)).sum(1)
-    ours = solve_normal_equations(normal, rhs, nonnegative=torch.arange(n) < k)
-    sol, se, _, _, singular, passive = uspm_op.nnls_normal(normal, rhs, k)
-    report("nnls solution (abs)", float((ours.solution - sol).abs().max()), 1e-12)
-    report("nnls standard errors", rel(ours.standard_errors, se), 1e-12)
-    report("nnls free set mismatches", float((ours.free != passive).sum()), 0.0)
+    collinear = x.clone()
+    collinear[: b // 4, :, 2] = collinear[: b // 4, :, 0] + collinear[: b // 4, :, 1]
+    warm = torch.randn(b, n, generator=g, dtype=DTYPE)
+    for label, design, k, start, rows in (
+        ("k=6", x, 6, None, slice(None)),
+        ("k=9", x, 9, None, slice(None)),
+        ("k=6 warm", x, 6, warm, slice(None)),
+        ("k=6 one row", x, 6, None, slice(0, 1)),
+        ("k=6 ridged rows", collinear, 6, warm, slice(None)),
+    ):
+        xd, yd = design[rows], y[rows]
+        normal = xd.transpose(1, 2) @ xd
+        rhs = (xd * yd.unsqueeze(-1)).sum(1)
+        x0 = None if start is None else start[rows]
+        ours = solve_normal_equations(normal, rhs, nonnegative=torch.arange(n) < k, start=x0)
+        sol, se, ridged, _, singular, passive = uspm_op.nnls_normal(normal, rhs, k, x0)
+        report(f"nnls {label}: solution (abs)", float((ours.solution - sol).abs().max()), 1e-12)
+        report(f"nnls {label}: standard errors", rel(ours.standard_errors, se), 1e-12)
+        report(f"nnls {label}: free set mismatches", float((ours.free != passive).sum()), 0.0)
+        flags = (ours.ridge_used != ridged).sum() + (ours.singular != singular).sum()
+        report(f"nnls {label}: ridge/singular mismatches", float(flags), 0.0)
+    report("nnls ridged rows present", 0.0 if bool(ridged.any()) else 1.0, 0.0)
 
 
 def linear_problem(design: Tensor) -> BatchedIRLSProblem:
@@ -260,12 +276,12 @@ def main() -> int:
     parser.add_argument("--threads", type=int, default=2)
     args = parser.parse_args()
     torch.set_num_threads(args.threads)
-    import uspm.v2.operator as uspm_op  # noqa: PLC0415 (uspm comes from PYTHONPATH)
-    import uspm.v2.refine as uspm_refine  # noqa: PLC0415
+    import uspm_b461f8f_reference as reference  # noqa: PLC0415 (next to this script)
 
-    check_elementwise(uspm_op, uspm_refine)
-    check_nnls(uspm_op)
-    check_fits(uspm_op, args.rows, args.pixels)
+    print(f"reference: uspm {reference.USPM_COMMIT} (scripts/uspm_b461f8f_reference.py)")
+    check_elementwise(reference, reference)
+    check_nnls(reference)
+    check_fits(reference, args.rows, args.pixels)
     print(f"\n{len(FAILURES)} failure(s)" + (": " + ", ".join(FAILURES) if FAILURES else ""))
     return 1 if FAILURES else 0
 
