@@ -180,7 +180,7 @@ The caller owns the model and the weighted solve, so bounds, priors, Gauss–New
 `BatchedIRLSResult` holds per-row `theta`, `standard_errors`, `model`, `weights`, `effective_precision`, `objective` (NLL + penalty), `penalty`, `status` (`IRLSRowStatus`: `CONVERGED`, `MAX_ITERATIONS`, `STALLED`, `FAILED`, `EMPTY`), `iterations` and `n_observations`.
 
 !!! warning "Fail closed"
-    Rows with a non-finite target or precision on an observed entry, a non-finite start, too few observations, a failed or non-finite solve, or non-finite weights or objective are `FAILED`; rows with no usable observation are `EMPTY`. Their outputs are `NaN`, never zeros that look like a fit. Masked entries may hold any value, `NaN` included.
+    Rows with a non-finite target or precision on an observed entry, a non-finite start, too few observations, a failed or non-finite solve, or non-finite weights or objective are `FAILED`; rows with no usable observation are `EMPTY`. Their outputs are `NaN`, never zeros that look like a fit. Masked entries may hold any value, `NaN` included, and model values off the likelihood (masked or zero-precision entries) are not checked, so a template may be undefined there.
 
 ### Complete batched Student-t example
 

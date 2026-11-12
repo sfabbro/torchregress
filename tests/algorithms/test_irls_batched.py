@@ -508,3 +508,31 @@ def test_round_off_certificate_rejects_a_predicted_increase() -> None:
     )
     assert (result.status == IRLSRowStatus.STALLED).all()
     torch.testing.assert_close(result.theta, start)
+
+
+@pytest.mark.parametrize("eta", [0.0, 0.03])
+def test_non_finite_model_off_the_likelihood_is_ignored(eta: float) -> None:
+    design, target, precision, _ = _data(batch=4, seed=19)
+    mask = torch.ones_like(target, dtype=torch.bool)
+    mask[:, :10] = False
+    precision = precision.clone()
+    precision[:, -5:] = 0.0
+    off = ~mask | (precision == 0.0)
+    linear = _linear_problem(design)
+
+    def predict(theta, rows):  # type: ignore[no-untyped-def]
+        # A template undefined outside the observed range.
+        return linear.predict(theta, rows).masked_fill(_take(off, rows), math.nan)
+
+    config = BatchedIRLSConfig(weight_params={"nu": 4.0}, eta=eta)
+    theta0 = torch.zeros(4, 3, dtype=DTYPE)
+    control = batched_iteratively_reweighted_fit(linear, theta0, target, precision, mask, config)
+    result = batched_iteratively_reweighted_fit(
+        replace(linear, predict=predict), theta0, target, precision, mask, config
+    )
+    assert control.converged.all()
+    assert torch.equal(result.status, control.status)
+    for name in ("theta", "standard_errors", "objective", "weights", "effective_precision"):
+        torch.testing.assert_close(getattr(result, name), getattr(control, name), rtol=0, atol=0)
+    assert torch.isnan(result.model[off]).all()
+    torch.testing.assert_close(result.model[~off], control.model[~off], rtol=0, atol=0)

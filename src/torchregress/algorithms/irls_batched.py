@@ -164,7 +164,8 @@ class BatchedIRLSResult:
     Attributes:
         theta: ``[B, n]`` parameters.
         standard_errors: ``[B, n]`` from the last weighted solve of the row.
-        model: ``[B, N]`` model at ``theta``.
+        model: ``[B, N]`` model at ``theta`` (values off the likelihood are
+            returned as ``predict`` gives them and not checked).
         weights: ``[B, N]`` IRLS weights ``λ_eff ψ(u)/u`` at ``theta`` (zero off the
             likelihood: masked or zero-precision entries).
         effective_precision: ``[B, N]`` ``λ_eff = 1/(1/λ + η² m²)`` at ``theta``
@@ -622,12 +623,16 @@ def _result(
     model = torch.empty_like(y)
     objective = torch.empty(batch, dtype=y.dtype, device=y.device)
     penalty = torch.empty_like(objective)
+    model_ok = torch.empty(batch, dtype=torch.bool, device=y.device)
     for lo in range(0, batch, _RESULT_CHUNK):
         hi = min(lo + _RESULT_CHUNK, batch)
         rows = None if (lo == 0 and hi == batch) else torch.arange(lo, hi, device=y.device)
         model_c = problem.predict(theta_safe[lo:hi], rows).detach()
         _check_model(model_c, y[lo:hi])
         model[lo:hi] = model_c
+        # Only the model on the likelihood is checked: values off it (masked or
+        # zero-precision entries) are never used, so they may be non-finite.
+        model_ok[lo:hi] = torch.isfinite(model_c.masked_fill(unused[lo:hi], 0.0).sum(-1))
         residual = y[lo:hi] - model_c
         prec_c = prec[lo:hi]
         prec_eff = effective_precision(prec_c, model_c, family.eta)
@@ -642,7 +647,7 @@ def _result(
         del model_c, residual, prec_eff, prec_c
     finite = (
         torch.isfinite(objective)
-        & torch.isfinite(model.sum(-1))
+        & model_ok
         & torch.isfinite(weights.sum(-1))
         & torch.isfinite(theta).all(-1)
     )
