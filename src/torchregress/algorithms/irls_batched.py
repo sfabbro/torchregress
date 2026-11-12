@@ -54,7 +54,8 @@ class BatchedIRLSStep:
         predicted_objective: optional ``[b]`` value of the solver's local model
             (e.g. Gauss--Newton) of the weighted objective ``q`` at ``theta``. With
             a damped solve it lets a row whose step no damping accepts be declared
-            converged when the decrease still reachable is below the float
+            converged when the predicted decrease is non-negative (up to
+            round-off) and the decrease still reachable is below the float
             resolution of ``q``.
     """
 
@@ -577,14 +578,18 @@ def _accept_or_damp(
         # decrease the local model predicts; the quadratic through φ(0), φ'(0)
         # and φ(1) allows at most Δ²/(φ(1) − φ(0) + 2Δ). Below the float
         # resolution of q (a sum of n terms: n·ε·|q⁰|) the row is at its optimum
-        # to machine precision.
+        # to machine precision. A model that predicts an increase (Δ below
+        # −floor) or no curvature certifies nothing; at a true optimum Δ is
+        # ±round-off, hence the tolerance on its sign. NaN fails both tests.
         predicted = q0 - step.predicted_objective.detach().to(q0)
         curvature = q1 - q0 + 2.0 * predicted
         reachable = torch.where(
-            curvature > 0.0, predicted.square() / curvature.clamp_min(tiny), predicted
+            torch.isfinite(curvature) & (curvature > 0.0),
+            predicted.square() / curvature.clamp_min(tiny),
+            predicted.abs(),
         )
         floor = n_obs.to(q0.dtype) * eps * q0.abs()
-        sub_tol = sub_tol | (stuck & (reachable <= floor))
+        sub_tol = sub_tol | (stuck & (predicted >= -floor) & (reachable <= floor))
     return new, stuck, sub_tol, lam
 
 

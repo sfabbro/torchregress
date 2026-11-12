@@ -487,3 +487,24 @@ def test_exact_fixed_weight_solve_is_taken_even_from_an_infeasible_start() -> No
     assert (result.status == IRLSRowStatus.CONVERGED).all()
     assert torch.equal(result.theta, torch.zeros(2, 1, dtype=DTYPE))
     assert (result.iterations == 1).all()
+
+
+def test_round_off_certificate_rejects_a_predicted_increase() -> None:
+    design, target, precision, _ = _data(batch=3, seed=8)
+    gauss = BatchedIRLSConfig(weight_params={"nu": math.inf})
+    exact = _fit(design, target, precision, config=gauss)
+    config = replace(gauss, max_iter=5, max_damping=3)
+    overshoot = _overshooting_problem(design, factor=-1e8, damped_fraction=None)
+
+    def solve(theta, weights, target_, rows):  # type: ignore[no-untyped-def]
+        step = overshoot.solve(theta, weights, target_, rows)
+        q0 = (weights * (target_ - overshoot.predict(theta, rows)).square()).sum(-1)
+        # The local model predicts a large increase: nothing shows the start is optimal.
+        return replace(step, predicted_objective=q0 + 1e30)
+
+    start = exact.theta + 1e-9 * exact.standard_errors
+    result = batched_iteratively_reweighted_fit(
+        replace(overshoot, solve=solve), start, target, precision, None, config
+    )
+    assert (result.status == IRLSRowStatus.STALLED).all()
+    torch.testing.assert_close(result.theta, start)

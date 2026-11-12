@@ -159,7 +159,7 @@ $$
 \max_k \frac{\lvert \theta^{\text{full}}_{bk} - \theta^{(t)}_{bk}\rvert}{\mathrm{se}_{bk}} < \mathtt{tol},
 $$
 
-after at least `min_iter` iterations whenever the weights depend on the residuals. With a `damped_solve` (Levenberg–Marquardt \[7, 8\]) a full step is accepted only if it lowers the weighted objective; otherwise the per-row damping grows ×10 until a damped step does. A damped or rejected step never certifies convergence: a short damped step says nothing about the distance to the fixed point. A row for which no damping helps stops as `STALLED`, unless the solver's `predicted_objective` shows that the decrease still reachable is below the float resolution of the objective.
+after at least `min_iter` iterations whenever the weights depend on the residuals. With a `damped_solve` (Levenberg–Marquardt \[7, 8\]) a full step is accepted only if it lowers the weighted objective; otherwise the per-row damping grows ×10 until a damped step does. A damped or rejected step never certifies convergence: a short damped step says nothing about the distance to the fixed point. A row for which no damping helps stops as `STALLED`, unless the solver's `predicted_objective` predicts a non-negative decrease (up to round-off) and shows that the decrease still reachable is below the float resolution of the objective; a model that predicts an increase certifies nothing.
 
 ### Ownership
 
