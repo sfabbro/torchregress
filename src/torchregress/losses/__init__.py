@@ -121,6 +121,11 @@ from .imbalanced import (
     LDSLoss,
     PropensityWeightedLoss,
 )
+from .linear_nuisance import (
+    LinearNuisanceMarginal,
+    MarginalizedNuisanceGaussianNLLLoss,
+    marginalize_linear_nuisance,
+)
 from .loss_registry import create_loss_from_config, get_regression_loss, list_regression_losses
 
 # Mixture Density Networks
@@ -317,6 +322,7 @@ __all__ = [
     "LDSLoss",
     "LatentMarginalizationLoss",
     "LevelSetConformalPredictor",
+    "LinearNuisanceMarginal",
     "LocalConformal",
     "LocalConformalMAD",
     "LogCoshLoss",
@@ -324,6 +330,7 @@ __all__ = [
     "LowRankGaussianLoss",
     "MahalanobisFrontier",
     "MarginalizedMultiSourceGaussianNLLLoss",
+    "MarginalizedNuisanceGaussianNLLLoss",
     "MixtureDensityLoss",
     "MonteCarloConformal",
     "MultiExpectileLoss",
@@ -410,6 +417,7 @@ __all__ = [
     "johnson_su_nll",
     "list_regression_losses",
     "low_rank_output_dim",
+    "marginalize_linear_nuisance",
     "quantile_loss",
     "rank_n_contrast_loss",
     "sinh_arcsinh_nll",
