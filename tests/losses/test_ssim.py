@@ -311,6 +311,29 @@ class TestShapesAndOptions:
         with pytest.raises(error):
             structural_similarity_1d(x, y, **kwargs)
 
+    def test_moments_use_one_depthwise_convolution(self, monkeypatch) -> None:
+        # A [C*R, 1, L] single-channel batch takes PyTorch's CPU im2col path,
+        # which copies the input kernel_size times (8x memory at k = 11). The
+        # moments must go through one grouped (depthwise) convolution instead.
+        import torch.nn.functional as F
+
+        calls: list[tuple[tuple[int, ...], tuple[int, ...], int]] = []
+        real = F.conv1d
+
+        def spy(inp, weight, *args, **kwargs):
+            groups = kwargs.get("groups", args[4] if len(args) > 4 else 1)
+            calls.append((tuple(inp.shape), tuple(weight.shape), groups))
+            return real(inp, weight, *args, **kwargs)
+
+        monkeypatch.setattr(F, "conv1d", spy)
+        x, y = _pair(rows=4, n=40)
+        mask = torch.ones_like(x, dtype=torch.bool)
+        mask[:, 3] = False
+        structural_similarity_1d(x, y, mask=mask, weights=torch.ones_like(x) + 1.0)
+        assert len(calls) == 1
+        (inp, weight, groups) = calls[0]
+        assert inp[0] == 1 and groups == inp[1] == weight[0] and weight[1] == 1
+
     def test_constant_row_with_dynamic_range_is_nan(self) -> None:
         x, _ = _pair(rows=1)
         flat = torch.ones_like(x)

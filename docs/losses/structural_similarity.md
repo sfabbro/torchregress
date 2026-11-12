@@ -122,6 +122,23 @@ with `padding="reflect"` this module reproduces its scores to float64 round-off
 because the wrapper cannot express masks, weights, coverage-based window exclusion,
 per-row dynamic ranges, arbitrary leading batch dimensions or valid-only windows.
 
+### Cost
+
+All local moments of all rows go through **one depthwise (grouped) 1-D
+convolution**: $O(R\,N\,k)$ time and a handful of $[R, N]$ moment tensors in
+memory, with no $k$-fold `im2col` copy. Bounded CPU run (2 threads, float32,
+`kernel_size=11`, `data_range=1.0`, forward + backward, mask and weights):
+
+| Rows $R$ | Length $N$ | Rows / s | Peak extra memory |
+|---------:|-----------:|---------:|------------------:|
+| 100 | 1 000 | ≈ 5 200 | ≈ 40 MB |
+| 10 000 | 1 000 | ≈ 3 700 | ≈ 1.9 GB |
+| 1 000 | 10 000 | ≈ 330 | ≈ 1.9 GB |
+
+Memory grows linearly in $R N$ (roughly 190 bytes per sample with mask, weights
+and gradients in float32), so for very large batches evaluate the loss in chunks of
+rows and accumulate.
+
 ---
 
 ## Example

@@ -209,9 +209,14 @@ def _ssim_rows(
         channels = [ax, ay, ax * xs, ay * ys, ax * ys, amp]
     if support is not None and weights is not None:
         channels.append(support)
+    # One depthwise (grouped) convolution over all moment channels of all rows.
+    # A [C*R, 1, L] batch with a single input channel would take PyTorch's CPU
+    # im2col path, which copies the input kernel_size times.
     kernel = _window(kernel_size, sigma, dtype, device).view(1, 1, kernel_size)
-    stacked = torch.stack(channels, dim=0).reshape(len(channels) * rows, 1, -1)
-    moments = F.conv1d(stacked, kernel).reshape(len(channels), rows, -1)
+    stacked = torch.stack(channels, dim=0).reshape(1, len(channels) * rows, -1)
+    n_conv = stacked.shape[1]
+    moments = F.conv1d(stacked, kernel.expand(n_conv, 1, kernel_size), groups=n_conv)
+    moments = moments.reshape(len(channels), rows, -1)
 
     if amp is None:
         mass = None
