@@ -426,3 +426,31 @@ def test_student_t_efficiency_limits_and_validation() -> None:
         student_t_efficiency(5.0, "laplace")  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="nu must be > 0"):
         student_t_efficiency(-1.0)
+
+
+# log Γ(ν/2) − log Γ((ν+1)/2) + ½ log(νπ), mpmath at 50 digits.
+_LOG_NORM = {
+    30.0: 0.92727032537884565092,
+    1e2: 0.92143849154300455812,
+    1e5: 0.91894103320467270011,
+    1e9: 0.91893853345467274178,
+    1e15: 0.91893853320467299178,
+}
+
+
+@pytest.mark.parametrize("nu", sorted(_LOG_NORM))
+def test_student_t_log_norm_is_accurate_for_large_nu(nu: float) -> None:
+    from torchregress.losses.student_t import _student_t_log_norm
+
+    assert _student_t_log_norm(nu) == pytest.approx(_LOG_NORM[nu], rel=0, abs=1e-14)
+
+
+def test_student_t_nll_tends_to_the_gaussian_branch() -> None:
+    generator = torch.Generator().manual_seed(3)
+    residual = torch.randn(4, 50, generator=generator, dtype=torch.float64)
+    precision = 0.5 + torch.rand(4, 50, generator=generator, dtype=torch.float64)
+    gaussian = student_t_nll(residual, precision, math.inf)
+    torch.testing.assert_close(
+        student_t_nll(residual, precision, 1e15), gaussian, rtol=1e-12, atol=1e-12
+    )
+    assert math.isfinite(float(student_t_nll(residual, precision, 1e300).sum()))

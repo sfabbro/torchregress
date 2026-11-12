@@ -53,8 +53,22 @@ def _validated_nu(nu: float) -> float:
     return value
 
 
+#: Above this ``ν`` the log normaliser uses its asymptotic series: the difference
+#: of two ``lgamma`` values cancels catastrophically (``3e-14`` absolute at
+#: ``ν = 100``, ``1e-6`` at ``1e9``, ``O(1)`` at ``1e15``), while the series is
+#: within ``2e-15`` of mpmath from ``ν = 100`` up.
+_LOG_NORM_SERIES_NU = 100.0
+
+
 def _student_t_log_norm(nu: float) -> float:
-    """``log Γ(ν/2) − log Γ((ν+1)/2) + ½ log(νπ)`` for finite ``ν``."""
+    """``log Γ(ν/2) − log Γ((ν+1)/2) + ½ log(νπ)`` for finite ``ν``.
+
+    For large ``ν`` this is ``½ log 2π + 1/(4ν) − 1/(24ν³) + 1/(20ν⁵) + O(ν⁻⁷)``,
+    which tends to the Gaussian constant of the ``ν = ∞`` branch.
+    """
+    if nu >= _LOG_NORM_SERIES_NU:
+        inv = 1.0 / nu  # Horner form: no overflow of ν⁵ for huge ν
+        return _HALF_LOG_2PI + inv * (0.25 + inv * inv * (-1.0 / 24.0 + inv * inv / 20.0))
     return math.lgamma(0.5 * nu) - math.lgamma(0.5 * (nu + 1.0)) + 0.5 * math.log(nu * math.pi)
 
 
