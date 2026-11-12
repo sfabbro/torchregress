@@ -163,12 +163,12 @@ after at least `min_iter` iterations whenever the weights depend on the residual
 
 ### Ownership
 
-The caller owns the model and the weighted solve, so bounds, priors, Gauss–Newton linearisations and operators stay in caller code. [`solve_normal_equations`](../../api/algorithms.md#irls-robust-regression) covers the common linear case: batched Jacobi-scaled Cholesky with a flagged ridge fallback and standard errors, or, with a `nonnegative` mask, batched Lawson–Hanson NNLS \[6\] with a warm-started free set.
+The caller owns the model and the weighted solve, so bounds, priors, Gauss–Newton linearisations and operators stay in caller code. [`solve_normal_equations`](../../api/algorithms.md#irls-robust-regression) covers the common linear case: batched Jacobi-scaled Cholesky with a flagged ridge fallback (taken where the factorisation fails or its smallest-to-largest pivot ratio is at most `pivot_tol`, default `ridge`, i.e. numerical rank deficiency; solution and standard errors on those rows are those of the ridged system, i.e. regularised) and standard errors, or, with a `nonnegative` mask, batched Lawson–Hanson NNLS \[6\] with a warm-started free set.
 
 | Callback / field | Signature | Role |
 |:-----------------|:----------|:-----|
 | `predict` | `(theta, rows) -> model [b, N]` | Model of the given rows |
-| `solve` | `(theta, weights, target, rows) -> BatchedIRLSStep` | Full step at fixed weights: `theta`, `standard_errors`, optional `failed`, optional `predicted_objective` |
+| `solve` | `(theta, weights, target, rows) -> BatchedIRLSStep` | Full step at fixed weights: `theta`, `standard_errors`, optional `failed`, `predicted_objective` and `ridge_used` |
 | `damped_solve` | `(theta, weights, target, rows, damping) -> theta` | Optional damped step for per-row damping $\lambda$ |
 | `penalty` | `(theta, rows) -> [b]` | Optional penalty $\Pi_b$ in NLL units |
 | `exact_solve` | `bool` | `solve` is the exact minimiser (linear LS, NNLS): one solve converges when the weights are fixed, and is taken without the decrease test |
@@ -177,7 +177,7 @@ The caller owns the model and the weighted solve, so bounds, priors, Gauss–New
 
 `BatchedIRLSConfig` sets `weight` (default `"student_t"`), `weight_params` (default `{"nu": 5.0}`), `eta`, `max_iter`, `tol` (in standard errors, default `1e-3`), `min_iter` (default 2), `min_observations` (default: parameters + 1) and the damping schedule (`max_damping`, `damping_start`, `damping_min`).
 
-`BatchedIRLSResult` holds per-row `theta`, `standard_errors`, `model`, `weights`, `effective_precision`, `objective` (NLL + penalty), `penalty`, `status` (`IRLSRowStatus`: `CONVERGED`, `MAX_ITERATIONS`, `STALLED`, `FAILED`, `EMPTY`), `iterations` and `n_observations`.
+`BatchedIRLSResult` holds per-row `theta`, `standard_errors`, `model`, `weights`, `effective_precision`, `objective` (NLL + penalty), `penalty`, `status` (`IRLSRowStatus`: `CONVERGED`, `MAX_ITERATIONS`, `STALLED`, `FAILED`, `EMPTY`), `iterations`, `n_observations` and `ridge_used` (any solve of the row was regularised).
 
 !!! warning "Standard errors are conditional, not asymptotic"
     `standard_errors` are those of the final weighted least-squares solve: they set the convergence scale. They are not asymptotic $t_\nu$ errors. The Student-$t$ weight $(\nu+1)/(\nu+u^2)$ is the IRLS/MM weight $\psi(u)/u$, whose mean is 1 under $t_\nu$ noise, so $X^\mathsf{T} W X$ estimates the Gaussian information $X^\mathsf{T}\Lambda_{\mathrm{eff}} X$ rather than the $t_\nu$ Fisher information $\tfrac{\nu+1}{\nu+3} X^\mathsf{T}\Lambda_{\mathrm{eff}} X$: the returned errors are too small by about $\sqrt{(\nu+3)/(\nu+1)}$ (15% at $\nu = 5$) under $t_\nu$ noise and by a few percent under Gaussian noise. For asymptotic errors, build the normal matrix from `result.effective_precision` without the IRLS weights and multiply it by [`student_t_efficiency(nu, noise)`](../../losses/robust.md#student-t-likelihood-with-known-precisions) before inverting, as in the example below, or use a sandwich estimate.
@@ -224,7 +224,9 @@ def solve(theta, weights, y, rows):
     normal = x.transpose(1, 2) @ (x * weights.unsqueeze(-1))
     rhs = (x.transpose(1, 2) @ (weights * y).unsqueeze(-1)).squeeze(-1)
     out = solve_normal_equations(normal, rhs)
-    return BatchedIRLSStep(out.solution, out.standard_errors, failed=out.singular)
+    return BatchedIRLSStep(
+        out.solution, out.standard_errors, failed=out.singular, ridge_used=out.ridge_used
+    )
 
 
 problem = BatchedIRLSProblem(predict, solve, exact_solve=True)

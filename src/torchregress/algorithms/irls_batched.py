@@ -59,12 +59,17 @@ class BatchedIRLSStep:
             converged when the predicted decrease is non-negative (up to
             round-off) and the decrease still reachable is below the float
             resolution of ``q``.
+        ridge_used: optional ``[b]`` boolean mask of rows whose solve was
+            regularised (e.g. :attr:`NormalEquationsSolution.ridge_used`: a
+            rank-deficient normal matrix). Accumulated per row into
+            :attr:`BatchedIRLSResult.ridge_used` so callers can fail closed.
     """
 
     theta: Tensor
     standard_errors: Tensor
     failed: Tensor | None = None
     predicted_objective: Tensor | None = None
+    ridge_used: Tensor | None = None
 
 
 @dataclass(frozen=True)
@@ -187,6 +192,9 @@ class BatchedIRLSResult:
         status: ``[B]`` ``int8`` :class:`IRLSRowStatus` codes.
         iterations: ``[B]`` weighted solves of the row.
         n_observations: ``[B]`` observations with positive precision.
+        ridge_used: ``[B]`` rows for which any ``solve`` reported
+            :attr:`BatchedIRLSStep.ridge_used` (a regularised, possibly
+            non-identified fit: its ``theta`` and errors are ridge-limited).
     """
 
     theta: Tensor
@@ -199,6 +207,7 @@ class BatchedIRLSResult:
     status: Tensor
     iterations: Tensor
     n_observations: Tensor
+    ridge_used: Tensor
 
     @property
     def converged(self) -> Tensor:
@@ -341,6 +350,7 @@ def batched_iteratively_reweighted_fit(
 
     standard_errors = torch.full((batch, n_par), math.nan, dtype=dtype, device=device)
     iterations = torch.zeros(batch, dtype=torch.int64, device=device)
+    ridge_used = torch.zeros(batch, dtype=torch.bool, device=device)
     damping = torch.full((batch,), cfg.damping_start, dtype=dtype, device=device)
     tiny = torch.finfo(dtype).tiny
     eps = torch.finfo(dtype).eps
@@ -356,6 +366,8 @@ def batched_iteratively_reweighted_fit(
         y_a = _take(y, rows)
         step = problem.solve(th0, w, y_a, rows)
         full, se, ok = _checked_step(step, th0)
+        if step.ridge_used is not None:
+            _put(ridge_used, rows, _take(ridge_used, rows) | step.ridge_used)
         full = torch.where(ok[:, None], full, th0)
         ratio = ((full - th0).abs() / se.clamp_min(tiny)).amax(-1)
         sub_tol = ok & (ratio < cfg.tol)
@@ -432,6 +444,7 @@ def batched_iteratively_reweighted_fit(
         weights,
         unused,
         n_obs,
+        ridge_used,
     )
 
 
@@ -494,6 +507,10 @@ def _checked_step(step: BatchedIRLSStep, theta0: Tensor) -> tuple[Tensor, Tensor
         ok = ok & ~step.failed
     if step.predicted_objective is not None and step.predicted_objective.shape != theta0.shape[:1]:
         raise ValueError("BatchedIRLSStep.predicted_objective must have shape [b]")
+    if step.ridge_used is not None and (
+        step.ridge_used.shape != theta0.shape[:1] or step.ridge_used.dtype != torch.bool
+    ):
+        raise ValueError("BatchedIRLSStep.ridge_used must be a boolean [b] tensor")
     return full, se, ok
 
 
@@ -621,6 +638,7 @@ def _result(
     weights: Tensor,
     unused: Tensor,
     n_obs: Tensor,
+    ridge_used: Tensor,
 ) -> BatchedIRLSResult:
     """Evaluate every row at its final parameters, in row chunks.
 
@@ -675,4 +693,5 @@ def _result(
         status=status,
         iterations=iterations,
         n_observations=n_obs,
+        ridge_used=ridge_used,
     )

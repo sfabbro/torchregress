@@ -41,6 +41,11 @@ from torchregress.losses import effective_precision, student_t_efficiency, stude
 
 DTYPE = torch.float64
 FAILURES: list[str] = []
+#: uspm takes the ridge only where the Cholesky factorisation fails;
+#: ``solve_normal_equations`` also takes it, by default, where the pivots show
+#: numerical rank deficiency. The fits compare like with like (``pivot_tol=0``)
+#: and report separately how many rows the default rule regularises.
+USPM_PIVOT_TOL = 0.0
 
 
 def report(name: str, value: float, limit: float) -> None:
@@ -103,21 +108,25 @@ def check_nnls(uspm_op) -> None:  # type: ignore[no-untyped-def]
     report("nnls free set mismatches", float((ours.free != passive).sum()), 0.0)
 
 
-def linear_problem(design: Tensor) -> BatchedIRLSProblem:
+def linear_problem(design: Tensor, pivot_tol: float | None = None) -> BatchedIRLSProblem:
     def predict(theta: Tensor, rows: Tensor | None) -> Tensor:
         return (take(design, rows) @ theta.unsqueeze(-1)).squeeze(-1)
 
     def solve(theta: Tensor, w: Tensor, y: Tensor, rows: Tensor | None) -> BatchedIRLSStep:
         x = take(design, rows)
         xw = x * w.unsqueeze(-1)
-        out = solve_normal_equations(x.transpose(1, 2) @ xw, (xw * y.unsqueeze(-1)).sum(1))
-        return BatchedIRLSStep(out.solution, out.standard_errors, failed=out.singular)
+        out = solve_normal_equations(
+            x.transpose(1, 2) @ xw, (xw * y.unsqueeze(-1)).sum(1), pivot_tol=pivot_tol
+        )
+        return BatchedIRLSStep(
+            out.solution, out.standard_errors, failed=out.singular, ridge_used=out.ridge_used
+        )
 
     return BatchedIRLSProblem(predict, solve, exact_solve=True)
 
 
 def shared_calibration_problem(
-    basis: Tensor, legendre: Tensor, prior: Tensor
+    basis: Tensor, legendre: Tensor, prior: Tensor, pivot_tol: float | None = None
 ) -> BatchedIRLSProblem:
     """uspm's ``m = P(x) Σ_k a_k b_k`` (a ≥ 0, ``P = 1 + Σ c_m L_m``) as callbacks."""
     k = basis.shape[-1]
@@ -145,16 +154,24 @@ def shared_calibration_problem(
 
     def solve(theta: Tensor, w: Tensor, y: Tensor, rows: Tensor | None) -> BatchedIRLSStep:
         z, target, normal, rhs = linearised(theta, w, y, rows)
-        out = solve_normal_equations(normal, rhs, nonnegative=bounds, start=theta)
+        out = solve_normal_equations(
+            normal, rhs, nonnegative=bounds, start=theta, pivot_tol=pivot_tol
+        )
         lin = target - (z @ out.solution.unsqueeze(-1)).squeeze(-1)
         model_q = (w * lin.square()).sum(-1) + (prior * out.solution[:, k:].square()).sum(-1)
-        return BatchedIRLSStep(out.solution, out.standard_errors, out.singular, model_q)
+        return BatchedIRLSStep(
+            out.solution, out.standard_errors, out.singular, model_q, out.ridge_used
+        )
 
     def damped(theta: Tensor, w: Tensor, y: Tensor, rows: Tensor | None, lam: Tensor) -> Tensor:
         _, _, normal, rhs = linearised(theta, w, y, rows)
         d = torch.diagonal(normal, dim1=-2, dim2=-1) * lam.unsqueeze(-1)
         out = solve_normal_equations(
-            normal + torch.diag_embed(d), rhs + d * theta, nonnegative=bounds, start=theta
+            normal + torch.diag_embed(d),
+            rhs + d * theta,
+            nonnegative=bounds,
+            start=theta,
+            pivot_tol=pivot_tol,
         )
         return out.solution
 
@@ -197,7 +214,7 @@ def check_fits(uspm_op, b: int, p: int) -> None:  # type: ignore[no-untyped-def]
         theirs = uspm_op.irls_fit(design, flux, ivar, lik, cfg)
         t1 = time.perf_counter()
         ours = batched_iteratively_reweighted_fit(
-            linear_problem(design), theta0, flux, ivar, lik, ours_cfg
+            linear_problem(design, USPM_PIVOT_TOL), theta0, flux, ivar, lik, ours_cfg
         )
         t2 = time.perf_counter()
         tag = f"irls_fit nu={nu} eta={eta}"
@@ -211,14 +228,24 @@ def check_fits(uspm_op, b: int, p: int) -> None:  # type: ignore[no-untyped-def]
             f"{tag}: converged mismatches", float((ours.converged != theirs.converged).sum()), 0.0
         )
         report(f"{tag}: n_iter mismatches", float((ours.iterations != theirs.n_iter).sum()), 0.0)
+        report(
+            f"{tag}: ridge_used mismatches",
+            float((ours.ridge_used != theirs.ridge_used).sum()),
+            0.0,
+        )
         print(f"     timing uspm {t1 - t0:.3f}s  torchregress {t2 - t1:.3f}s  (B={b}, N={p})")
+        default = batched_iteratively_reweighted_fit(
+            linear_problem(design), theta0, flux, ivar, lik, ours_cfg
+        )
+        extra = int((default.ridge_used & ~ours.ridge_used).sum())
+        print(f"     default pivot test: {extra}/{b} more rows ridged (pivot ratio <= ridge)")
 
         prior = uspm_op.calibration_precision(cfg, j)
         t0 = time.perf_counter()
         theirs = uspm_op.irls_fit_shared(basis, legendre, flux, ivar, lik, cfg)
         t1 = time.perf_counter()
         ours = batched_iteratively_reweighted_fit(
-            shared_calibration_problem(basis, legendre, prior),
+            shared_calibration_problem(basis, legendre, prior, USPM_PIVOT_TOL),
             torch.zeros(b, k + j, dtype=DTYPE),
             flux,
             ivar,

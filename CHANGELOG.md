@@ -31,14 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the full step in standard-error units; an optional Levenberg-Marquardt `damped_solve`
   is accepted on objective decrease and never counts as converged. Failed and empty rows
   are `NaN`, not zeros. The caller owns the weighted solve (`BatchedIRLSProblem`,
-  `BatchedIRLSStep`, `BatchedIRLSConfig`, `BatchedIRLSResult`). At N=4096, n=8 (float64,
+  `BatchedIRLSStep`, `BatchedIRLSConfig`, `BatchedIRLSResult`); a solve may report
+  `ridge_used`, accumulated per row into `BatchedIRLSResult.ridge_used`. At N=4096, n=8 (float64,
   CPU, 2 threads, on a shared 4-CPU host) it fits 260-730 rows/s for B=100..10,000, 4-12x
   a per-row loop over `iteratively_reweighted_fit` in the same run
   (`tools/benchmark_batched_irls.py`).
 - `torchregress.algorithms.solve_normal_equations(normal, rhs, *, nonnegative=None, start=None,
-  ridge=1e-8, kkt_tol=1e-10)`: many small least-squares problems from their normal
+  ridge=1e-8, kkt_tol=1e-10, pivot_tol=None)`: many small least-squares problems from their normal
   equations in one call. Jacobi-scaled batched Cholesky (no host sync) with a flagged ridge
-  fallback and standard errors; with a `nonnegative` mask, batched Lawson-Hanson NNLS on
+  fallback (taken where the factorisation fails or its smallest-to-largest pivot ratio is at
+  most `pivot_tol`, default `ridge`; solution and standard errors are then regularised) and standard errors; with a `nonnegative` mask, batched Lawson-Hanson NNLS on
   the scaled normal equations with a warm-startable free set. Empty columns are pinned at 0
   with infinite standard error; singular or non-finite rows return `NaN` and are flagged.
 - `torchregress.models.MarginalContrastiveDensity`: Marginal Contrastive Discrimination

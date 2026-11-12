@@ -208,3 +208,48 @@ def test_non_finite_row_fails_closed_without_touching_good_rows(
     good = [row for row in range(5) if row != bad]
     for name in ("solution", "standard_errors", "free", "dead"):
         assert torch.equal(getattr(out, name)[good], getattr(clean, name)[good]), name
+
+
+@pytest.mark.parametrize("bounded", [False, True])
+def test_numerically_singular_factorisation_takes_the_ridge(bounded: bool) -> None:
+    # An exactly collinear column: Cholesky often "succeeds" with a round-off
+    # pivot, and the inverse of that factor is meaningless (errors ~ 1e7).
+    generator = torch.Generator().manual_seed(0)
+    design = torch.randn(64, 30, 3, generator=generator, dtype=torch.float64)
+    design[..., 2] = design[..., 0] + design[..., 1]
+    normal = design.transpose(1, 2) @ design
+    rhs = (normal @ torch.ones(64, 3, 1, dtype=torch.float64)).squeeze(-1)  # x = 1 fits
+    assert (torch.linalg.cholesky_ex(normal)[1] == 0).any()  # the trap is present
+    nonnegative = torch.tensor([False, False, True]) if bounded else None
+    # The warm start frees the collinear column (from 0 it would never be freed:
+    # its multiplier vanishes once the other two fit exactly).
+    start = torch.ones_like(rhs)
+    out = solve_normal_equations(normal, rhs, nonnegative=nonnegative, start=start)
+    rows = out.free.all(-1)  # the collinear block is in the factorisation
+    assert rows.any()
+    assert out.ridge_used[rows].all() and not out.singular.any()
+    # Ridge-limited errors: about 1/sqrt(ridge) = 1e4 in scaled units, not 1e7+.
+    scaled_se = out.standard_errors * torch.diagonal(normal, dim1=-2, dim2=-1).sqrt()
+    assert scaled_se[rows].max() < 1e5
+
+
+def test_well_conditioned_rows_do_not_take_the_ridge() -> None:
+    _, _, _, (normal, rhs) = _least_squares_batch(32, 40, 8, seed=11)
+    for nonnegative in (None, torch.ones(8, dtype=torch.bool)):
+        assert not solve_normal_equations(normal, rhs, nonnegative=nonnegative).ridge_used.any()
+
+
+def test_pivot_tol_zero_takes_the_ridge_only_on_failure() -> None:
+    generator = torch.Generator().manual_seed(0)
+    design = torch.randn(64, 30, 3, generator=generator, dtype=torch.float64)
+    design[..., 2] = design[..., 0] + design[..., 1]
+    normal = design.transpose(1, 2) @ design
+    rhs = (normal @ torch.ones(64, 3, 1, dtype=torch.float64)).squeeze(-1)
+    root = torch.diagonal(normal, dim1=-2, dim2=-1).sqrt()
+    failed = torch.linalg.cholesky_ex(normal / (root[:, :, None] * root[:, None, :]))[1] != 0
+    assert failed.any() and not failed.all()
+    out = solve_normal_equations(normal, rhs, pivot_tol=0.0)
+    assert torch.equal(out.ridge_used, failed)
+    for bad in (-1.0, math.nan):
+        with pytest.raises(ValueError, match="pivot_tol"):
+            solve_normal_equations(normal, rhs, pivot_tol=bad)

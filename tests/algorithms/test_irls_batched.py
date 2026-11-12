@@ -66,7 +66,9 @@ def _linear_problem(
             normal = normal + torch.diag_embed(prior)
         rhs = (xw * target.unsqueeze(-1)).sum(1)
         out = solve_normal_equations(normal, rhs, nonnegative=nonnegative, start=theta)
-        return BatchedIRLSStep(out.solution, out.standard_errors, failed=out.singular)
+        return BatchedIRLSStep(
+            out.solution, out.standard_errors, failed=out.singular, ridge_used=out.ridge_used
+        )
 
     penalty = None
     if prior is not None:
@@ -536,3 +538,21 @@ def test_non_finite_model_off_the_likelihood_is_ignored(eta: float) -> None:
         torch.testing.assert_close(getattr(result, name), getattr(control, name), rtol=0, atol=0)
     assert torch.isnan(result.model[off]).all()
     torch.testing.assert_close(result.model[~off], control.model[~off], rtol=0, atol=0)
+
+
+def test_ridge_used_by_any_solve_is_reported_per_row() -> None:
+    design, target, precision, _ = _data(batch=3, seed=20)
+    design = design.clone()
+    design[1, :, 2] = design[1, :, 0] + design[1, :, 1]  # row 1 is not identified
+    result = _fit(design, target, precision)
+    assert result.ridge_used.tolist() == [False, True, False]
+    assert result.ridge_used.dtype == torch.bool
+    linear = _linear_problem(design)
+
+    def bad(theta, weights, target_, rows):  # type: ignore[no-untyped-def]
+        return replace(linear.solve(theta, weights, target_, rows), ridge_used=torch.ones(2))
+
+    with pytest.raises(ValueError, match="ridge_used"):
+        batched_iteratively_reweighted_fit(
+            replace(linear, solve=bad), torch.zeros(3, 3, dtype=DTYPE), target, precision
+        )
