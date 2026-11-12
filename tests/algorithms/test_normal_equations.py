@@ -404,7 +404,93 @@ def test_nonnegative_steps_work_on_the_rows_still_in_play(
     out = solve_normal_equations(normal, rhs, nonnegative=mask)
     for name in ("solution", "standard_errors", "free", "ridge_used", "singular"):
         assert torch.equal(getattr(out, name), getattr(reference, name)), name
-    # Rows finish at different steps: later steps factorise fewer rows; the last
-    # call factorises every row's final free set for the standard errors.
-    assert sizes[0] == 16 and sizes[-1] == 16
-    assert min(sizes[:-1]) < 16
+    # Rows finish at different steps: later steps factorise fewer rows, and the
+    # standard errors reuse each row's last factor (no final factorisation of
+    # every row).
+    assert sizes[0] == 16 and min(sizes) < 16
+    assert sizes.count(16) == 1
+
+
+def _ridge_batch() -> tuple[torch.Tensor, torch.Tensor]:
+    """Rows of which some fail the plain factorisation (an exactly collinear column)."""
+    generator = torch.Generator().manual_seed(0)
+    design = torch.randn(64, 30, 4, generator=generator, dtype=torch.float64)
+    design[..., 2] = design[..., 0] + design[..., 1]
+    design[..., 3] = design[..., 3].abs()
+    normal = design.transpose(1, 2) @ design
+    rhs = (design * torch.randn(64, 30, 1, generator=generator, dtype=torch.float64)).sum(1)
+    return normal, rhs
+
+
+_FIELDS = ("solution", "standard_errors", "free", "dead", "ridge_used", "singular")
+
+
+def _assert_identical(a, b) -> None:  # type: ignore[no-untyped-def]
+    """Field-by-field bit equality, NaN in the same places."""
+    for name in _FIELDS:
+        x, y = getattr(a, name), getattr(b, name)
+        if x.is_floating_point():
+            assert torch.equal(x.isnan(), y.isnan()), name
+            x, y = x.nan_to_num(), y.nan_to_num()
+        assert torch.equal(x, y), name
+
+
+@pytest.mark.parametrize("nonnegative", [None, torch.tensor([True, True, True, False])])
+@pytest.mark.parametrize("rank_tol", [0.0, 1e-8])
+def test_ridging_only_the_failed_rows_matches_ridging_every_row(
+    monkeypatch: pytest.MonkeyPatch, nonnegative: torch.Tensor | None, rank_tol: float
+) -> None:
+    import torchregress.algorithms.normal_equations as module
+
+    normal, rhs = _ridge_batch()
+    normal[5, 0, 0] = math.nan  # one non-finite row: the swap path runs too
+    start = torch.ones_like(rhs)
+    kwargs = {"nonnegative": nonnegative, "start": start, "rank_tol": rank_tol}
+    out = solve_normal_equations(normal, rhs, **kwargs)
+    assert out.ridge_used.any() and not out.ridge_used.all() and out.singular[5]
+    ridge_failed_rows = module._ridge_failed_rows
+
+    def every_row(system, chol, failed, ridge, ridged_variables, gather):  # type: ignore[no-untyped-def]
+        return ridge_failed_rows(system, chol, failed, ridge, ridged_variables, False)
+
+    # The accelerator policy: every ridged factorisation and guarded step runs
+    # unconditionally, with no host read of the flags.
+    monkeypatch.setattr(module, "_ridge_failed_rows", every_row)
+    monkeypatch.setattr(module, "_host_any", lambda mask: True)
+    _assert_identical(solve_normal_equations(normal, rhs, **kwargs), out)
+
+
+@pytest.mark.parametrize("rank_tol", [0.0, 1e-8])
+def test_standard_errors_reuse_equals_a_fresh_final_factorisation(
+    monkeypatch: pytest.MonkeyPatch, rank_tol: float
+) -> None:
+    import torchregress.algorithms.normal_equations as module
+
+    normal, rhs = _ridge_batch()
+    _, _, _, (normal2, rhs2) = _least_squares_batch(64, 30, 4, seed=5)
+    normal, rhs = torch.cat([normal, normal2]), torch.cat([rhs, rhs2])
+    mask = torch.tensor([True, True, True, False])
+    # From a positive start the collinear block is freed (and needs the ridge).
+    kwargs = {"nonnegative": mask, "start": torch.ones_like(rhs), "rank_tol": rank_tol}
+    out = solve_normal_equations(normal, rhs, **kwargs)
+    assert out.ridge_used.any() and (out.free != mask).any()
+
+    # Forcing every row's factor stale refactorises all final free blocks.
+    active_set = module._active_set
+
+    def stale(*args):  # type: ignore[no-untyped-def]
+        *head, fresh = active_set(*args)
+        return (*head, torch.zeros_like(fresh))
+
+    monkeypatch.setattr(module, "_active_set", stale)
+    _assert_identical(solve_normal_equations(normal, rhs, **kwargs), out)
+    monkeypatch.undo()
+
+    # And the standard errors are those of a fresh factorisation of the final
+    # free block (of the ridged system on ridged rows).
+    if rank_tol == 0.0:
+        scaled, _, scale, _ = module._jacobi_scale(normal, rhs)
+        chol, _, _ = module._free_block_cholesky(scaled, out.free, 1e-8)
+        inv_diag = torch.diagonal(torch.cholesky_inverse(chol), dim1=-2, dim2=-1)
+        se = torch.where(out.free, inv_diag.clamp_min(0.0).sqrt(), torch.ones_like(rhs))
+        assert torch.equal(out.standard_errors, se / scale)

@@ -67,15 +67,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transients) on top of the caller's data.
 - `torchregress.algorithms.solve_normal_equations(normal, rhs, *, nonnegative=None, start=None,
   ridge=1e-8, kkt_tol=1e-10, rank_tol=0.0)`: many small least-squares problems from their
-  normal equations in one call. Jacobi-scaled batched Cholesky (no host sync) with a flagged
-  ridge fallback (by default only where the factorisation fails, so identified rows are never
+  normal equations in one call. Jacobi-scaled batched Cholesky (no host sync on an
+  accelerator) with a flagged ridge fallback (by default only where the factorisation fails, so identified rows are never
   biased; opt-in `rank_tol > 0` also takes it where the smallest-to-largest eigenvalue ratio
   of the scaled final system is at most `rank_tol`, testing only the final free set of the
   non-negative solve and re-solving flagged rows as the strictly convex ridged problem;
   solution and standard errors are then regularised) and standard
   errors; with a `nonnegative` mask, batched Lawson-Hanson NNLS on
   the scaled normal equations with a warm-startable free set (each active-set step works on
-  the rows still pending, about one host sync per step). Empty columns are pinned at 0 with
+  the rows still pending, about one host sync per step; the standard errors reuse each
+  row's last free-block factor). Empty columns are pinned at 0 with
   infinite standard error; singular or non-finite rows return `NaN` and are flagged.
 - `torchregress.models.MarginalContrastiveDensity`: Marginal Contrastive Discrimination
   (Meziani, Ndiaye & Riu 2022), `p(y|x) = p(y) r(x, y)` from an unconditional flow and a
@@ -109,6 +110,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remain better and sample much faster (see the flow docs).
 ### Changed
 
+- `solve_normal_equations` does less work per call, with bit-identical results (6,144
+  randomized cases, both dtypes, all flags): the non-negative solve's standard errors reuse
+  each row's last free-block Cholesky factor instead of factorising every final free block
+  again; the ridged factorisation runs only for the rows whose plain one failed (on the CPU;
+  on an accelerator both are still computed, without a host sync); active-set steps on every
+  row skip the gathers, and the empty-column and non-finite-row handling are skipped on the
+  CPU when no row needs them. Per call, 2 threads, `n` 6-20 with 4-16 constrained: 0.55-0.70x
+  the previous time at `B = 1`, 0.6-0.95x at `B = 8-512`; the unconstrained solve 0.5-0.6x.
+  uspm's S1 refine (one object per call) takes 0.88x the time it took with the previous version.
+  `tools/benchmark_normal_equations.py` measures it (`--uspm-reference` also times uspm's
+  former `nnls_normal`); `scripts/check_uspm_irls_parity.py` now compares against uspm's
+  pre-adoption implementation frozen in `scripts/uspm_b461f8f_reference.py`.
 - `NormalizingFlowLoss.sample` draws large requests in blocks of at most 8192 draws
   (contexts x samples) and frees each block's inverse-transform garbage before the next.
   Results follow the same distribution; requests up to 8192 draws are unchanged
