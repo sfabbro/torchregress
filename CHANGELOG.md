@@ -19,6 +19,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   noise (the Fisher factor `(nu+1)/(nu+3)`). `robust_weights` and
   `iteratively_reweighted_fit` accept `weight="student_t"` (`(nu+1)/(nu+u^2)`, the exact
   t-likelihood weight). `StudentTLoss` accepts `nu=math.inf`.
+- `torchregress.algorithms.batched_iteratively_reweighted_fit(problem, initial_theta, target,
+  precision, mask=None, config=None, *, initial_weights=None)`: IRLS for many independent
+  rows (`[B, N]` observations with known precisions and masks; one spectrum or source per
+  row) with no per-row Python loop and one host sync per iteration. Student-t weights by
+  default (any `robust_weights` family), variance `1/precision + eta^2 m^2`, exact per-row
+  NLL plus an optional penalty, per-row `IRLSRowStatus` (converged / max_iterations /
+  stalled / failed / empty) with early exit of finished rows. Convergence is certified on
+  the full step in standard-error units; an optional Levenberg-Marquardt `damped_solve`
+  is accepted on objective decrease and never counts as converged. Failed and empty rows
+  are `NaN`, not zeros. The caller owns the weighted solve (`BatchedIRLSProblem`,
+  `BatchedIRLSStep`, `BatchedIRLSConfig`, `BatchedIRLSResult`). At N=4096, n=8 (float64,
+  CPU, 2 threads, on a shared 4-CPU host) it fits 260-730 rows/s for B=100..10,000, 4-12x
+  a per-row loop over `iteratively_reweighted_fit` in the same run
+  (`tools/benchmark_batched_irls.py`).
 - `torchregress.algorithms.solve_normal_equations(normal, rhs, *, nonnegative=None, start=None,
   ridge=1e-8, kkt_tol=1e-10)`: many small least-squares problems from their normal
   equations in one call. Jacobi-scaled batched Cholesky (no host sync) with a flagged ridge

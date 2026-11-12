@@ -155,6 +155,9 @@ nll_gauss = student_t_nll(target - model, prec_eff, nu=math.inf, mask=mask)
 print(nll_t, nll_gauss, student_t_efficiency(5.0), student_t_efficiency(5.0, "student_t"))
 ```
 
+!!! tip "Many small fits"
+    To *fit* thousands of independent rows under this likelihood (one spectrum, light curve, or source per row), use [`batched_iteratively_reweighted_fit`](../methods/algorithms/irls.md#batched-irls-for-many-independent-problems): it reweights with $w_i$, applies $\eta$, and reports this NLL per row.
+
 ---
 
 ## Comparison & Selection

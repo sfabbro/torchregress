@@ -119,10 +119,11 @@ Bounded-influence losses for data with **outliers** or heavy-tailed noise.
 | `LogCoshLoss` | $\log\cosh(r)$ | Linear | ⭐⭐ |
 | `CharbonnierLoss` | $\sqrt{r^2 + \epsilon^2} - \epsilon$ | Linear | ⭐⭐ |
 | `CauchyLoss` | $\log(1 + r^2/c^2)$ | Logarithmic | ⭐⭐⭐ |
+| `StudentTLoss`, `student_t_nll` | $\tfrac{\nu+1}{2}\log(1 + \lambda r^2/\nu)$ + exact constants, per-element precision $\lambda$ | Logarithmic | ⭐⭐⭐ |
 | `TukeyBiweightLoss` | Bounded (rejects $\lvert r\rvert > c$) | Zero | ⭐⭐⭐⭐ |
 | `CVaRLoss` | Worst-$\alpha$ fraction | Tail-focused | ⭐⭐⭐ |
 
-Read the full [Robust losses guide](robust.md) — influence functions, redescending behavior, Barron family, CVaR.
+Read the full [Robust losses guide](robust.md) — influence functions, redescending behavior, Barron family, the Student-$t$ likelihood with known precisions (`student_t_nll`, `effective_precision`, `student_t_efficiency`), CVaR.
 
 ---
 

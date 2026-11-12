@@ -2,13 +2,13 @@
 
 _Generated provenance_: `tools/render_method_catalog.py:render_markdown`
 _Source artifacts_: `reports/method_catalog_latest.json`
-_Generated date_: `2026-11-08`
+_Generated date_: `2026-11-12`
 
 It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 
 ## Summary
 
-- Total methods: `162`
+- Total methods: `163`
 - Peer methods present: `SWAG`, `BayesianNeuralNetwork`, `MixtureDensityLoss`
 
 ### By Family
@@ -44,7 +44,7 @@ It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 | `probabilistic_loss` | 11 |
 | `quantile` | 2 |
 | `representation_regularizer` | 1 |
-| `robust_algorithm` | 1 |
+| `robust_algorithm` | 2 |
 | `robust_loss` | 9 |
 | `semi_supervised` | 1 |
 | `swag` | 2 |
@@ -61,7 +61,7 @@ It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 |---|---:|
 | `Core` | 7 |
 | `Strong` | 20 |
-| `Available` | 135 |
+| `Available` | 136 |
 
 ## Method Rows
 
@@ -195,6 +195,7 @@ Legend: `*` suffix means partial support. This snapshot is for discovery and com
 | `MultiQuantileLoss` | `quantile` | `Strong` | `prediction_intervals`, `non_gaussian`, `multi_quantile` | `calibration`, `ood*` | `torchregress.losses.MultiQuantileLoss` |
 | `QuantileLoss` | `quantile` | `Core` | `prediction_intervals`, `non_gaussian` | `calibration`, `ood*` | `torchregress.losses.QuantileLoss` |
 | `UncertaintyAwareConR` | `representation_regularizer` | `Available` | `imbalanced_regression`, `noisy_labels`, `scalar_targets` | `ood*` | `torchregress.losses.UncertaintyAwareConR` |
+| `batched_iteratively_reweighted_fit` | `robust_algorithm` | `Available` | `outliers`, `robust_fitting`, `irls`, `many_small_fits`, `known_noise` | `calibration*`, `ood*` | `torchregress.algorithms.batched_iteratively_reweighted_fit` |
 | `iteratively_reweighted_fit` | `robust_algorithm` | `Strong` | `outliers`, `noisy_labels`, `robust_fitting`, `irls` | `calibration*`, `ood*` | `torchregress.algorithms.iteratively_reweighted_fit` |
 | `AdaptiveRobustLoss` | `robust_loss` | `Available` | `outliers`, `adaptive_shape`, `learnable` | `calibration*`, `ood*` | `torchregress.losses.AdaptiveRobustLoss` |
 | `BarronLoss` | `robust_loss` | `Available` | `outliers`, `adaptive_shape` | `calibration*`, `ood*` | `torchregress.losses.BarronLoss` |

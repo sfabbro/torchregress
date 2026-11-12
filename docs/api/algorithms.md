@@ -19,6 +19,12 @@ guidance, and detailed usage walkthroughs, see [Algorithms overview](../methods/
 | `IRLSFitResult`, `IRLSIteration` | Frozen result and history diagnostics with effective sample size and finite/termination status. |
 | `IRLSBreakdownError` | Exception a caller-owned solver raises to return a diagnostic `"breakdown"` result. |
 | `robust_weights` | Huber, Pseudo-Huber, Tukey, Cauchy, Barron-style, Student-t (`(ν+1)/(ν+u²)`) or custom IRLS multipliers. |
+| `batched_iteratively_reweighted_fit` | `(problem, initial_theta, target, precision, mask=None, config=None, *, initial_weights=None)` — IRLS for many independent rows (`[B, N]` data with known precisions): Student-t (default) or any `robust_weights` family, variance `1/λ + η²m̄²`, per-row convergence on the full step in standard-error units, early exit of finished rows, optional Levenberg–Marquardt acceptance and penalty. Returns `BatchedIRLSResult`. |
+| `BatchedIRLSProblem` | Frozen callbacks: `predict(theta, rows)`, `solve(theta, weights, target, rows) -> BatchedIRLSStep`, optional `damped_solve(theta, weights, target, rows, damping)`, optional `penalty(theta, rows)`, `exact_solve`. |
+| `BatchedIRLSStep` | What `solve` returns: full-step `theta`, `standard_errors`, optional `failed` rows and `predicted_objective`. |
+| `BatchedIRLSConfig` | `weight="student_t"`, `weight_params={"nu": 5.0}`, `eta=0.0`, `max_iter=50`, `tol=1e-3`, `min_iter=2`, `min_observations=None`, `max_damping=16`, `damping_start=1e-3`, `damping_min=1e-12`. |
+| `BatchedIRLSResult` | Per-row `theta`, `standard_errors`, `model`, `weights`, `effective_precision`, `objective` (exact NLL + penalty), `penalty`, `status`, `iterations`, `n_observations`; `converged` / `failed` / `stalled` properties. `NaN` outputs on failed and empty rows. |
+| `IRLSRowStatus` | `IntEnum`: `CONVERGED`, `MAX_ITERATIONS`, `STALLED`, `FAILED`, `EMPTY`. |
 | `solve_normal_equations` | `(normal, rhs, *, nonnegative=None, start=None, ridge=1e-8, kkt_tol=1e-10)` — batched `min ½xᵀNx − gᵀx` per row, Jacobi-scaled Cholesky with a flagged ridge fallback; with a boolean `nonnegative` mask, batched Lawson–Hanson NNLS (warm-startable free set). Returns `NormalEquationsSolution`. |
 | `NormalEquationsSolution` | Frozen result: `solution`, `standard_errors` (free-block inverse; `1/√N_ii` at a bound; `inf` for empty columns), `free`, `dead`, `ridge_used`, `singular` (`NaN` solution, fail closed). |
 | `reweight_fixed_predictions` | Robust reweighting of a fixed model. Does not refit. |

@@ -28,6 +28,14 @@ from .irls import (
     IRLSConfig,
     reweight_fixed_predictions,
 )
+from .irls_batched import (
+    BatchedIRLSConfig,
+    BatchedIRLSProblem,
+    BatchedIRLSResult,
+    BatchedIRLSStep,
+    IRLSRowStatus,
+    batched_iteratively_reweighted_fit,
+)
 from .irls_fit import (
     IRLSBreakdownError,
     IRLSCallbacks,
@@ -61,6 +69,12 @@ __all__ = [
     "IRLSFitResult",
     "IRLSBreakdownError",
     "IRLSConfig",
+    "batched_iteratively_reweighted_fit",
+    "BatchedIRLSProblem",
+    "BatchedIRLSStep",
+    "BatchedIRLSConfig",
+    "BatchedIRLSResult",
+    "IRLSRowStatus",
     "solve_normal_equations",
     "NormalEquationsSolution",
     "RegressionCalibration",

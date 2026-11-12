@@ -2,7 +2,7 @@
 
 > ← [Methods Overview](../index.md) | [SIMEX](simex.md) →
 
-`iteratively_reweighted_fit` is a solver-agnostic IRLS controller. The caller supplies residual and weighted-refit callbacks, so the same controller works with analytic WLS, iterative nonlinear solvers, sparse operators, or compiled training steps without assuming a global dense design matrix.
+`iteratively_reweighted_fit` is a solver-agnostic IRLS controller; `batched_iteratively_reweighted_fit` runs many independent small fits at once (see [Batched IRLS](#batched-irls-for-many-independent-problems)). The caller supplies residual and weighted-refit callbacks, so the same controller works with analytic WLS, iterative nonlinear solvers, sparse operators, or compiled training steps without assuming a global dense design matrix.
 
 ---
 
@@ -129,6 +129,137 @@ print(f"IRLS MAE (clean): {(pred[clean] - y[clean]).abs().mean():.4f}")
 
 For heteroscedastic vector residuals, provide `covariance_fn=lambda state: covariance` with shape `(samples, target_dim, target_dim)`. For matrix-free or sparse solvers, provide `whiten_fn` and keep any operator representation inside the problem object; the controller never constructs a global design or normal matrix.
 
+## Batched IRLS for many independent problems
+
+`batched_iteratively_reweighted_fit` fits $B$ independent rows at once — one spectrum, light curve, source, or pixel stack per row — each with its own model $m_b(\theta_b)$, $N$ observations $y_{bi}$ with **known** precisions $\lambda_{bi} = 1/\sigma_{bi}^2$, a mask, and a few parameters. Rows sit on the leading axis; there is no per-row Python loop.
+
+### Objective
+
+With the variance model $1/\lambda_{\mathrm{eff},bi} = 1/\lambda_{bi} + \eta^2 \bar m_{bi}^2$ ($\bar m$ the previous iterate's model, $\eta$ a fractional model error; [`effective_precision`](../../losses/robust.md#student-t-likelihood-with-known-precisions)) and standardized residuals $u_{bi} = (y_{bi} - m_{bi})\sqrt{\lambda_{\mathrm{eff},bi}}$, every unfinished row takes the weighted step
+
+$$
+\theta_b^{(t+1)} = \arg\min_{\theta}\; \sum_{i \in \mathcal O_b} w_{bi}^{(t)}\,\bigl(y_{bi} - m_{bi}(\theta)\bigr)^2 + 2\,\Pi_b(\theta),
+\qquad
+w_{bi}^{(t)} = \lambda_{\mathrm{eff},bi}\,\frac{\psi(u_{bi}^{(t)})}{u_{bi}^{(t)}},
+$$
+
+where $\mathcal O_b$ is the set of observed entries with positive precision and $\Pi_b$ an optional penalty (e.g. a Gaussian prior $\tfrac12\sum_m c_m^2/\sigma_m^2$). For the default `weight="student_t"`, $w = \lambda_{\mathrm{eff}}(\nu+1)/(\nu + u^2)$ and the reported objective is the exact negative log-likelihood
+
+$$
+\mathcal L_b = \sum_{i \in \mathcal O_b}\left[\log\Gamma\!\left(\tfrac{\nu}{2}\right) - \log\Gamma\!\left(\tfrac{\nu+1}{2}\right) + \tfrac12\log(\nu\pi) - \tfrac12\log\lambda_{\mathrm{eff},bi} + \tfrac{\nu+1}{2}\log\!\left(1 + \frac{u_{bi}^2}{\nu}\right)\right] + \Pi_b(\theta_b),
+$$
+
+with `nu=math.inf` giving the Gaussian. At $\eta = 0$ the weighted objective majorises $\mathcal L_b$ (since $\log(1 + z/\nu)$ is concave in $z$), so every accepted step lowers it \[5\]. For $\eta > 0$ the iteration is a fixed point in $\bar m$.
+
+### Convergence certificate
+
+A row converges when the **full** (undamped) step of its weighted solve at the current weights moves every parameter by less than `tol` of its standard error,
+
+$$
+\max_k \frac{\lvert \theta^{\text{full}}_{bk} - \theta^{(t)}_{bk}\rvert}{\mathrm{se}_{bk}} < \mathtt{tol},
+$$
+
+after at least `min_iter` iterations whenever the weights depend on the residuals. With a `damped_solve` (Levenberg–Marquardt \[7, 8\]) a full step is accepted only if it lowers the weighted objective; otherwise the per-row damping grows ×10 until a damped step does. A damped or rejected step never certifies convergence: a short damped step says nothing about the distance to the fixed point. A row for which no damping helps stops as `STALLED`, unless the solver's `predicted_objective` shows that the decrease still reachable is below the float resolution of the objective.
+
+### Ownership
+
+The caller owns the model and the weighted solve, so bounds, priors, Gauss–Newton linearisations and operators stay in caller code. [`solve_normal_equations`](../../api/algorithms.md#irls-robust-regression) covers the common linear case: batched Jacobi-scaled Cholesky with a flagged ridge fallback and standard errors, or, with a `nonnegative` mask, batched Lawson–Hanson NNLS \[6\] with a warm-started free set.
+
+| Callback / field | Signature | Role |
+|:-----------------|:----------|:-----|
+| `predict` | `(theta, rows) -> model [b, N]` | Model of the given rows |
+| `solve` | `(theta, weights, target, rows) -> BatchedIRLSStep` | Full step at fixed weights: `theta`, `standard_errors`, optional `failed`, optional `predicted_objective` |
+| `damped_solve` | `(theta, weights, target, rows, damping) -> theta` | Optional damped step for per-row damping $\lambda$ |
+| `penalty` | `(theta, rows) -> [b]` | Optional penalty $\Pi_b$ in NLL units |
+| `exact_solve` | `bool` | `solve` is the exact minimiser (linear LS, NNLS): one solve converges when the weights are fixed |
+
+`rows` is `None` when a callback gets the whole batch in order, otherwise the global indices of the rows it gets: finished rows leave the active set, so a batch costs $\sum_b \text{iterations}_b$ row solves. Each iteration has one host synchronisation (plus one per damping attempt).
+
+`BatchedIRLSConfig` sets `weight` (default `"student_t"`), `weight_params` (default `{"nu": 5.0}`), `eta`, `max_iter`, `tol` (in standard errors, default `1e-3`), `min_iter` (default 2), `min_observations` (default: parameters + 1) and the damping schedule (`max_damping`, `damping_start`, `damping_min`).
+
+`BatchedIRLSResult` holds per-row `theta`, `standard_errors`, `model`, `weights`, `effective_precision`, `objective` (NLL + penalty), `penalty`, `status` (`IRLSRowStatus`: `CONVERGED`, `MAX_ITERATIONS`, `STALLED`, `FAILED`, `EMPTY`), `iterations` and `n_observations`.
+
+!!! warning "Fail closed"
+    Rows with a non-finite target or precision on an observed entry, a non-finite start, too few observations, a failed or non-finite solve, or non-finite weights or objective are `FAILED`; rows with no usable observation are `EMPTY`. Their outputs are `NaN`, never zeros that look like a fit. Masked entries may hold any value, `NaN` included.
+
+### Complete batched Student-t example
+
+```python
+import math
+
+import torch
+from torchregress.algorithms import (
+    BatchedIRLSConfig,
+    BatchedIRLSProblem,
+    BatchedIRLSStep,
+    batched_iteratively_reweighted_fit,
+    solve_normal_equations,
+)
+
+torch.manual_seed(0)
+B, N, n = 1000, 512, 4
+grid = torch.linspace(-1.0, 1.0, N, dtype=torch.float64)
+design = torch.stack([grid**k for k in range(n)], -1).expand(B, N, n).contiguous()
+truth = torch.randn(B, n, dtype=torch.float64)
+precision = torch.full((B, N), 400.0, dtype=torch.float64)
+target = (design @ truth.unsqueeze(-1)).squeeze(-1) + 0.05 * torch.randn(B, N, dtype=torch.float64)
+target[:, ::37] += 1.0  # outliers
+mask = torch.rand(B, N) > 0.05  # missing pixels
+
+
+def take(tensor, rows):
+    return tensor if rows is None else tensor[rows]
+
+
+def predict(theta, rows):
+    return (take(design, rows) @ theta.unsqueeze(-1)).squeeze(-1)
+
+
+def solve(theta, weights, y, rows):
+    x = take(design, rows)
+    normal = x.transpose(1, 2) @ (x * weights.unsqueeze(-1))
+    rhs = (x.transpose(1, 2) @ (weights * y).unsqueeze(-1)).squeeze(-1)
+    out = solve_normal_equations(normal, rhs)
+    return BatchedIRLSStep(out.solution, out.standard_errors, failed=out.singular)
+
+
+problem = BatchedIRLSProblem(predict, solve, exact_solve=True)
+result = batched_iteratively_reweighted_fit(
+    problem,
+    torch.zeros(B, n, dtype=torch.float64),
+    target,
+    precision,
+    mask,
+    BatchedIRLSConfig(weight_params={"nu": 5.0}),
+)
+print(result.converged.all().item(), result.iterations.double().mean().item())
+print(((result.theta - truth) / result.standard_errors).abs().max().item())
+gaussian = batched_iteratively_reweighted_fit(
+    problem, torch.zeros(B, n, dtype=torch.float64), target, precision, mask,
+    BatchedIRLSConfig(weight_params={"nu": math.inf}),
+)
+print("Gaussian NLL - Student-t NLL:", (gaussian.objective - result.objective).mean().item())
+```
+
+For a bilinear or otherwise nonlinear model, make `solve` return one Gauss–Newton step (solving the linearised weighted problem with `solve_normal_equations`, bounds included) together with its `predicted_objective`, and supply `damped_solve` that adds $\lambda\,\mathrm{diag}(N)$ to the same normal matrix. The controller then accepts, damps or stalls each row and certifies convergence only on the full step.
+
+!!! info "Throughput"
+    `tools/benchmark_batched_irls.py` fits Student-t linear rows with $N = 4096$ observations and $n = 8$ parameters (float64, CPU, 2 threads, 2% outliers): 260–730 rows/s for $B$ from 100 to 10,000 on a shared 4-CPU host (9 iterations, every row converged), 4–12× a per-row loop over `iteratively_reweighted_fit` in the same run. Absolute rates depend on machine load; the ratio is the stable figure. Memory grows linearly in $B$ (≈ 0.5 MB per row, dominated by the caller's $[B, N, n]$ design).
+
+### When to use which controller
+
+| | `iteratively_reweighted_fit` | `batched_iteratively_reweighted_fit` |
+|:--|:--|:--|
+| Problems per call | One | Many independent rows |
+| Noise scale | Estimated (MAD, std, …) or fixed | Known per-observation precision, optional $\eta^2 m^2$ term |
+| Residual structure | Scalar, vector blocks, covariance whitening | Scalar per observation |
+| Convergence | Relative objective / weight / parameter change | Full step in standard-error units, per row |
+| Continuation schedule | Yes | No (one family per call) |
+| Damping / acceptance | Caller-side | Built in (Levenberg–Marquardt hook) |
+| Reported objective | Weighted mean robust loss | Exact Student-$t$ / Gaussian NLL per row (+ penalty) |
+
+---
+
 ## Fixed-prediction compatibility utility
 
 `reweight_fixed_predictions(model, x, y_true, ...)` evaluates a fixed model and returns `(prediction, loss_history, precision)` without refitting. Code that needs genuine IRLS should use `iteratively_reweighted_fit`.
@@ -181,3 +312,7 @@ For heteroscedastic vector residuals, provide `covariance_fn=lambda state: covar
 | 2 | P.J. Huber. ["Robust Regression: Asymptotics, Conjectures, and Monte Carlo."](https://doi.org/10.1214/aos/1176342503) *Ann. Stat.*, 1(5):799–821, **1973**. |
 | 3 | A.E. Beaton, J.W. Tukey. ["The Fitting of Power Series, Meaning Polynomials, Illustrated on Band-Spectroscopic Data."](https://doi.org/10.1080/00401706.1974.10489171) *Technometrics*, 16(2):147–185, **1974**. |
 | 4 | P.J. Huber. *Robust Statistics*. Wiley, **1981**. |
+| 5 | K.L. Lange, R.J.A. Little, J.M.G. Taylor. ["Robust Statistical Modeling Using the t Distribution."](https://doi.org/10.1080/01621459.1989.10478852) *J. Amer. Statist. Assoc.*, 84(408):881–896, **1989**. |
+| 6 | C.L. Lawson, R.J. Hanson. *Solving Least Squares Problems*. Prentice-Hall, **1974** (SIAM reprint, 1995). |
+| 7 | K. Levenberg. ["A Method for the Solution of Certain Non-Linear Problems in Least Squares."](https://doi.org/10.1090/qam/10666) *Q. Appl. Math.*, 2(2):164–168, **1944**. |
+| 8 | D.W. Marquardt. ["An Algorithm for Least-Squares Estimation of Nonlinear Parameters."](https://doi.org/10.1137/0111030) *J. SIAM*, 11(2):431–441, **1963**. |

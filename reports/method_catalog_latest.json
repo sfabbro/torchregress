@@ -2,7 +2,7 @@
   "artifact": "method_catalog",
   "version": 1,
   "summary": {
-    "total_methods": 162,
+    "total_methods": 163,
     "families": {
       "bnn": 7,
       "calibration_transform": 7,
@@ -33,7 +33,7 @@
       "probabilistic_loss": 11,
       "quantile": 2,
       "representation_regularizer": 1,
-      "robust_algorithm": 1,
+      "robust_algorithm": 2,
       "robust_loss": 9,
       "semi_supervised": 1,
       "swag": 2,
@@ -47,7 +47,7 @@
     "maturity": {
       "Core": 7,
       "Strong": 20,
-      "Available": 135
+      "Available": 136
     },
     "peer_uq_methods_present": {
       "SWAG": true,
@@ -295,6 +295,30 @@
       "imbalance": "no",
       "noisy_features_eiv": "no",
       "notes": "Solver-agnostic, refit-capable IRLS controller with scalar and block Mahalanobis residuals, continuation, masks, precision weights, and finite/convergence diagnostics. The caller retains weighted-solver ownership."
+    },
+    {
+      "name": "batched_iteratively_reweighted_fit",
+      "family": "robust_algorithm",
+      "public_path": "torchregress.algorithms.batched_iteratively_reweighted_fit",
+      "task_tags": [
+        "outliers",
+        "robust_fitting",
+        "irls",
+        "many_small_fits",
+        "known_noise"
+      ],
+      "maturity": "Available",
+      "multimodal": "no",
+      "multi_target": "no",
+      "non_gaussian": "partial",
+      "epistemic": "no",
+      "aleatoric": "no",
+      "decomposition": "no",
+      "calibration": "partial",
+      "ood_support": "partial",
+      "imbalance": "no",
+      "noisy_features_eiv": "no",
+      "notes": "IRLS for many independent rows at once (one spectrum, light curve or source per row) with known per-observation precision, masks and an optional model-proportional error term. Student-t (exact NLL with constants) or any robust_weights family; per-row convergence on the full step in standard errors, early exit of finished rows, Levenberg-Marquardt acceptance hook, penalty/prior term, fail-closed NaN rows. The caller owns the weighted solve; solve_normal_equations covers linear and non-negative cases."
     },
     {
       "name": "DensityWeightedLoss",

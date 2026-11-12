@@ -204,6 +204,12 @@ EXPECTED_EXPORTS = {
         "IRLSFitResult",
         "IRLSBreakdownError",
         "IRLSConfig",
+        "batched_iteratively_reweighted_fit",
+        "BatchedIRLSProblem",
+        "BatchedIRLSStep",
+        "BatchedIRLSConfig",
+        "BatchedIRLSResult",
+        "IRLSRowStatus",
         "solve_normal_equations",
         "NormalEquationsSolution",
         "RegressionCalibration",
@@ -354,6 +360,12 @@ EXPECTED_EXPORTS = {
 
 
 EXPECTED_SIGNATURES = {
+    "algorithms.batched_iteratively_reweighted_fit": (
+        "(problem: 'BatchedIRLSProblem', initial_theta: 'Tensor', target: 'Tensor', "
+        "precision: 'Tensor', mask: 'Tensor | None' = None, "
+        "config: 'BatchedIRLSConfig | None' = None, *, "
+        "initial_weights: 'Tensor | None' = None) -> 'BatchedIRLSResult'"
+    ),
     "algorithms.solve_normal_equations": (
         "(normal: 'Tensor', rhs: 'Tensor', *, nonnegative: 'Tensor | None' = None, "
         "start: 'Tensor | None' = None, ridge: 'float' = 1e-08, kkt_tol: 'float' = 1e-10) "

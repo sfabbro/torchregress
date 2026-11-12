@@ -44,7 +44,7 @@ loss = tr.losses.WeightedHuberLoss()
 <!-- BEGIN:TASK_MATRIX_GENERATED -->
 _Generated provenance_: `tools/render_method_catalog.py:render_task_matrix_table`
 _Source artifacts_: `reports/method_catalog_latest.json`
-_Generated date_: `2026-11-08`
+_Generated date_: `2026-11-12`
 
 | Task / Constraint | Recommended Start | Strong Alternatives | Notes |
 |---|---|---|---|
@@ -89,7 +89,7 @@ Legend:
 <!-- BEGIN:FAMILY_CAPABILITY_MATRIX_GENERATED -->
 _Generated provenance_: `tools/render_method_catalog.py:render_family_capability_matrix_table`
 _Source artifacts_: `reports/method_catalog_latest.json`
-_Generated date_: `2026-11-08`
+_Generated date_: `2026-11-12`
 
 | Method Family | Multi-target | Multimodal | Non-Gaussian | Epistemic | Aleatoric | Decomposition | Calibration | OOD Support | Imbalance | Noisy Features (EIV) |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -122,7 +122,7 @@ _Generated date_: `2026-11-08`
 | `probabilistic_loss` (11) | yes | no | partial | no | yes | no | partial | partial | no | no |
 | `quantile` (2) | yes | no | yes | no | no | no | yes | partial | no | no |
 | `representation_regularizer` (1) | no | no | partial | no | no | no | no | partial | yes | no |
-| `robust_algorithm` (1) | yes | no | partial | no | no | no | partial | partial | no | no |
+| `robust_algorithm` (2) | yes | no | partial | no | no | no | partial | partial | no | no |
 | `robust_loss` (9) | yes | no | partial | no | no | no | partial | partial | no | no |
 | `semi_supervised` (1) | yes | no | partial | no | no | no | partial | partial | no | no |
 | `swag` (2) | yes | no | partial | yes | partial | partial | partial | partial | no | no |
@@ -161,7 +161,7 @@ Next step for operational tradeoffs: [Choosing Methods by Constraint](choosing-b
 
 _Generated provenance_: `tools/render_method_catalog.py:render_method_matrix_generated_section`
 _Source artifacts_: `docs/reports/method_catalog_generated.md`, `reports/method_catalog_latest.json`
-_Generated date_: `2026-11-08`
+_Generated date_: `2026-11-12`
 
 | Method | Family | Maturity | Multi-target | Multimodal | Epistemic | Aleatoric | Decomposition | Calibration | OOD |
 |---|---|---|---|---|---|---|---|---|---|
@@ -291,6 +291,7 @@ _Generated date_: `2026-11-08`
 | `MultiQuantileLoss` | `quantile` | `Strong` | yes | no | no | no | no | yes | partial |
 | `QuantileLoss` | `quantile` | `Core` | yes | no | no | no | no | yes | partial |
 | `UncertaintyAwareConR` | `representation_regularizer` | `Available` | no | no | no | no | no | no | partial |
+| `batched_iteratively_reweighted_fit` | `robust_algorithm` | `Available` | no | no | no | no | no | partial | partial |
 | `iteratively_reweighted_fit` | `robust_algorithm` | `Strong` | yes | no | no | no | no | partial | partial |
 | `AdaptiveRobustLoss` | `robust_loss` | `Available` | yes | no | no | no | no | partial | partial |
 | `BarronLoss` | `robust_loss` | `Available` | yes | no | no | no | no | partial | partial |
@@ -363,7 +364,7 @@ Peer-method check: `SWAG`, `BayesianNeuralNetwork`, `MixtureDensityLoss`
 | `probabilistic_loss` | 11 | yes | no | partial | no | yes | no | partial | partial | no | no |
 | `quantile` | 2 | yes | no | yes | no | no | no | yes | partial | no | no |
 | `representation_regularizer` | 1 | no | no | partial | no | no | no | no | partial | yes | no |
-| `robust_algorithm` | 1 | yes | no | partial | no | no | no | partial | partial | no | no |
+| `robust_algorithm` | 2 | yes | no | partial | no | no | no | partial | partial | no | no |
 | `robust_loss` | 9 | yes | no | partial | no | no | no | partial | partial | no | no |
 | `semi_supervised` | 1 | yes | no | partial | no | no | no | partial | partial | no | no |
 | `swag` | 2 | yes | no | partial | yes | partial | partial | partial | partial | no | no |
@@ -441,7 +442,7 @@ Key tradeoffs and common failure modes:
 <!-- BEGIN:DECISION_WORKFLOW_GENERATED -->
 _Generated provenance_: `tools/render_method_catalog.py:render_decision_workflow`
 _Source artifacts_: `reports/method_catalog_latest.json`
-_Generated date_: `2026-11-08`
+_Generated date_: `2026-11-12`
 
 1. Need coverage guarantees?
    Use `ConformalLoss (split / CQR / ACI patterns)`.

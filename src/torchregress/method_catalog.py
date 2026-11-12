@@ -191,6 +191,23 @@ _METHODS: tuple[MethodMetadata, ...] = (
         ),
     ),
     MethodMetadata(
+        name="batched_iteratively_reweighted_fit",
+        family="robust_algorithm",
+        public_path="torchregress.algorithms.batched_iteratively_reweighted_fit",
+        task_tags=("outliers", "robust_fitting", "irls", "many_small_fits", "known_noise"),
+        maturity="Available",
+        multi_target="no",
+        notes=(
+            "IRLS for many independent rows at once (one spectrum, light curve or source "
+            "per row) with known per-observation precision, masks and an optional "
+            "model-proportional error term. Student-t (exact NLL with constants) or any "
+            "robust_weights family; per-row convergence on the full step in standard "
+            "errors, early exit of finished rows, Levenberg-Marquardt acceptance hook, "
+            "penalty/prior term, fail-closed NaN rows. The caller owns the weighted "
+            "solve; solve_normal_equations covers linear and non-negative cases."
+        ),
+    ),
+    MethodMetadata(
         name="DensityWeightedLoss",
         family="imbalanced_loss",
         public_path="torchregress.losses.DensityWeightedLoss",
