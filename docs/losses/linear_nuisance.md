@@ -107,8 +107,12 @@ $m\,\varepsilon_{\text{mach}}$. An empty row with a proper prior is valid: its N
 ## Computation and scaling
 
 All rows are processed together: $U^\top\Lambda U$ and $U^\top\Lambda r$ are batched
-matrix products, $A$ is factorised by a batched Cholesky, and there is one host
-synchronisation for the fail-closed check. Nothing of size $N\times N$ is formed.
+matrix products, $A$ is factorised by a batched Cholesky, and a successful call makes
+one host synchronisation: all fail-closed checks (precision sign, basis finiteness,
+prior validity, posterior positive-definiteness) are combined on the device first, and
+only a failing call reads them one by one for its error message. (A masked basis
+passed as `[1, N, m]` or as an expanded view adds one synchronisation, to check that
+it is finite before taking the shared path.) Nothing of size $N\times N$ is formed.
 A shared basis `[N, m]` uses the packed products $U_jU_k$ ($N\,m(m+1)/2$ elements)
 instead of a `[B, N, m]` intermediate when $B > (m+1)/2$; a basis passed as
 `[1, N, m]` or as an expanded view of one `[N, m]` basis takes the same path (unless

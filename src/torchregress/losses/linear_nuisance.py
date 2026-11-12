@@ -32,6 +32,7 @@ References:
 from __future__ import annotations
 
 import math
+import numbers
 from typing import Any, NamedTuple, Optional
 
 import torch
@@ -258,9 +259,16 @@ def _marginalize(
     valid: Optional[Tensor] = None
     if mask is not None:
         valid = torch.broadcast_to(mask.to(device), full).reshape(rows, n)
+    # Input checks are collected as device flags and read with the posterior
+    # check in one host synchronisation; only a failing call pays for more.
+    checks: list[tuple[Tensor, str]] = []
     lam_chk = lam if valid is None else torch.where(valid, lam, torch.ones_like(lam))
-    if bool((lam_chk < 0).any()):
-        raise ValueError("precision must be >= 0 on unmasked samples (use mask to drop a sample)")
+    checks.append(
+        (
+            ~(lam_chk < 0).any(),
+            "precision must be >= 0 on unmasked samples (use mask to drop a sample)",
+        )
+    )
     if valid is not None:
         zero = torch.zeros((), dtype=dtype, device=device)
         r = torch.where(valid, r, zero)
@@ -273,8 +281,13 @@ def _marginalize(
 
     u = basis.to(device=device, dtype=dtype)
     lam_r = lam * r
-    if shared_basis and not bool(torch.isfinite(u).all()):
-        raise ValueError("a shared basis must be finite (pass a per-row basis to mask entries)")
+    if shared_basis:
+        checks.append(
+            (
+                torch.isfinite(u).all(),
+                "a shared basis must be finite (pass a per-row basis to mask entries)",
+            )
+        )
     if shared_basis and 2 * rows > m + 1:
         # G = U^T diag(lam) U for every row via the packed products U_j U_k:
         # N m (m + 1) / 2 shared elements instead of a [rows, N, m] intermediate
@@ -300,11 +313,11 @@ def _marginalize(
         # Only the lower triangle is read by the Cholesky: reject an asymmetric input.
         tiny = torch.finfo(dtype).tiny
         sym_tol = 16 * torch.finfo(dtype).eps * c.abs().amax(dim=(-2, -1), keepdim=True)
-        if not bool(((c - c.mT).abs() <= sym_tol.clamp_min(tiny)).all()):
-            raise ValueError("prior_covariance must be symmetric positive definite")
+        symmetric = ((c - c.mT).abs() <= sym_tol.clamp_min(tiny)).all()
         chol_s, info = torch.linalg.cholesky_ex(c)
-        if bool((info != 0).any()):
-            raise ValueError("prior_covariance must be symmetric positive definite")
+        checks.append(
+            (symmetric & (info == 0).all(), "prior_covariance must be symmetric positive definite")
+        )
         transform = chol_s
         gram = chol_s.mT @ gram @ chol_s
         b = (chol_s.mT @ b.unsqueeze(-1)).squeeze(-1)
@@ -312,11 +325,21 @@ def _marginalize(
         log_det_prior = torch.zeros((rows,), dtype=dtype, device=device)
         n_flat = torch.zeros((rows,), dtype=dtype, device=device)
     else:
-        raw = 0.0 if prior_precision is None else prior_precision
-        p_t = torch.as_tensor(raw, dtype=dtype, device=device)
-        if not bool(torch.all(torch.isfinite(p_t) & (p_t >= 0))):
-            raise ValueError("prior_precision must be finite and >= 0")
-        p = torch.broadcast_to(p_t, (*lead, m)).reshape(rows, m)
+        if prior_precision is None:
+            p = torch.zeros((rows, m), dtype=dtype, device=device)
+        elif not isinstance(prior_precision, numbers.Real):
+            p_t = torch.as_tensor(prior_precision).to(device=device, dtype=dtype)
+            checks.append(
+                (
+                    (torch.isfinite(p_t) & (p_t >= 0)).all(),
+                    "prior_precision must be finite and >= 0",
+                )
+            )
+            p = torch.broadcast_to(p_t, (*lead, m)).reshape(rows, m)
+        else:
+            if not (math.isfinite(prior_precision) and prior_precision >= 0):
+                raise ValueError("prior_precision must be finite and >= 0")
+            p = torch.full((rows, m), float(prior_precision), dtype=dtype, device=device)
         positive = p > 0
         log_det_prior = torch.where(
             positive, torch.log(torch.where(positive, p, torch.ones_like(p))), 0.0
@@ -339,7 +362,13 @@ def _marginalize(
         & torch.isfinite(pivots).all(-1)
         & (pivots.square() > tol).all(-1)
     )
-    if not bool(good.all()):
+    ok = good.all()
+    for flag, _ in checks:
+        ok = ok & flag
+    if not bool(ok):  # the one host synchronisation of a successful call
+        for flag, message in checks:
+            if not bool(flag):
+                raise ValueError(message)
         bad = int((~good).sum())
         raise ValueError(
             f"{bad} row(s) have a posterior precision U^T diag(precision) U + prior "

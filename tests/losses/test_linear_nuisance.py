@@ -396,10 +396,57 @@ class TestFailClosed:
                 y_pred, target, precision, basis, prior_covariance=cov.T if transpose else cov
             )
 
+    @pytest.mark.parametrize(
+        "kwargs,match",
+        [
+            ({"prior_precision": torch.tensor([1.0, -1.0, 0.0], dtype=F64)}, "prior_precision"),
+            ({"prior_precision": float("nan")}, "prior_precision"),
+            ({"prior_covariance": -torch.eye(3, dtype=F64)}, "prior_covariance"),
+            ({"basis_nan": True}, "shared basis must be finite"),
+        ],
+    )
+    def test_deferred_checks_keep_their_messages(self, kwargs, match) -> None:
+        y_pred, target, precision, basis = _problem()
+        if kwargs.pop("basis_nan", False):
+            basis = basis.clone()
+            basis[3, 1] = float("nan")
+        with pytest.raises(ValueError, match=match):
+            marginalize_linear_nuisance(y_pred, target, precision, basis, **kwargs)
+
     def test_shape_mismatch_raises(self) -> None:
         y_pred, target, precision, basis = _problem()
         with pytest.raises(ValueError):
             marginalize_linear_nuisance(y_pred, target, precision, basis[:-1])
+
+
+class TestHostSync:
+    @pytest.mark.parametrize(
+        "case", ["flat_shared", "float_prior", "tensor_prior", "covariance", "per_row_masked"]
+    )
+    def test_successful_call_synchronises_once(self, case: str, monkeypatch) -> None:
+        y_pred, target, precision, basis = _problem(rows=6, n=30, m=3)
+        kw: dict = {}
+        if case == "float_prior":
+            kw["prior_precision"] = 2.0
+        elif case == "tensor_prior":
+            kw["prior_precision"] = torch.tensor([0.0, 1.0, 2.0], dtype=F64)
+        elif case == "covariance":
+            kw["prior_covariance"] = _spd(3)
+        elif case == "per_row_masked":
+            basis = basis + 0.1 * torch.randn(6, 30, 3, dtype=F64)
+            kw["mask"] = torch.rand(6, 30, generator=torch.Generator().manual_seed(1)) > 0.2
+            kw["prior_precision"] = 1.0
+        syncs: list[str] = []
+        for name in ("__bool__", "__int__", "__float__", "item", "tolist"):
+            real = getattr(torch.Tensor, name)
+
+            def spy(self, *a, _real=real, _name=name, **k):
+                syncs.append(_name)
+                return _real(self, *a, **k)
+
+            monkeypatch.setattr(torch.Tensor, name, spy)
+        marginalize_linear_nuisance(y_pred, target, precision, basis, **kw)
+        assert syncs == ["__bool__"]
 
 
 class TestGradients:
