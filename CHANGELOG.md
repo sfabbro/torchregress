@@ -24,8 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `torchregress.algorithms.batched_iteratively_reweighted_fit(problem, initial_theta, target,
   precision, mask=None, config=None, *, initial_weights=None)`: IRLS for many independent
   rows (`[B, N]` observations with known precisions and masks; one spectrum or source per
-  row) with no per-row Python loop and one host sync per controller iteration (plus one per
-  damping attempt; the caller's solve is extra). Student-t weights by
+  row) with no per-row Python loop and one host sync per controller iteration (with a damped
+  solve, plus one for the decrease test and one per damping attempt; the caller's solve is
+  extra). Student-t weights by
   default (any `robust_weights` family), variance `1/precision + eta^2 m^2`, exact per-row
   NLL plus an optional penalty, per-row `IRLSRowStatus` (converged / max_iterations /
   stalled / failed / empty) with early exit of finished rows. Convergence is certified on

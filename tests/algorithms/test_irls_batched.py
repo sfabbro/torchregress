@@ -573,3 +573,40 @@ def test_default_config_is_student_t_nu5_and_callable_weights_need_no_params() -
     custom = _fit(design, target, precision, config=config)
     assert custom.converged.all()
     torch.testing.assert_close(custom.theta, by_name.theta, rtol=1e-12, atol=1e-14)
+
+
+def test_damped_controller_does_not_repredict_the_start_of_an_iteration() -> None:
+    design, target, precision, _ = _data(batch=5, seed=22)
+    linear = _linear_problem(design)
+    solves: list[dict[int, torch.Tensor]] = []
+    repredicted: list[int] = []  # iteration of every model evaluation at the solve's start
+
+    def solve(theta, weights, target_, rows):  # type: ignore[no-untyped-def]
+        ids = range(theta.shape[0]) if rows is None else rows.tolist()
+        solves.append({int(i): theta[k].clone() for k, i in enumerate(ids)})
+        return linear.solve(theta, weights, target_, rows)
+
+    def predict(theta, rows):  # type: ignore[no-untyped-def]
+        ids = range(theta.shape[0]) if rows is None else rows.tolist()
+        for k, i in enumerate(ids):
+            start = solves[-1].get(int(i)) if solves else None
+            if start is not None and torch.equal(theta[k], start):
+                repredicted.append(len(solves))
+        return linear.predict(theta, rows)
+
+    def damped(theta, weights, target_, rows, damping):  # type: ignore[no-untyped-def]
+        return linear.solve(theta, weights, target_, rows).theta
+
+    problem = replace(
+        linear, predict=predict, solve=solve, damped_solve=damped, exact_solve=False
+    )
+    config = BatchedIRLSConfig(weight_params={"nu": 4.0}, tol=1e-6)
+    result = batched_iteratively_reweighted_fit(
+        problem, torch.zeros(5, 3, dtype=DTYPE), target, precision, None, config
+    )
+    assert result.converged.all() and int(result.iterations.max()) > 2
+    # q(θ⁰) is evaluated once, at the first iteration (5 rows); afterwards the
+    # weight refresh of the previous iteration provides it.
+    assert repredicted == [1] * 5
+    reference = _fit(design, target, precision, config=config)
+    torch.testing.assert_close(result.theta, reference.theta, rtol=1e-10, atol=1e-12)

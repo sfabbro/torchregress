@@ -290,8 +290,9 @@ def batched_iteratively_reweighted_fit(
     reachable is below the float resolution of the objective (then it is
     converged, if ``min_iter`` allows). Finished rows leave the active set, so
     a batch costs ``Σ_b iterations_b`` row solves, and there is no per-row
-    Python loop: one host synchronisation per controller iteration (plus one
-    per damping attempt), excluding the caller's solve (the non-negative path of
+    Python loop: one host synchronisation per controller iteration (with a
+    ``damped_solve``, plus one for the decrease test and one per damping
+    attempt), excluding the caller's solve (the non-negative path of
     :func:`solve_normal_equations` adds about one per active-set step).
 
     **Fail closed.** Rows with non-finite target or precision on an observed
@@ -353,6 +354,11 @@ def batched_iteratively_reweighted_fit(
     iterations = torch.zeros(batch, dtype=torch.int64, device=device)
     ridge_used = torch.zeros(batch, dtype=torch.bool, device=device)
     damping = torch.full((batch,), cfg.damping_start, dtype=dtype, device=device)
+    # With a damped solve the decrease test needs q(θ⁰) at the current weights.
+    # The weight refresh evaluates the model at the same θ, so it stores q there
+    # for the next iteration instead of predicting it again.
+    cache_q = problem.damped_solve is not None and not one_solve and not fixed_weights
+    q_cur = torch.full((batch,), math.nan, dtype=dtype, device=device)
     tiny = torch.finfo(dtype).tiny
     eps = torch.finfo(dtype).eps
 
@@ -393,6 +399,7 @@ def batched_iteratively_reweighted_fit(
                 _take(n_obs, rows),
                 tiny,
                 eps,
+                _take(q_cur, rows) if cache_q and iteration > 1 else None,
             )
             _put(damping, rows, lam)
         if one_solve:
@@ -414,8 +421,14 @@ def batched_iteratively_reweighted_fit(
             model_a = problem.predict(new, rows)
             _check_model(model_a, y_a)
             residual = y_a - model_a
+            r2 = residual.square() if cache_q else None
             fresh = family.weights(residual, _take(prec, rows), model_a, _take(unused, rows))
             del residual, model_a
+            if r2 is not None:
+                # Bit-identical to _weighted_objective(new) at the fresh weights.
+                misfit = r2.mul_(fresh).masked_fill_(~(fresh > 0.0), 0.0)
+                _put(q_cur, rows, misfit.sum(-1) + 2.0 * _penalty(problem, new, rows))
+                del r2, misfit
             # One reduction instead of an isfinite pass: a non-finite weight makes the sum so.
             fresh_ok = torch.isfinite(fresh.sum(-1))
             row_status = torch.where(update & ~fresh_ok, int(IRLSRowStatus.FAILED), row_status).to(
@@ -555,9 +568,11 @@ def _accept_or_damp(
     n_obs: Tensor,
     tiny: float,
     eps: float,
+    q0: Tensor | None,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     """Accept the full step on decrease, else Levenberg--Marquardt damping.
 
+    ``q0`` is the weighted objective at ``th0`` when the caller already has it.
     Returns the new parameters, the stuck rows (no decrease at any damping),
     the convergence flags (full step below ``tol``, or stuck at round-off) and
     the updated damping.
@@ -567,8 +582,18 @@ def _accept_or_damp(
     # objective at round-off level, where the comparison means nothing.
     accepted = sub_tol.clone()
     pending = ok & ~sub_tol
-    q0 = _weighted_objective(problem, th0, w, y_a, rows)
-    q1 = _weighted_objective(problem, full, w, y_a, rows)
+    if q0 is None:
+        q0 = _weighted_objective(problem, th0, w, y_a, rows)
+    # q at the full step, on the rows whose step is still to be tested only
+    # (q1 is read on stuck rows, a subset of them).
+    local = pending.nonzero().squeeze(-1)
+    if local.numel() == th0.shape[0]:
+        q1 = _weighted_objective(problem, full, w, y_a, rows)
+    else:
+        q1 = q0.clone()
+        if local.numel() > 0:
+            sub_rows = local if rows is None else rows[local]
+            q1[local] = _weighted_objective(problem, full[local], w[local], y_a[local], sub_rows)
     good = pending & (q1 < q0)
     accepted |= good
     pending &= ~good
