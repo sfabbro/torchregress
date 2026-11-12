@@ -610,3 +610,68 @@ def test_damped_controller_does_not_repredict_the_start_of_an_iteration() -> Non
     assert repredicted == [1] * 5
     reference = _fit(design, target, precision, config=config)
     torch.testing.assert_close(result.theta, reference.theta, rtol=1e-10, atol=1e-12)
+
+
+def _live_row_buffers(pixels: int, exclude: set[int]) -> float:
+    """Rows of live float [*, pixels] tensor storages, deduplicated by storage."""
+    import gc
+
+    seen: dict[int, int] = {}
+    for obj in gc.get_objects():
+        if issubclass(type(obj), torch.Tensor) and obj.is_floating_point():
+            if obj.ndim == 2 and obj.shape[-1] == pixels:
+                storage = obj.untyped_storage()
+                if storage.data_ptr() not in exclude:
+                    seen[storage.data_ptr()] = storage.nbytes() // (pixels * obj.element_size())
+    return float(sum(seen.values()))
+
+
+@pytest.mark.parametrize("damped", [False, True])
+def test_controller_keeps_about_three_row_buffers(damped: bool) -> None:
+    import gc
+
+    gc.collect()
+    batch, pixels = 8, 160
+    design, target, precision, _ = _data(batch=batch, pixels=pixels, seed=23)
+    target[0] = (design[0] @ torch.ones(3, dtype=DTYPE)).clone()  # finishes early
+    linear = _linear_problem(design)
+    exclude = {t.untyped_storage().data_ptr() for t in (target, precision)}
+    peak = {"solve": 0.0, "compacted": 0.0, "any": 0.0}
+
+    def census(rows: torch.Tensor | None, at_solve: bool) -> None:
+        units = _live_row_buffers(pixels, exclude) / batch
+        peak["any"] = max(peak["any"], units)
+        if at_solve:
+            peak["solve"] = max(peak["solve"], units)
+            if rows is not None:
+                peak["compacted"] = max(peak["compacted"], units)
+
+    def solve(theta, weights, target_, rows):  # type: ignore[no-untyped-def]
+        census(rows, True)
+        return linear.solve(theta, weights, target_, rows)
+
+    def predict(theta, rows):  # type: ignore[no-untyped-def]
+        census(rows, False)
+        return linear.predict(theta, rows)
+
+    def damped_solve(theta, weights, target_, rows, damping):  # type: ignore[no-untyped-def]
+        return linear.solve(theta, weights, target_, rows).theta
+
+    problem = replace(
+        linear,
+        solve=solve,
+        predict=predict,
+        damped_solve=damped_solve if damped else None,
+        exact_solve=not damped,
+    )
+    result = batched_iteratively_reweighted_fit(
+        problem, torch.zeros(batch, 3, dtype=DTYPE), target, precision
+    )
+    assert result.converged.all()
+    assert peak["compacted"] > 0.0  # compacted iterations were observed
+    # At every solve the controller holds the working target, precision and
+    # weights of the running rows only: no full-size copies next to gathered ones.
+    assert peak["solve"] <= 3.0
+    # Elsewhere: two more transients at most (the decrease test's gathered rows,
+    # or the result's chunk next to its three outputs).
+    assert peak["any"] <= 5.0

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import IntEnum
 from types import MappingProxyType
 
@@ -79,7 +79,9 @@ class BatchedIRLSProblem:
     Every callback receives ``rows``: ``None`` when it is called on the whole
     batch in order, otherwise the ``int64`` global indices of the rows it gets
     (finished rows are dropped from later iterations). Tensors passed in hold
-    only those rows.
+    only those rows; ``weights`` and ``target`` are the controller's working
+    buffers, valid for the duration of the call only (they are compacted and
+    overwritten in place later): do not keep or modify them.
 
     Attributes:
         predict: ``predict(theta, rows) -> model`` ``[b, N]``.
@@ -229,22 +231,25 @@ class _Family:
     eta: float
     nu: float | None  # Student-t degrees of freedom, None for other families
 
-    def weights(self, residual: Tensor, precision: Tensor, model: Tensor, unused: Tensor) -> Tensor:
-        """``λ_eff ψ(u)/u``, zero where ``unused``. Overwrites ``residual`` (a temporary)."""
-        prec_eff = effective_precision(precision, model, self.eta)
+    def weights_at(
+        self, residual: Tensor, prec_eff: Tensor, unused: Tensor, out: Tensor | None = None
+    ) -> Tensor:
+        """``λ_eff ψ(u)/u`` given ``λ_eff``, zero where ``unused``.
+
+        Overwrites ``residual`` (a temporary) with ``z² = r² λ_eff``; written into
+        ``out`` when given (it must not alias ``residual`` or ``prec_eff``).
+        """
         z2 = residual.square_().mul_(prec_eff)
         if self.nu is None:
             weights = robust_weights(z2.sqrt_(), self.weight, self.params).mul_(prec_eff)
+            if out is not None:
+                weights = out.copy_(weights)
         elif math.isinf(self.nu):
-            weights = prec_eff.clone()
+            weights = prec_eff.clone() if out is None else out.copy_(prec_eff)
         else:
             # (λ_eff (ν+1)) / (ν + z²): the operation order of the reference implementation.
-            weights = torch.mul(prec_eff, self.nu + 1.0).div_(z2.add_(self.nu))
+            weights = torch.mul(prec_eff, self.nu + 1.0, out=out).div_(z2.add_(self.nu))
         return weights.masked_fill_(unused, 0.0)
-
-    def weights_at(self, residual: Tensor, prec_eff: Tensor, unused: Tensor) -> Tensor:
-        """:meth:`weights` given the effective precision itself."""
-        return replace(self, eta=0.0).weights(residual, prec_eff, prec_eff, unused)
 
     def objective(self, residual: Tensor, prec_eff: Tensor, use: Tensor) -> Tensor:
         if self.nu is not None:
@@ -327,16 +332,18 @@ def batched_iteratively_reweighted_fit(
     one_solve = fixed_weights and problem.exact_solve
 
     # --- data on the likelihood ------------------------------------------------
-    observed = torch.ones_like(target, dtype=torch.bool) if mask is None else mask
-    usable = torch.isfinite(target) & torch.isfinite(precision) & (precision >= 0.0)
-    use = observed & usable & (precision > 0.0)
-    y = torch.where(use, target, torch.zeros_like(target)).detach()
-    prec = torch.where(use, precision, torch.zeros_like(precision)).detach()
-    unused = ~use
+    # The controller keeps working copies of the rows still running only (target,
+    # precision, unused entries and weights): about 3.1 [b, N] buffers, plus up
+    # to 2 temporaries in the weight refresh. The result is re-derived from the
+    # caller's tensors in row chunks.
+    theta = initial_theta.detach().clone()
+    use, bad = _likelihood(target, precision, mask)
+    invalid = bad.any(-1) | ~torch.isfinite(theta).all(-1)
+    del bad
+    y_w = torch.where(use, target, 0.0).detach()
+    prec_w = torch.where(use, precision, 0.0).detach()
     n_obs = use.sum(-1)
     min_obs = n_par + 1 if cfg.min_observations is None else cfg.min_observations
-    theta = initial_theta.detach().clone()
-    invalid = (observed & ~usable).any(-1) | ~torch.isfinite(theta).all(-1)
     status = torch.full((batch,), _RUNNING, dtype=torch.int8, device=device)
     status = torch.where(n_obs == 0, int(IRLSRowStatus.EMPTY), status)
     status = torch.where(
@@ -344,11 +351,17 @@ def batched_iteratively_reweighted_fit(
     ).to(torch.int8)
     theta = torch.where(torch.isfinite(theta), theta, torch.zeros_like(theta))
 
-    weights = prec.clone()
-    if initial_weights is not None and not fixed_weights:
-        warm = torch.where(use, initial_weights.to(dtype).detach(), torch.zeros_like(prec))
-        valid = (torch.isfinite(warm) & (warm >= 0.0) & ((warm > 0.0) == (prec > 0.0))).all(-1)
-        weights = torch.where(valid[:, None], warm, prec)
+    if fixed_weights:
+        w_w = prec_w  # never refreshed
+    elif initial_weights is not None:
+        warm = torch.where(use, initial_weights.to(dtype).detach(), 0.0)
+        valid = (torch.isfinite(warm) & (warm >= 0.0) & ((warm > 0.0) == (prec_w > 0.0))).all(-1)
+        w_w = torch.where(valid[:, None], warm, prec_w)
+        del warm
+    else:
+        w_w = prec_w.clone()
+    unused_w = ~use
+    del use
 
     standard_errors = torch.full((batch, n_par), math.nan, dtype=dtype, device=device)
     iterations = torch.zeros(batch, dtype=torch.int64, device=device)
@@ -358,20 +371,32 @@ def batched_iteratively_reweighted_fit(
     # The weight refresh evaluates the model at the same θ, so it stores q there
     # for the next iteration instead of predicting it again.
     cache_q = problem.damped_solve is not None and not one_solve and not fixed_weights
-    q_cur = torch.full((batch,), math.nan, dtype=dtype, device=device)
+    q_w: Tensor | None = None
     tiny = torch.finfo(dtype).tiny
     eps = torch.finfo(dtype).eps
 
+    # ``act``: global indices of the working rows (``None``: every row, in order).
+    # It changes only when rows finish, so callbacks see the same object across
+    # iterations until then.
+    act: Tensor | None = None
     for iteration in range(1, cfg.max_iter + 1):
-        active = (status == _RUNNING).nonzero().squeeze(-1)  # the one host sync
-        n_active = active.numel()
-        if n_active == 0:
+        running = _take(status, act) == _RUNNING
+        keep = running.nonzero().squeeze(-1)  # the one host sync
+        if keep.numel() == 0:
             break
-        rows = None if n_active == batch else active
+        if keep.numel() != y_w.shape[0]:
+            # Rows finished: shrink the working buffers once (each old buffer is
+            # released as soon as its compacted copy exists).
+            act = keep if act is None else act[keep]
+            y_w = y_w.index_select(0, keep)
+            prec_w = prec_w.index_select(0, keep)
+            unused_w = unused_w.index_select(0, keep)
+            w_w = prec_w if fixed_weights else w_w.index_select(0, keep)
+            if q_w is not None:
+                q_w = q_w.index_select(0, keep)
+        rows = act
         th0 = _take(theta, rows)
-        w = _take(weights, rows)
-        y_a = _take(y, rows)
-        step = problem.solve(th0, w, y_a, rows)
+        step = problem.solve(th0, w_w, y_w, rows)
         full, se, ok = _checked_step(step, th0)
         if step.ridge_used is not None:
             _put(ridge_used, rows, _take(ridge_used, rows) | step.ridge_used)
@@ -389,8 +414,8 @@ def batched_iteratively_reweighted_fit(
                 cfg,
                 th0,
                 full,
-                w,
-                y_a,
+                w_w,
+                y_w,
                 rows,
                 ok,
                 sub_tol,
@@ -399,7 +424,7 @@ def batched_iteratively_reweighted_fit(
                 _take(n_obs, rows),
                 tiny,
                 eps,
-                _take(q_cur, rows) if cache_q and iteration > 1 else None,
+                q_w if cache_q and iteration > 1 else None,
             )
             _put(damping, rows, lam)
         if one_solve:
@@ -413,38 +438,34 @@ def batched_iteratively_reweighted_fit(
         row_status = torch.where(done, int(IRLSRowStatus.CONVERGED), row_status)
         row_status = torch.where(~ok, int(IRLSRowStatus.FAILED), row_status).to(torch.int8)
         update = ok & ~done & ~stuck
-        del w
         if not fixed_weights:
             # Rows that finish here never use their weights again (the result
-            # recomputes them at the final parameters), so every active row is
-            # overwritten: no select pass over [b, N].
-            model_a = problem.predict(new, rows)
-            _check_model(model_a, y_a)
-            residual = y_a - model_a
+            # recomputes them at the final parameters), so every working row is
+            # refreshed in place: no select pass over [b, N].
+            model = problem.predict(new, rows)
+            _check_model(model, y_w)
+            residual = y_w - model
+            prec_eff = effective_precision(prec_w, model, family.eta)
+            del model
             r2 = residual.square() if cache_q else None
-            fresh = family.weights(residual, _take(prec, rows), model_a, _take(unused, rows))
-            del residual, model_a
-            if r2 is not None:
-                # Bit-identical to _weighted_objective(new) at the fresh weights.
-                misfit = r2.mul_(fresh).masked_fill_(~(fresh > 0.0), 0.0)
-                _put(q_cur, rows, misfit.sum(-1) + 2.0 * _penalty(problem, new, rows))
-                del r2, misfit
+            family.weights_at(residual, prec_eff, unused_w, out=w_w)
+            del residual, prec_eff
             # One reduction instead of an isfinite pass: a non-finite weight makes the sum so.
-            fresh_ok = torch.isfinite(fresh.sum(-1))
+            fresh_ok = torch.isfinite(w_w.sum(-1))
             row_status = torch.where(update & ~fresh_ok, int(IRLSRowStatus.FAILED), row_status).to(
                 torch.int8
             )
-            if rows is None:
-                weights = fresh  # rebinding saves a copy pass over [B, N]
-            else:
-                weights[rows] = fresh
-            del fresh
-        del y_a
+            if r2 is not None:
+                # Bit-identical to _weighted_objective(new) at the fresh weights.
+                misfit = r2.mul_(w_w).masked_fill_(~(w_w > 0.0), 0.0)
+                q_w = misfit.sum(-1) + 2.0 * _penalty(problem, new, rows)
+                del r2, misfit
         _put(theta, rows, new)
         _put(standard_errors, rows, torch.where(ok[:, None], se, _take(standard_errors, rows)))
         _put(iterations, rows, torch.full_like(_take(iterations, rows), iteration))
         _put(status, rows, row_status)
 
+    del y_w, prec_w, unused_w, w_w, q_w
     status = torch.where(status == _RUNNING, int(IRLSRowStatus.MAX_ITERATIONS), status)
     return _result(
         problem,
@@ -453,13 +474,27 @@ def batched_iteratively_reweighted_fit(
         standard_errors,
         status.to(torch.int8),
         iterations,
-        y,
-        prec,
-        weights,
-        unused,
+        target,
+        precision,
+        mask,
         n_obs,
         ridge_used,
     )
+
+
+def _likelihood(target: Tensor, precision: Tensor, mask: Tensor | None) -> tuple[Tensor, Tensor]:
+    """Entries on the likelihood, and observed entries with invalid data.
+
+    On the likelihood: observed, finite target and precision, precision > 0.
+    Invalid: observed with a non-finite target or precision, or a negative one.
+    """
+    usable = torch.isfinite(target) & torch.isfinite(precision) & (precision >= 0.0)
+    bad = ~usable
+    use = usable.logical_and_(precision > 0.0)
+    if mask is not None:
+        bad.logical_and_(mask)
+        use.logical_and_(mask)
+    return use, bad
 
 
 def _family(cfg: BatchedIRLSConfig) -> _Family:
@@ -659,46 +694,47 @@ def _result(
     standard_errors: Tensor,
     status: Tensor,
     iterations: Tensor,
-    y: Tensor,
-    prec: Tensor,
-    weights: Tensor,
-    unused: Tensor,
+    target: Tensor,
+    precision: Tensor,
+    mask: Tensor | None,
     n_obs: Tensor,
     ridge_used: Tensor,
 ) -> BatchedIRLSResult:
-    """Evaluate every row at its final parameters, in row chunks.
-
-    ``prec`` and ``weights`` (the controller's private buffers) are overwritten
-    with the effective precisions and final weights.
-    """
+    """Evaluate every row at its final parameters, in row chunks of the inputs."""
     batch = theta.shape[0]
+    dtype, device = target.dtype, target.device
     fitted = (status != IRLSRowStatus.FAILED) & (status != IRLSRowStatus.EMPTY)
     theta_safe = torch.where(fitted[:, None], theta, torch.zeros_like(theta))
-    model = torch.empty_like(y)
-    objective = torch.empty(batch, dtype=y.dtype, device=y.device)
+    model = torch.empty(target.shape, dtype=dtype, device=device)
+    weights = torch.empty_like(model)
+    prec_out = torch.empty_like(model)
+    objective = torch.empty(batch, dtype=dtype, device=device)
     penalty = torch.empty_like(objective)
-    model_ok = torch.empty(batch, dtype=torch.bool, device=y.device)
+    model_ok = torch.empty(batch, dtype=torch.bool, device=device)
     for lo in range(0, batch, _RESULT_CHUNK):
         hi = min(lo + _RESULT_CHUNK, batch)
-        rows = None if (lo == 0 and hi == batch) else torch.arange(lo, hi, device=y.device)
+        rows = None if (lo == 0 and hi == batch) else torch.arange(lo, hi, device=device)
+        target_c, precision_c = target[lo:hi], precision[lo:hi]
+        use_c, _ = _likelihood(target_c, precision_c, None if mask is None else mask[lo:hi])
+        unused_c = ~use_c
+        y_c = torch.where(use_c, target_c, 0.0).detach()
+        prec_c = torch.where(use_c, precision_c, 0.0).detach()
         model_c = problem.predict(theta_safe[lo:hi], rows).detach()
-        _check_model(model_c, y[lo:hi])
+        _check_model(model_c, y_c)
         model[lo:hi] = model_c
         # Only the model on the likelihood is checked: values off it (masked or
         # zero-precision entries) are never used, so they may be non-finite.
-        model_ok[lo:hi] = torch.isfinite(model_c.masked_fill(unused[lo:hi], 0.0).sum(-1))
-        residual = y[lo:hi] - model_c
-        prec_c = prec[lo:hi]
+        model_ok[lo:hi] = torch.isfinite(model_c.masked_fill(unused_c, 0.0).sum(-1))
+        residual = y_c - model_c
         prec_eff = effective_precision(prec_c, model_c, family.eta)
-        if prec_eff is not prec_c:  # η > 0: overwrite the private precision buffer
-            prec_c.copy_(prec_eff.masked_fill_(unused[lo:hi], 0.0))
+        if prec_eff is not prec_c:  # η > 0
+            prec_eff.masked_fill_(unused_c, 0.0)
+        prec_out[lo:hi] = prec_eff
         pen = _penalty(problem, theta_safe[lo:hi], rows)
         penalty[lo:hi] = pen
-        objective[lo:hi] = family.objective(residual, prec_c, ~unused[lo:hi]) + pen
-        # ``weights`` re-derives λ_eff from the original precisions, which ``prec_c``
-        # no longer holds for η > 0: pass λ_eff with η = 0 instead.
-        weights[lo:hi] = family.weights_at(residual, prec_c, unused[lo:hi])
-        del model_c, residual, prec_eff, prec_c
+        objective[lo:hi] = family.objective(residual, prec_eff, use_c) + pen
+        family.weights_at(residual, prec_eff, unused_c, out=weights[lo:hi])
+        del model_c, residual, prec_eff, prec_c, y_c, use_c, unused_c
     finite = (
         torch.isfinite(objective)
         & model_ok
@@ -713,7 +749,7 @@ def _result(
         standard_errors=standard_errors.masked_fill_(drop[:, None], nan),
         model=model.masked_fill_(drop[:, None], nan),
         weights=weights.masked_fill_(drop[:, None], nan),
-        effective_precision=prec.masked_fill_(drop[:, None], nan),
+        effective_precision=prec_out.masked_fill_(drop[:, None], nan),
         objective=objective.masked_fill_(drop, nan),
         penalty=penalty.masked_fill_(drop, nan),
         status=status,
