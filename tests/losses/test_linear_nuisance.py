@@ -101,6 +101,60 @@ class TestDenseParity:
         for a, b in zip(shared, expanded):
             torch.testing.assert_close(a, b, atol=1e-12, rtol=0)
 
+    @pytest.mark.parametrize("layout", ["singleton", "expanded"])
+    def test_effectively_shared_basis_takes_the_shared_path(self, layout: str, monkeypatch) -> None:
+        import torchregress.losses.linear_nuisance as ln
+
+        rows = 6
+        y_pred, target, precision, basis = _problem(rows=rows, m=3)
+        mask = torch.rand(rows, 25, generator=torch.Generator().manual_seed(4)) > 0.2
+        kw = {"prior_precision": torch.tensor([0.0, 1.0, 2.0], dtype=F64), "mask": mask}
+
+        def run(b: torch.Tensor):
+            leaf = b.clone().requires_grad_(True)
+            used = leaf if layout == "singleton" or leaf.dim() == 2 else leaf.expand(rows, -1, -1)
+            pred = y_pred.clone().requires_grad_(True)
+            res = marginalize_linear_nuisance(pred, target, precision, used, **kw)
+            (res.nll.sum() + res.residual[mask].square().sum()).backward()
+            return res, pred.grad, leaf.grad
+
+        ref, ref_gp, ref_gu = run(basis)
+        packed: list[int] = []
+        real = ln._sym_index
+        monkeypatch.setattr(ln, "_sym_index", lambda *a: packed.append(1) or real(*a))
+        res, gp, gu = run(basis.unsqueeze(0))
+        assert packed, "an effectively shared basis must use the packed shared-basis Gram"
+        for got, want in zip(res, ref):
+            torch.testing.assert_close(got, want, atol=1e-12, rtol=0)
+        torch.testing.assert_close(gp, ref_gp, atol=1e-12, rtol=0)
+        torch.testing.assert_close(gu.reshape(ref_gu.shape), ref_gu, atol=1e-12, rtol=0)
+
+    def test_singleton_basis_dims_still_broadcast_the_output(self) -> None:
+        y_pred, target, precision, basis = _problem(rows=1)
+        res = marginalize_linear_nuisance(
+            y_pred[0], target[0], precision[0], basis.unsqueeze(0), prior_precision=1.0
+        )
+        assert res.nll.shape == (1,) and res.coefficients.shape == (1, 3)
+        assert res.nuisance.shape == (1, 25)
+        ref = marginalize_linear_nuisance(
+            y_pred[0], target[0], precision[0], basis, prior_precision=1.0
+        )
+        torch.testing.assert_close(res.nll[0], ref.nll)
+
+    def test_masked_non_finite_singleton_basis_stays_per_row(self) -> None:
+        y_pred, target, precision, basis = _problem(rows=4)
+        mask = torch.ones_like(target, dtype=torch.bool)
+        mask[:, 6] = False
+        bad = basis.clone()
+        bad[6] = float("nan")  # masked in every row: valid input for a per-row basis
+        res = marginalize_linear_nuisance(
+            y_pred, target, precision, bad.unsqueeze(0), prior_precision=1.0, mask=mask
+        )
+        ref = marginalize_linear_nuisance(
+            y_pred, target, precision, basis, prior_precision=1.0, mask=mask
+        )
+        torch.testing.assert_close(res.nll, ref.nll)
+
 
 class TestMasking:
     @pytest.mark.parametrize("shared", [True, False])

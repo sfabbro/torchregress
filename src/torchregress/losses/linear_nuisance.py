@@ -134,7 +134,8 @@ def marginalize_linear_nuisance(
             ``[..., N]``; must be > 0 on unmasked samples (0 gives ``+inf``,
             negative raises: use ``mask`` to drop a sample).
         basis: Nuisance basis ``[N, m]`` shared by all rows (must be finite),
-            or per row ``[..., N, m]``.
+            or per row ``[..., N, m]``. A per-row basis that is the same for
+            every row (``[1, N, m]`` or an expanded view) is treated as shared.
         prior_precision: Diagonal prior precision of the coefficients: a
             float, ``[m]`` or ``[..., m]``, entries ``>= 0``; 0 means a flat
             prior in that direction. Default (with ``prior_covariance`` also
@@ -225,6 +226,18 @@ def _marginalize(
     lead = (
         obs_shape[:-1] if shared_basis else torch.broadcast_shapes(obs_shape[:-1], basis.shape[:-2])
     )
+    if not shared_basis and all(
+        size == 1 or stride == 0
+        for size, stride in zip(basis.shape[:-2], basis.stride()[:-2], strict=True)
+    ):
+        # [1, N, m] or an expanded view of one [N, m] basis: take the shared path
+        # (no [rows, N, m] copy; `lead` above keeps the singleton output dims).
+        # A masked basis with non-finite entries stays per row, where masked
+        # entries are ignored; the shared path requires a finite basis.
+        single = basis[(0,) * (basis.dim() - 2)]
+        if mask is None or bool(torch.isfinite(single).all()):
+            basis = single
+            shared_basis = True
     prior_lead: tuple[int, ...] = ()
     if isinstance(prior_precision, Tensor) and prior_precision.dim() > 1:
         prior_lead = tuple(prior_precision.shape[:-1])

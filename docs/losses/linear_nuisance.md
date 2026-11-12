@@ -110,7 +110,9 @@ All rows are processed together: $U^\top\Lambda U$ and $U^\top\Lambda r$ are bat
 matrix products, $A$ is factorised by a batched Cholesky, and there is one host
 synchronisation for the fail-closed check. Nothing of size $N\times N$ is formed.
 A shared basis `[N, m]` uses the packed products $U_jU_k$ ($N\,m(m+1)/2$ elements)
-instead of a `[B, N, m]` intermediate when $B > (m+1)/2$. Cost is
+instead of a `[B, N, m]` intermediate when $B > (m+1)/2$; a basis passed as
+`[1, N, m]` or as an expanded view of one `[N, m]` basis takes the same path (unless
+it is masked and non-finite somewhere, which only the per-row path accepts). Cost is
 $O(B N m^2 + B m^3)$.
 
 Forward + backward w.r.t. `y_pred`, float64, CPU with 2 threads on a shared 4-CPU
