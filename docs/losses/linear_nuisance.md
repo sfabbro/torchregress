@@ -141,6 +141,7 @@ supports neither masks nor flat priors):
 | `GaussianNLLLoss` | diagonal | per element | — | — | independent errors |
 | `LowRankGaussianLoss` | $WW^\top + \operatorname{diag}(d)$, learned | whole rows | no | no | learned correlated outputs |
 | `MultivariateGaussianLoss` | full $D\times D$ | whole rows | no | no | small $D$ |
+| [`MarginalizedMultiSourceGaussianNLLLoss`](multisource.md) | $R + H L L^\top H^\top$, dense $R$ `[B, K, K]`, Jacobian $H$ `[B, K, D]` | per sample | no | no | cross-correlated multi-source measurements |
 | **`MarginalizedNuisanceGaussianNLLLoss`** | $\Lambda^{-1} + U P^{-1} U^\top$, known noise | per sample, exact | yes (restricted likelihood) | yes (`marginalize_linear_nuisance`) | continuum, baseline and calibration marginalisation |
 | [`StructuralSimilarity1dLoss`](structural_similarity.md) | none (not a likelihood) | per sample | — | — | shape similarity, regularisation |
 
@@ -152,6 +153,15 @@ model and a nuisance basis rather than learned covariance factors, and because i
 needs per-sample masks, flat priors, the nuisance posterior and a shared basis that
 is not copied per row. `LowRankGaussianLoss` also clamps and jitters its diagonal,
 which would bias an exact likelihood with known errors.
+
+`MarginalizedMultiSourceGaussianNLLLoss` computes the same marginal NLL when its
+measurement covariance is diagonal and known (`mapped_mean=y_pred`, `jacobian=U`,
+`measurement_covariance=diag(1/precision)`, `scale_tril=chol(S)`, zero latent mean;
+tested to float64 round-off). It is built for dense cross-correlated measurement
+covariances, so it materialises a `[B, N, N]` covariance and a per-row Jacobian
+(about 819 GB in float64 at $B = 1024$, $N = 10\,000$), and it has no flat priors and
+no nuisance posterior. This loss keeps the noise diagonal, never copies a shared
+basis per row, and costs $O(BNm^2)$.
 
 ---
 

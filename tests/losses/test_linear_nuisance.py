@@ -10,7 +10,9 @@ from torch.distributions import LowRankMultivariateNormal, MultivariateNormal
 
 from torchregress.losses import (
     LinearNuisanceMarginal,
+    MarginalizedMultiSourceGaussianNLLLoss,
     MarginalizedNuisanceGaussianNLLLoss,
+    PackedObservations,
     marginalize_linear_nuisance,
 )
 
@@ -90,6 +92,26 @@ class TestDenseParity:
             cond = basis @ prior_cov @ basis.T @ torch.linalg.solve(cov, target[i] - y_pred[i])
             torch.testing.assert_close(res.nuisance[i], cond, atol=1e-11, rtol=0)
         torch.testing.assert_close(res.residual, target - y_pred - res.nuisance)
+
+    @pytest.mark.parametrize("method", ["direct", "information"])
+    def test_matches_marginalized_multisource_with_diagonal_noise(self, method: str) -> None:
+        y_pred, target, precision, basis = _problem(rows=4, n=25)
+        mask = torch.rand(4, 25, generator=torch.Generator().manual_seed(6)) > 0.3
+        prior_cov = _spd(3, seed=2)
+        res = marginalize_linear_nuisance(
+            y_pred, target, precision, basis, prior_covariance=prior_cov, mask=mask
+        )
+        obs = PackedObservations(
+            values=target,
+            mapped_mean=y_pred,
+            jacobian=basis.expand(4, -1, -1),
+            measurement_covariance=torch.diag_embed(1.0 / precision),
+            mask=mask,
+        )
+        ref = MarginalizedMultiSourceGaussianNLLLoss(reduction="none", method=method)(
+            torch.zeros(4, 3, dtype=F64), torch.linalg.cholesky(prior_cov).expand(4, 3, 3), obs
+        )
+        torch.testing.assert_close(res.nll, ref, atol=1e-12, rtol=0)
 
     @pytest.mark.parametrize("rows", [1, 2, 5])  # rows <= (m + 1) / 2 takes the per-row path
     def test_shared_and_expanded_basis_agree(self, rows: int) -> None:

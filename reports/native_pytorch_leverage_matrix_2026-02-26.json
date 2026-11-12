@@ -223,13 +223,15 @@
         "torch.linalg.cholesky_ex"
       ],
       "decision": "Hybrid",
-      "rationale": "LowRankMultivariateNormal has the same covariance structure but needs the factor materialised per row, has no per-sample masks, no flat (improper) priors and no nuisance posterior; the custom path uses native batched matmul, cholesky_ex and cholesky_solve on m x m systems.",
+      "rationale": "LowRankMultivariateNormal has the same covariance structure but needs the factor materialised per row, has no per-sample masks, no flat (improper) priors and no nuisance posterior; MarginalizedMultiSourceGaussianNLLLoss gives the same NLL for diagonal known noise but materialises a dense [B, N, N] measurement covariance and a per-row Jacobian (about 819 GB at B=1024, N=10k in float64), has no flat priors and no posterior, and copies a shared basis per row; the custom path uses native batched matmul, cholesky_ex and cholesky_solve on m x m systems.",
       "action": "Keep the Woodbury implementation and lock equality with MultivariateNormal and LowRankMultivariateNormal for proper priors.",
       "coverage_evidence": {
         "parity_tests": [
           "tests/losses/test_linear_nuisance.py::TestDenseParity::test_full_prior_covariance_matches_multivariate_normal",
           "tests/losses/test_linear_nuisance.py::TestDenseParity::test_per_row_basis_and_prior_match_low_rank_normal",
-          "tests/losses/test_linear_nuisance.py::TestFlatPrior::test_flat_limit_equals_profile_plus_log_det"
+          "tests/losses/test_linear_nuisance.py::TestFlatPrior::test_flat_limit_equals_profile_plus_log_det",
+          "tests/losses/test_linear_nuisance.py::TestFlatPrior::test_flat_prior_equals_reml_on_error_contrasts",
+          "tests/losses/test_linear_nuisance.py::TestDenseParity::test_matches_marginalized_multisource_with_diagonal_noise"
         ],
         "known_divergences": [
           "flat prior directions return the improper p(a)=1 marginal, i.e. the restricted likelihood (REML) with its constants (tested against error contrasts); torch.distributions has no improper priors",
