@@ -99,75 +99,55 @@ class TestMixtureDensityLoss:
                 assert (torch.diagonal(L) > 0).all()
 
     def test_log_prob_diagonal(self):
-        """Test log probability calculation with diagonal covariance."""
+        """Component log densities for diagonal covariance (via the shared mixture)."""
         n_components, n_features = 2, 3
         loss_fn = MixtureDensityLoss(n_components, n_features)
 
         batch_size = 5
+        y_pred = torch.randn(batch_size, loss_fn.expected_output_size)
         target = torch.randn(batch_size, n_features)
-        means = torch.randn(batch_size, n_components, n_features)
-        stds = torch.rand(batch_size, n_components, n_features) + 0.1  # ensure positive
+        log_weights, means, stds = loss_fn._extract_distribution_parameters(y_pred)
 
-        log_probs = loss_fn._log_prob_diagonal(target, means, stds)
-
-        # Check shape
+        log_probs = loss_fn.distribution(y_pred).component_log_prob(target)
         assert log_probs.shape == (batch_size, n_components)
 
-        # Verify calculation for one example
-        b, c = 0, 0  # batch and component indices for verification
-        y = target[b]
-        mu = means[b, c]
-        sigma = stds[b, c]
-
-        # Manual calculation
-        norm_dist = (y - mu) / sigma
-        exponent = -0.5 * torch.sum(norm_dist**2)
-        log_det = -torch.sum(torch.log(sigma + loss_fn.eps))
-        const = -0.5 * n_features * loss_fn.log_2pi
-        expected_log_prob = exponent + log_det + const
-
+        b, c = 0, 0
+        norm_dist = (target[b] - means[b, c]) / stds[b, c]
+        expected_log_prob = (
+            -0.5 * torch.sum(norm_dist**2)
+            - torch.sum(torch.log(stds[b, c]))
+            - 0.5 * n_features * loss_fn.log_2pi
+        )
         assert torch.isclose(log_probs[b, c], expected_log_prob)
+        expected_nll = -torch.logsumexp(
+            log_weights
+            + torch.distributions.Normal(means, stds).log_prob(target.unsqueeze(-2)).sum(-1),
+            dim=-1,
+        )
+        torch.testing.assert_close(
+            loss_fn._calculate_nll(target, (log_weights, means, stds)), expected_nll
+        )
 
     def test_log_prob_full(self):
-        """Test log probability calculation with full covariance."""
-        n_components, n_features = 2, 2  # Using n_features=2 for simplicity
+        """Component log densities for a covariance-Cholesky full head."""
+        n_components, n_features = 2, 2
         # Covariance-Cholesky formula (precision form: tests/audit/test_audit_c2.py).
         loss_fn = MixtureDensityLoss(
             n_components, n_features, covariance_type="full", full_parameterization="covariance"
         )
 
         batch_size = 3
+        y_pred = torch.randn(batch_size, loss_fn.expected_output_size)
         target = torch.randn(batch_size, n_features)
-        means = torch.randn(batch_size, n_components, n_features)
+        _, means, L_matrices = loss_fn._extract_distribution_parameters(y_pred)
 
-        # Create valid lower triangular matrices
-        L_matrices = torch.zeros(batch_size, n_components, n_features, n_features)
-        for b in range(batch_size):
-            for c in range(n_components):
-                L = torch.tril(torch.randn(n_features, n_features))
-                L.diagonal().copy_(torch.exp(torch.randn(n_features)))  # Positive diagonal
-                L_matrices[b, c] = L
-
-        log_probs = loss_fn._log_prob_full(target, means, L_matrices)
-
-        # Check shape
+        log_probs = loss_fn.distribution(y_pred).component_log_prob(target)
         assert log_probs.shape == (batch_size, n_components)
 
-        # Verify calculation for one example
-        b, c = 0, 0  # batch and component indices for verification
-        y = target[b]
-        mu = means[b, c]
-        L = L_matrices[b, c]
-
-        # Manual calculation
-        residual = y - mu
-        z = torch.triangular_solve(residual.unsqueeze(1), L, upper=False)[0].squeeze(1)
-        quad_term = torch.sum(z**2)
-        log_det = 2 * torch.sum(torch.log(torch.diagonal(L) + loss_fn.eps))
-        const_term = n_features * loss_fn.log_2pi
-        expected_log_prob = -0.5 * (quad_term + log_det + const_term)
-
-        assert torch.isclose(log_probs[b, c], expected_log_prob, rtol=1e-4)
+        expected = torch.distributions.MultivariateNormal(means, scale_tril=L_matrices).log_prob(
+            target.unsqueeze(-2)
+        )
+        torch.testing.assert_close(log_probs, expected, rtol=1e-5, atol=1e-5)
 
     def test_forward_diagonal(self):
         """Test forward pass with diagonal covariance."""
@@ -458,3 +438,84 @@ class TestMDNMixtureAggregationNumerics:
         expected = -torch.log((weights * comp).sum(-1)).mean()
 
         assert torch.allclose(loss, expected, rtol=1e-5, atol=1e-6)
+
+
+class TestStudentTComponents:
+    """``df`` option: Student-t components through ``StudentTMixture`` (df=inf is Gaussian)."""
+
+    @pytest.mark.parametrize(
+        "cov_type,param",
+        [("diagonal", "precision"), ("full", "precision"), ("full", "covariance")],
+    )
+    @pytest.mark.parametrize("df", [1.5, 6.0])
+    def test_matches_scipy_multivariate_t(self, cov_type, param, df):
+        from scipy import stats
+
+        torch.manual_seed(3)
+        loss_fn = MixtureDensityLoss(
+            3, 2, covariance_type=cov_type, full_parameterization=param, df=df, reduction="none"
+        )
+        y_pred = torch.randn(5, loss_fn.expected_output_size, dtype=torch.float64)
+        target = torch.randn(5, 2, dtype=torch.float64)
+        logw, means, factor = loss_fn._extract_distribution_parameters(y_pred)
+        if cov_type == "diagonal":
+            cov = torch.diag_embed(factor.square())
+        elif param == "precision":
+            cov = torch.linalg.inv(factor @ factor.mT)
+        else:
+            cov = factor @ factor.mT
+        expected = []
+        for b in range(5):
+            dens = [
+                stats.multivariate_t(means[b, k].numpy(), cov[b, k].numpy(), df=df).logpdf(
+                    target[b].numpy()
+                )
+                for k in range(3)
+            ]
+            expected.append(-torch.logsumexp(logw[b] + torch.tensor(dens), dim=0))
+        torch.testing.assert_close(
+            loss_fn(y_pred, target), torch.stack(expected), rtol=1e-10, atol=1e-10
+        )
+
+    def test_large_df_approaches_gaussian_head(self):
+        torch.manual_seed(4)
+        gauss = MixtureDensityLoss(2, 3, covariance_type="full")
+        y_pred = torch.randn(8, gauss.expected_output_size, dtype=torch.float64)
+        target = torch.randn(8, 3, dtype=torch.float64)
+        t_loss = MixtureDensityLoss(2, 3, covariance_type="full", df=1e9)
+        torch.testing.assert_close(
+            t_loss(y_pred, target), gauss(y_pred, target), rtol=1e-7, atol=1e-7
+        )
+        assert gauss.gaussian_components and not t_loss.gaussian_components
+
+    def test_learned_df_receives_gradient(self):
+        torch.manual_seed(5)
+        loss_fn = MixtureDensityLoss(2, 2, df=4.0, learn_df=True)
+        assert float(loss_fn.df) == pytest.approx(4.0)
+        y_pred = torch.randn(16, loss_fn.expected_output_size, requires_grad=True)
+        target = torch.randn(16, 2) * 3
+        loss_fn(y_pred, target).backward()
+        assert loss_fn.raw_df.grad is not None and torch.isfinite(loss_fn.raw_df.grad)
+        assert torch.isfinite(y_pred.grad).all()
+        assert any(p is loss_fn.raw_df for p in loss_fn.parameters())
+
+    def test_invalid_df(self):
+        with pytest.raises(ValueError, match="df"):
+            MixtureDensityLoss(2, 2, df=0.0)
+        with pytest.raises(ValueError, match="finite"):
+            MixtureDensityLoss(2, 2, learn_df=True)
+
+    def test_sampling_moments_and_distribution(self):
+        torch.manual_seed(6)
+        loss_fn = MixtureDensityLoss(2, 2, covariance_type="full", df=5.0)
+        y_pred = torch.randn(3, loss_fn.expected_output_size, dtype=torch.float64)
+        samples = loss_fn.sample(y_pred, n_samples=200_000)
+        assert samples.shape == (200_000, 3, 2)
+        mean, std = loss_fn.predict_mean_std(y_pred)
+        torch.testing.assert_close(samples.mean(0), mean, rtol=0, atol=0.03)
+        torch.testing.assert_close(samples.std(0), std, rtol=0.05, atol=0.0)
+        mixture = loss_fn.distribution(y_pred)
+        lower, upper = loss_fn.predict_interval(y_pred, confidence=0.9, n_samples=200_000)
+        exact = mixture.marginal_quantile([0.05, 0.95])
+        torch.testing.assert_close(lower, exact[..., 0], rtol=0.02, atol=0.02)
+        torch.testing.assert_close(upper, exact[..., 1], rtol=0.02, atol=0.02)

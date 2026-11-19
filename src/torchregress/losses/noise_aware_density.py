@@ -89,7 +89,9 @@ def _scalar_log_density_from_loss(
     if hasattr(base_loss, "_extract_distribution_parameters") and hasattr(
         base_loss, "covariance_type"
     ):
-        if str(base_loss.covariance_type).lower() == "diagonal":
+        if str(base_loss.covariance_type).lower() == "diagonal" and getattr(
+            base_loss, "gaussian_components", True
+        ):
             return _mdn_diagonal_log_prob(base_loss, y_pred, target)
 
     # Generic NLL callable: temporarily force reduction='none'.
@@ -213,8 +215,12 @@ class NoiseAwareDensityLoss(BaseLoss):
     def _clean_log_prob(self, y_pred: Tensor, target: Tensor, sigma: Tensor) -> Tensor:
         n_features = target.shape[-1]
         flow_log_prob = hasattr(self.base_loss, "log_prob")
-        mdn_diag = hasattr(self.base_loss, "covariance_type") and (
-            str(self.base_loss.covariance_type).lower() == "diagonal"
+        # The analytic convolution is Gaussian-only: Student-t MDN components
+        # fall through to quadrature / Monte Carlo.
+        mdn_diag = (
+            hasattr(self.base_loss, "covariance_type")
+            and str(self.base_loss.covariance_type).lower() == "diagonal"
+            and getattr(self.base_loss, "gaussian_components", True)
         )
 
         if self.mode in {"auto", "quadrature"} and flow_log_prob and n_features == 1:

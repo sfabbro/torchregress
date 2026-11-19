@@ -2,7 +2,9 @@
 Mixture Density Network (MDN) loss functions.
 
 This module provides loss functions for Mixture Density Networks,
-which model outputs as mixtures of Gaussian distributions.
+which model outputs as mixtures of Gaussian or multivariate Student-t
+distributions (both evaluated by :class:`~torchregress.losses.StudentTMixture`;
+the Gaussian is its ``df = inf`` case).
 
 Reference: Bishop, C. M. (1994). Mixture Density Networks. Neural Computing
 Research Group Report NCRG/94/004, Aston University.
@@ -13,9 +15,11 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
+from torch import nn
 
 from .base import DistributionLoss
 from .loss_registry import register_regression_loss
+from .student_t_mixture import StudentTMixture
 
 TensorTriplet = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
 
@@ -25,8 +29,8 @@ class MixtureDensityLoss(DistributionLoss):
     """
     Negative Log-Likelihood loss for Mixture Density Networks.
 
-    Models the output as a mixture of Gaussian distributions with either
-    diagonal or full covariance matrices.
+    Models the output as a mixture of Gaussian (default) or multivariate
+    Student-t distributions with either diagonal or full scale matrices.
 
     Args:
         n_components (int): Number of mixture components
@@ -41,8 +45,14 @@ class MixtureDensityLoss(DistributionLoss):
             16-target scm20d benchmark the covariance form did not even fit the
             training data (train NLL 0.42 vs -3.45, test 3.32 vs 0.31).  The
             output layout is the same for both.
-        min_std (float): Minimum standard deviation for numerical stability
-        eps (float): Small constant for numerical stability in calculations
+        min_std (float): Floor added to every diagonal scale (softplus + min_std)
+        eps (float): Floor on the mixture variance in ``predict_mean_std``
+        df (float): Degrees of freedom of the components. ``math.inf`` (default) is
+            the Gaussian MDN; a finite ``df > 0`` gives multivariate Student-t
+            components ``t_df(mu_k, Sigma_k)`` (``Sigma_k`` the scale matrix built
+            from the same output layout), which tolerate outliers and heavy tails.
+        learn_df (bool): Learn one shared ``df = softplus(raw)`` starting at ``df``
+            (finite) as a parameter of this module.
         reduction (str): Specifies the reduction to apply: 'none' | 'mean' | 'sum'
             Default: 'mean'
 
@@ -52,8 +62,8 @@ class MixtureDensityLoss(DistributionLoss):
 
         NLL = -log(∑(w_k * p_k(y|μ_k, Σ_k)))
 
-        where w_k are mixture weights, and p_k is the probability density
-        function of the k-th Gaussian component with mean μ_k and covariance Σ_k.
+        where w_k are mixture weights, and p_k is the density of the k-th
+        component: N(μ_k, Σ_k) for ``df = inf``, otherwise t_df(μ_k, Σ_k).
 
     Notes:
         - The model output is expected to contain all distribution parameters
@@ -80,8 +90,21 @@ class MixtureDensityLoss(DistributionLoss):
         eps: float = 1e-8,
         reduction: str = "mean",
         full_parameterization: str = "precision",
+        df: float = math.inf,
+        learn_df: bool = False,
     ):
         super().__init__(reduction=reduction)
+        df = float(df)
+        if math.isnan(df) or df <= 0:
+            raise ValueError(f"df must be > 0 (math.inf for Gaussian components), got {df}")
+        if learn_df and math.isinf(df):
+            raise ValueError("learn_df=True needs a finite initial df")
+        self.learn_df = bool(learn_df)
+        self._df = df
+        if self.learn_df:
+            # softplus^{-1}(df) without overflow for large df.
+            raw = df + math.log(-math.expm1(-df))
+            self.raw_df = nn.Parameter(torch.tensor(raw))
         self.n_components = n_components
         self.n_features = n_features
         self.covariance_type = covariance_type.lower()
@@ -225,133 +248,36 @@ class MixtureDensityLoss(DistributionLoss):
 
             return log_weights, means, L_matrices
 
-    def _log_prob_diagonal(
-        self,
-        target: torch.Tensor,
-        means: torch.Tensor,
-        stds: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Calculate log probability for diagonal covariance components.
+    @property
+    def df(self) -> float | torch.Tensor:
+        """Component degrees of freedom (``math.inf``: Gaussian; a tensor when learned)."""
+        if self.learn_df:
+            return F.softplus(self.raw_df)
+        return self._df
 
-        Args:
-            target (torch.Tensor): Ground truth values [..., n_features]
-            means (torch.Tensor): Component means [..., n_components, n_features]
-            stds (torch.Tensor): Component standard deviations [..., n_components, n_features]
+    @property
+    def gaussian_components(self) -> bool:
+        """Whether the components are Gaussian (``df = inf``, not learned)."""
+        return not self.learn_df and math.isinf(self._df)
 
-        Returns:
-            torch.Tensor: Log probabilities [..., n_components]
-        """
-        # Expand target for broadcasting with components
-        target_expanded = target.unsqueeze(-2)  # [..., 1, n_features]
-
-        # Calculate normalized distances: (y - μ)/σ
-        normalized_dist = (target_expanded - means) / (stds + self.eps)
-
-        # Calculate log probability: -0.5 * (Σ(z²) + Σ(log(σ²)) + n*log(2π))
-        # Separated for numerical stability
-        exponent_term = -0.5 * torch.sum(normalized_dist**2, dim=-1)
-        log_det_term = -torch.sum(torch.log(stds + self.eps), dim=-1)
-        const_term = -0.5 * self.n_features * self.log_2pi
-
-        log_probs = exponent_term + log_det_term + const_term
-
-        return log_probs
-
-    def _log_prob_full(
-        self,
-        target: torch.Tensor,
-        means: torch.Tensor,
-        L_matrices: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Calculate log probability for full covariance components using Cholesky factors.
-
-        Args:
-            target (torch.Tensor): Ground truth values [..., n_features]
-            means (torch.Tensor): Component means [..., n_components, n_features]
-            L_matrices (torch.Tensor): Lower triangular Cholesky factors
-                                      [..., n_components, n_features, n_features]
-
-        Returns:
-            torch.Tensor: Log probabilities [..., n_components]
-        """
+    def _mixture(self, params: TensorTriplet) -> StudentTMixture:
+        log_weights, means, factor = params
+        df = self.df
+        if isinstance(df, torch.Tensor):
+            df = df.to(device=means.device, dtype=means.dtype)
+        if self.covariance_type == "diagonal":
+            return StudentTMixture(log_weights, means, scale_diag=factor, df=df)
         if self.full_parameterization == "precision":
-            # T is the Cholesky factor of the precision: log N = -0.5 ||T^T r||^2
-            # + sum(log T_ii) - D/2 log(2 pi); linear in T, no solve needed.
-            residuals = target.unsqueeze(-2) - means
-            z = torch.matmul(L_matrices.transpose(-1, -2), residuals.unsqueeze(-1)).squeeze(-1)
-            log_det_t = torch.log(torch.diagonal(L_matrices, dim1=-2, dim2=-1) + self.eps).sum(-1)
-            return -0.5 * (torch.sum(z**2, dim=-1) + self.n_features * self.log_2pi) + log_det_t
+            return StudentTMixture(log_weights, means, precision_tril=factor, df=df)
+        return StudentTMixture(log_weights, means, scale_tril=factor, df=df)
 
-        # Expand target for broadcasting with components
-        target_expanded = target.unsqueeze(-2)  # [..., 1, n_features]
+    def distribution(self, y_pred: torch.Tensor) -> StudentTMixture:
+        """The predicted mixture as a :class:`~torchregress.losses.StudentTMixture`.
 
-        # Calculate residuals: (y - μ)
-        residuals = target_expanded - means  # [..., n_components, n_features]
-
-        assert torch.isfinite(L_matrices).all(), "L_matrices contains NaN or Inf values"
-
-        try:  # A9: narrow the fallback to the actual linalg failure mode
-            # Vectorized solve for all components at once
-            # residuals: [..., n_components, n_features]
-            # L_matrices: [..., n_components, n_features, n_features]
-
-            # Solve triangular system: z = L⁻¹(y-μ)
-            # Result z has shape [..., n_components, n_features]
-            z = torch.linalg.solve_triangular(
-                L_matrices, residuals.unsqueeze(-1), upper=False
-            ).squeeze(-1)
-
-            # Calculate quadratic term: ‖z‖² -> [..., n_components]
-            quadratic_term = torch.sum(z**2, dim=-1)
-
-            # Calculate log determinant: 2*Σlog(L_ii) -> [..., n_components]
-            diag_L = torch.diagonal(L_matrices, dim1=-2, dim2=-1)
-            log_det = 2 * torch.sum(torch.log(diag_L + self.eps), dim=-1)
-
-            # Calculate log probability -> [..., n_components]
-            log_probs = -0.5 * (quadratic_term + log_det + self.n_features * self.log_2pi)
-
-        except torch.linalg.LinAlgError:
-            # Fallback for numerical issues - use eigendecomposition (vectorized)
-            # This handles the case where solve_triangular fails for the batch
-            # L_matrices: [..., K, D, D]
-            cov = torch.matmul(L_matrices, L_matrices.transpose(-1, -2))  # Σ = LLᵀ
-
-            # Add small regularization to diagonal for stability
-            diag_indices = torch.arange(self.n_features, device=L_matrices.device)
-            cov[..., diag_indices, diag_indices] += self.eps
-
-            # Eigendecomposition: [..., K, D], [..., K, D, D]
-            eigenvalues, eigenvectors = torch.linalg.eigh(cov)
-
-            # Ensure eigenvalues are positive
-            eigenvalues = torch.clamp(eigenvalues, min=self.eps)
-
-            # Log determinant: sum(log(λ_i))
-            log_det = torch.sum(torch.log(eigenvalues), dim=-1)
-
-            # Whiten the residuals: (y-μ)ᵀΣ⁻¹(y-μ) = Σ[(y-μ)ᵀv_i]²/λ_i
-            # [..., K, D, D] @ [..., K, D, 1] -> [..., K, D, 1]
-            whitened = torch.matmul(
-                eigenvectors.transpose(-1, -2), residuals.unsqueeze(-1)
-            ).squeeze(-1)
-            quadratic_term = torch.sum(whitened**2 / eigenvalues, dim=-1)
-
-            # Calculate log probability
-            log_probs = -0.5 * (quadratic_term + log_det + self.n_features * self.log_2pi)
-
-        return log_probs
-
-    def _component_marginal_std(self, factor: torch.Tensor) -> torch.Tensor:
-        """Per-dimension standard deviation of each full-covariance component."""
-        if self.full_parameterization == "precision":
-            cov = torch.cholesky_inverse(factor)  # (T T^T)^{-1}
-            var = torch.diagonal(cov, dim1=-2, dim2=-1)
-        else:
-            var = torch.sum(factor**2, dim=-1)  # diag(L L^T)
-        return torch.sqrt(var.clamp(min=self.eps))
+        Gives exact log densities of partially observed targets, marginal CDFs and
+        quantiles, conditioning and linear-observation likelihoods for the head.
+        """
+        return self._mixture(self._extract_distribution_parameters(y_pred))
 
     def _calculate_nll(
         self,
@@ -370,21 +296,7 @@ class MixtureDensityLoss(DistributionLoss):
         Returns:
             torch.Tensor: Negative log likelihood values
         """
-        log_weights, means, stds_or_L = params
-
-        # Calculate log probabilities for each component based on covariance type
-        if self.covariance_type == "diagonal":
-            log_probs = self._log_prob_diagonal(target, means, stds_or_L)
-        else:  # 'full'
-            log_probs = self._log_prob_full(target, means, stds_or_L)
-
-        log_probs_weighted = log_weights + log_probs
-
-        # Calculate mixture log probability using logsumexp for numerical stability:
-        mixture_log_prob = torch.logsumexp(log_probs_weighted, dim=-1)
-
-        # Return negative log likelihood
-        return -mixture_log_prob
+        return -self._mixture(params).log_prob(target)
 
     def forward(
         self,
@@ -449,21 +361,11 @@ class MixtureDensityLoss(DistributionLoss):
         Returns:
             tuple: (mean, std) each of shape [batch, n_features]
         """
-        log_weights, means, stds_or_L = self._extract_distribution_parameters(y_pred)
-        if self.covariance_type != "diagonal":
-            stds_or_L = self._component_marginal_std(stds_or_L)
-
-        # Mixture mean: E[y] = sum(w_k * mu_k)
-        weights = log_weights.exp()
-        mixture_mean = (weights.unsqueeze(-1) * means).sum(dim=-2)  # [batch, n_features]
-
-        # Mixture variance: Var[y] = sum(w_k * (sigma_k^2 + mu_k^2)) - E[y]^2
-        # This is the law of total variance
-        mixture_second_moment = (weights.unsqueeze(-1) * (stds_or_L**2 + means**2)).sum(dim=-2)
-        mixture_var = mixture_second_moment - mixture_mean**2
-        mixture_std = torch.sqrt(mixture_var.clamp(min=self.eps))
-
-        return mixture_mean, mixture_std
+        mixture = self.distribution(y_pred)
+        # Law of total variance; Student-t components contribute df/(df-2) Sigma_kk
+        # (infinite for df <= 2).
+        mixture_std = torch.sqrt(mixture.variance.clamp(min=self.eps))
+        return mixture.mean, mixture_std
 
     def predict_interval(
         self,
@@ -495,32 +397,11 @@ class MixtureDensityLoss(DistributionLoss):
             >>> in_interval = (y_test >= lower) & (y_test <= upper)
             >>> coverage = in_interval.float().mean()  # Should be ~0.95
         """
-        log_weights, means, stds_or_L = self._extract_distribution_parameters(y_pred)
-        if self.covariance_type != "diagonal":
-            # Per-dimension intervals only need each component's marginal std.
-            stds_or_L = self._component_marginal_std(stds_or_L)
+        samples = self.distribution(y_pred).sample((n_samples,))  # [S, batch, F]
 
-        batch_size = means.shape[0]
-        # n_components = means.shape[1]
-        n_features = means.shape[2]
-
-        # Sample component indices for each sample
-        # [batch, n_samples]
-        component_idx = torch.multinomial(log_weights.exp(), n_samples, replacement=True)
-
-        # Gather means and stds for selected components using memory-efficient advanced indexing
-        batch_indices = torch.arange(batch_size, device=y_pred.device).unsqueeze(1)
-        selected_means = means[batch_indices, component_idx]
-        selected_stds = stds_or_L[batch_indices, component_idx]
-
-        # Sample from selected Gaussian components
-        samples = torch.randn(batch_size, n_samples, n_features, device=y_pred.device)
-        samples = samples * selected_stds + selected_means
-
-        # Compute quantiles
         alpha = 1 - confidence
-        lower = torch.quantile(samples, alpha / 2, dim=1)
-        upper = torch.quantile(samples, 1 - alpha / 2, dim=1)
+        lower = torch.quantile(samples, alpha / 2, dim=0)
+        upper = torch.quantile(samples, 1 - alpha / 2, dim=0)
 
         return lower, upper
 
@@ -545,32 +426,4 @@ class MixtureDensityLoss(DistributionLoss):
         Returns:
             samples: [n_samples, batch, n_features]
         """
-        log_weights, means, stds_or_L = self._extract_distribution_parameters(y_pred)
-
-        batch_size = means.shape[0]
-        n_features = means.shape[2]
-
-        # Sample component indices
-        component_idx = torch.multinomial(log_weights.exp(), n_samples, replacement=True)
-
-        # Gather parameters using memory-efficient advanced indexing
-        batch_indices = torch.arange(batch_size, device=y_pred.device).unsqueeze(1)
-        selected_means = means[batch_indices, component_idx]
-        eps = torch.randn(
-            batch_size, n_samples, n_features, device=y_pred.device, dtype=means.dtype
-        )
-        if self.covariance_type == "diagonal":
-            samples = eps * stds_or_L[batch_indices, component_idx] + selected_means
-        else:
-            selected = stds_or_L[batch_indices, component_idx]  # [B, S, F, F]
-            if self.full_parameterization == "precision":
-                # y = mu + T^{-T} eps has covariance (T T^T)^{-1}.
-                draw = torch.linalg.solve_triangular(
-                    selected.transpose(-1, -2), eps.unsqueeze(-1), upper=True
-                ).squeeze(-1)
-            else:  # covariance Cholesky factor L: y = mu + L eps
-                draw = (selected @ eps.unsqueeze(-1)).squeeze(-1)
-            samples = draw + selected_means
-
-        # Transpose to [n_samples, batch, n_features]
-        return samples.transpose(0, 1)
+        return self.distribution(y_pred).sample((n_samples,))
