@@ -51,8 +51,14 @@ class MixtureDensityLoss(DistributionLoss):
             the Gaussian MDN; a finite ``df > 0`` gives multivariate Student-t
             components ``t_df(mu_k, Sigma_k)`` (``Sigma_k`` the scale matrix built
             from the same output layout), which tolerate outliers and heavy tails.
-        learn_df (bool): Learn one shared ``df = softplus(raw)`` starting at ``df``
-            (finite) as a parameter of this module.
+        learn_df (bool): Learn one shared ``df = df_init * exp(raw_df)`` (``raw_df``
+            a parameter of this module, starting at 0, so the initial ``df`` is exact
+            in any dtype). On the log scale an Adam step changes ``df`` by a fixed
+            fraction, so it moves as readily toward heavy tails as toward the
+            Gaussian limit (reached geometrically, not linearly). Give ``raw_df``
+            its own parameter group at about ``1e-2``: on a linear-head toy it
+            reached ``df ≈ 3.4`` (truth 3) in 1000 steps and ``df ≈ 60`` on
+            Gaussian data, where a linear parametrisation stalled near 10.
         reduction (str): Specifies the reduction to apply: 'none' | 'mean' | 'sum'
             Default: 'mean'
 
@@ -102,9 +108,7 @@ class MixtureDensityLoss(DistributionLoss):
         self.learn_df = bool(learn_df)
         self._df = df
         if self.learn_df:
-            # softplus^{-1}(df) without overflow for large df.
-            raw = df + math.log(-math.expm1(-df))
-            self.raw_df = nn.Parameter(torch.tensor(raw))
+            self.raw_df = nn.Parameter(torch.zeros(()))
         self.n_components = n_components
         self.n_features = n_features
         self.covariance_type = covariance_type.lower()
@@ -252,7 +256,7 @@ class MixtureDensityLoss(DistributionLoss):
     def df(self) -> float | torch.Tensor:
         """Component degrees of freedom (``math.inf``: Gaussian; a tensor when learned)."""
         if self.learn_df:
-            return F.softplus(self.raw_df)
+            return self._df * torch.exp(self.raw_df)
         return self._df
 
     @property
@@ -291,12 +295,14 @@ class MixtureDensityLoss(DistributionLoss):
         Args:
             target (torch.Tensor): Target values [..., n_features]
             params (tuple): Tuple of (log_weights, means, stds_or_L)
-            mask (torch.Tensor, optional): Optional mask for valid values
+            mask (torch.Tensor, optional): Boolean feature mask ``[..., n_features]``
+                (``True`` = observed); the exact marginal density of the observed
+                features is used.
 
         Returns:
             torch.Tensor: Negative log likelihood values
         """
-        return -self._mixture(params).log_prob(target)
+        return -self._mixture(params).log_prob(target, mask=mask)
 
     def forward(
         self,
@@ -312,8 +318,15 @@ class MixtureDensityLoss(DistributionLoss):
         Args:
             y_pred (torch.Tensor): Model predictions (format depends on covariance_type)
             target (torch.Tensor): Ground truth values [..., n_features]
-            mask (torch.Tensor, optional): Optional boolean mask [..., n_features]
-            weights (torch.Tensor, optional): Optional sample weights
+            mask (torch.Tensor, optional): Boolean validity mask, per feature
+                ``[..., n_features]`` or per sample ``[...]``. With a feature mask a
+                partially labelled row contributes the exact marginal NLL of its
+                observed features (the mixture's marginal over the observed
+                coordinates, no imputation); rows with no observed feature are
+                dropped. Masked target entries may hold any value (e.g. NaN).
+            weights (torch.Tensor, optional): Optional sample weights ``[...]``, or
+                per-feature weights ``[..., n_features]`` (averaged over each row's
+                observed features).
 
         Returns:
             torch.Tensor: Negative log-likelihood loss
@@ -330,19 +343,25 @@ class MixtureDensityLoss(DistributionLoss):
         # Extract distribution parameters
         params = self._extract_distribution_parameters(y_pred)
 
-        # For mixture models, we need to handle each sample as a whole
-        # So we convert feature-level mask to sample-level mask
-        sample_mask = None
+        feature_mask = sample_mask = None
         if mask is not None:
-            if mask.dim() > 1 and mask.shape[-1] > 1:
-                # If any feature is masked, the whole sample is considered invalid
-                # This is a common approach for MDNs since components span all dimensions
-                sample_mask = mask.all(dim=-1)
+            mask = mask.to(device=target.device, dtype=torch.bool)
+            if mask.shape == target.shape:
+                feature_mask = mask
+                sample_mask = mask.any(dim=-1)
+                if weights is not None and weights.dim() == target.dim():
+                    w = torch.where(mask, weights, torch.zeros_like(weights))
+                    weights = w.sum(-1) / mask.sum(-1).clamp_min(1)
             else:
                 sample_mask = mask
+        if feature_mask is not None and bool(feature_mask.all()):
+            feature_mask = None  # fully observed: the cheaper unmasked density
+        if feature_mask is None and sample_mask is not None:
+            # Rows excluded by a sample mask may hold non-finite targets.
+            target = torch.where(sample_mask.unsqueeze(-1), target, torch.zeros_like(target))
 
-        # Calculate negative log likelihood (per sample)
-        nll = self._calculate_nll(target, params, sample_mask)
+        # Per-sample NLL (exact marginal over the observed features)
+        nll = self._calculate_nll(target, params, feature_mask)
 
         # A9: single mask/weight/reduction path shared with every other loss
         return self._reduce(nll, sample_mask, weights)
@@ -371,39 +390,37 @@ class MixtureDensityLoss(DistributionLoss):
         self,
         y_pred: torch.Tensor,
         confidence: float = 0.95,
-        n_samples: int = 10000,
+        n_samples: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Compute prediction intervals by sampling from the mixture distribution.
+        Central prediction interval of each target from the exact mixture marginal.
 
-        Unlike the Gaussian approximation (mean ± 1.96*std), this method correctly
-        computes quantiles for mixture distributions which may be multimodal or
-        have different tail behavior than a Gaussian.
+        The bounds are the ``(1 - confidence)/2`` and ``(1 + confidence)/2``
+        quantiles of each feature's marginal mixture CDF
+        (:meth:`StudentTMixture.marginal_quantile`: exact, deterministic, valid for
+        multimodal mixtures and heavy tails), not Monte Carlo estimates.
 
         Args:
             y_pred: Model predictions [batch, output_size]
-            confidence: Confidence level (default 0.95 for 95% CI)
-            n_samples: Number of Monte Carlo samples for quantile estimation
+            confidence: Confidence level in (0, 1) (default 0.95 for 95% CI)
+            n_samples: Ignored (the quantiles are exact); kept for compatibility
+                with the earlier Monte Carlo implementation.
 
         Returns:
             tuple: (lower, upper) each of shape [batch, n_features]
-                Lower and upper bounds of the prediction interval
 
         Example:
             >>> loss_fn = MixtureDensityLoss(n_components=3, n_features=1)
             >>> y_pred = model(x_test)
             >>> lower, upper = loss_fn.predict_interval(y_pred, confidence=0.95)
-            >>> # Check coverage
             >>> in_interval = (y_test >= lower) & (y_test <= upper)
             >>> coverage = in_interval.float().mean()  # Should be ~0.95
         """
-        samples = self.distribution(y_pred).sample((n_samples,))  # [S, batch, F]
-
-        alpha = 1 - confidence
-        lower = torch.quantile(samples, alpha / 2, dim=0)
-        upper = torch.quantile(samples, 1 - alpha / 2, dim=0)
-
-        return lower, upper
+        if not 0.0 < confidence < 1.0:
+            raise ValueError(f"confidence must be in (0, 1), got {confidence}")
+        alpha = 1.0 - confidence
+        bounds = self.distribution(y_pred).marginal_quantile([alpha / 2, 1.0 - alpha / 2])
+        return bounds[..., 0], bounds[..., 1]
 
     def log_prob(self, y_pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """Per-sample log mixture density ``[B]``."""

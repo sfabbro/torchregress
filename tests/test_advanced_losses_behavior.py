@@ -30,7 +30,10 @@ def test_mdn_mask_behavior_and_error_paths() -> None:
     loss = loss_fn(y_pred, target, mask=mask)
     assert loss.shape == (3,)
     assert torch.isfinite(loss[0])
-    assert loss[1].item() == 0.0
+    # A partially labelled row gives the exact marginal NLL of its observed
+    # features; a row with none is masked out.
+    marginal = -loss_fn.distribution(y_pred).log_prob(target, mask=mask)
+    torch.testing.assert_close(loss[1], marginal[1])
     assert loss[2].item() == 0.0
 
     with pytest.raises(ValueError, match="Expected 2 features"):

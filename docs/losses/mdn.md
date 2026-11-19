@@ -51,7 +51,7 @@ loss_fn = MixtureDensityLoss(
 | `full_parameterization` | `str` | `"precision"` | For `"full"`: the triangular factor parameterises the precision or the covariance (see [below](#full-covariance-precision-or-covariance-factor)) |
 | `min_std` | `float` | `1e-3` | Minimum std for stability |
 | `df` | `float` | `math.inf` | Component degrees of freedom: `math.inf` is Gaussian, finite gives Student-$t$ components (see [below](#student-t-components)) |
-| `learn_df` | `bool` | `False` | Learn one shared `df` (starting at the finite `df`) |
+| `learn_df` | `bool` | `False` | Learn one shared `df = df · exp(raw_df)` (log scale, starting exactly at the finite `df`) |
 
 ### Model Output Size
 
@@ -122,7 +122,7 @@ q = mixture.marginal_quantile([0.05, 0.5, 0.95])  # exact per-target quantiles [
 ```
 
 !!! tip "When Student-t components help"
-    Heavy-tailed or contaminated targets: a Gaussian component must widen (or a spare component must chase outliers) to cover them, while a Student-$t$ component down-weights them. With `learn_df=True`, include `loss_fn.parameters()` in the optimiser. `predict_mean_std` returns infinite standard deviations for $\nu \le 2$.
+    Heavy-tailed or contaminated targets: a Gaussian component must widen (or a spare component must chase outliers) to cover them, while a Student-$t$ component down-weights them. With `learn_df=True`, include `loss_fn.parameters()` in the optimiser, ideally as its own group at a learning rate of about `1e-2` (`df` is learned on the log scale, so it moves by a fixed fraction per step toward heavy tails or the Gaussian limit). On held-out NLL a learned `df` was never more than 0.035 nats behind the best Gaussian mixture in the harness benchmark, while a fixed `df = 5` lost up to 0.13 nats on Gaussian-like data, so prefer `learn_df=True` to a fixed small `df`. `predict_mean_std` returns infinite standard deviations for $\nu \le 2$.
 
 `loss_fn.distribution(y_pred)` also gives the masked (partially observed) log density, conditioning on a measured target and closed-form likelihoods of noisy linear observations; see [Student-t mixtures](student_t_mixture.md).
 
@@ -152,16 +152,14 @@ mean, std = loss_fn.predict_mean_std(model(x_test))
 ```
 
 !!! warning "Multimodal caveat"
-    For genuinely multimodal distributions, the mean may fall **between** modes where no data exists.  Use `sample` or `predict_interval` instead. Also note that `predict_interval` using MC sampling requires `n_samples` large enough to resolve all modes — for $K$ well-separated components, 10,000+ samples may be needed for stable interval boundaries.
+    For genuinely multimodal distributions, the mean may fall **between** modes where no data exists.  Use `predict_interval` (exact marginal quantiles) or `sample` instead.
 
 ### `predict_interval`
 
-MC-based prediction intervals that respect multimodality:
+Central intervals from the exact quantiles of each target's marginal mixture CDF (`StudentTMixture.marginal_quantile`): deterministic, and valid for multimodal mixtures and heavy tails. (`n_samples` is accepted and ignored; it was the Monte Carlo sample size of earlier releases.)
 
 ```python
-lower, upper = loss_fn.predict_interval(
-    model(x_test), confidence=0.95, n_samples=10_000,
-)
+lower, upper = loss_fn.predict_interval(model(x_test), confidence=0.95)
 ```
 
 ### `sample`

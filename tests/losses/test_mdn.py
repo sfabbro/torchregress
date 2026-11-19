@@ -499,6 +499,40 @@ class TestStudentTComponents:
         assert torch.isfinite(y_pred.grad).all()
         assert any(p is loss_fn.raw_df for p in loss_fn.parameters())
 
+    def test_learned_df_is_exact_and_log_scale(self):
+        loss_fn = MixtureDensityLoss(2, 2, df=5.0, learn_df=True).double()
+        assert float(loss_fn.df) == 5.0  # exact in float64 (raw_df starts at 0)
+        assert loss_fn.df.dtype == torch.float64
+        # One Adam step moves df by the same fraction at any df (log scale).
+        for start in (3.0, 30.0):
+            loss_fn = MixtureDensityLoss(1, 1, df=start, learn_df=True)
+            opt = torch.optim.Adam(loss_fn.parameters(), lr=1e-2)
+            y_pred = torch.zeros(64, loss_fn.expected_output_size)
+            loss_fn(y_pred, torch.randn(64, 1) * 5).backward()  # heavy tails: df down
+            opt.step()
+            assert float(loss_fn.df) == pytest.approx(start * math.exp(-1e-2), rel=1e-5)
+
+    def test_partially_observed_rows_use_the_exact_marginal(self):
+        torch.manual_seed(8)
+        for cov in ("diagonal", "full"):
+            loss_fn = MixtureDensityLoss(3, 3, covariance_type=cov, df=4.0, reduction="none")
+            y_pred = torch.randn(6, loss_fn.expected_output_size, dtype=torch.float64)
+            target = torch.randn(6, 3, dtype=torch.float64)
+            mask = torch.tensor(
+                [[1, 1, 1], [1, 0, 1], [0, 1, 0], [0, 0, 0], [1, 1, 0], [0, 0, 1]],
+                dtype=torch.bool,
+            )
+            target_nan = torch.where(mask, target, torch.full_like(target, math.nan))
+            got = loss_fn(y_pred, target_nan, mask=mask)
+            exact = -loss_fn.distribution(y_pred).log_prob(target, mask=mask)
+            expected = torch.where(mask.any(-1), exact, torch.zeros_like(exact))
+            torch.testing.assert_close(got, expected)
+            assert torch.isfinite(got).all()
+            # Rows with no observed feature are excluded from the mean.
+            loss_fn.reduction = "mean"
+            mean = loss_fn(y_pred, target_nan, mask=mask)
+            torch.testing.assert_close(mean, exact[mask.any(-1)].mean())
+
     def test_invalid_df(self):
         with pytest.raises(ValueError, match="df"):
             MixtureDensityLoss(2, 2, df=0.0)
@@ -515,7 +549,11 @@ class TestStudentTComponents:
         torch.testing.assert_close(samples.mean(0), mean, rtol=0, atol=0.03)
         torch.testing.assert_close(samples.std(0), std, rtol=0.05, atol=0.0)
         mixture = loss_fn.distribution(y_pred)
-        lower, upper = loss_fn.predict_interval(y_pred, confidence=0.9, n_samples=200_000)
+        lower, upper = loss_fn.predict_interval(y_pred, confidence=0.9)
         exact = mixture.marginal_quantile([0.05, 0.95])
-        torch.testing.assert_close(lower, exact[..., 0], rtol=0.02, atol=0.02)
-        torch.testing.assert_close(upper, exact[..., 1], rtol=0.02, atol=0.02)
+        torch.testing.assert_close(lower, exact[..., 0], rtol=1e-12, atol=1e-12)
+        torch.testing.assert_close(upper, exact[..., 1], rtol=1e-12, atol=1e-12)
+        # The exact bounds agree with the Monte Carlo quantiles of the samples.
+        mc = torch.quantile(samples, torch.tensor([0.05, 0.95], dtype=samples.dtype), dim=0)
+        torch.testing.assert_close(lower, mc[0], rtol=0.05, atol=0.02)
+        torch.testing.assert_close(upper, mc[1], rtol=0.05, atol=0.02)
