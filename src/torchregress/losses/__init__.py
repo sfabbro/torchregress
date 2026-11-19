@@ -235,6 +235,7 @@ from .student_t import (
     student_t_efficiency,
     student_t_nll,
 )
+from .student_t_mixture import StudentTMixture
 from .transforms import (
     BoxCoxTransformLoss,
     LogTransformLoss,
@@ -379,6 +380,7 @@ __all__ = [
     "StructuralEIVLoss",
     "StructuralSimilarity1dLoss",
     "StudentTLoss",
+    "StudentTMixture",
     "TransformedTargetLoss",
     "TukeyBiweightLoss",
     "TweedieLoss",
