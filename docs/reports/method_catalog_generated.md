@@ -2,13 +2,13 @@
 
 _Generated provenance_: `tools/render_method_catalog.py:render_markdown`
 _Source artifacts_: `reports/method_catalog_latest.json`
-_Generated date_: `2026-11-12`
+_Generated date_: `2026-11-19`
 
 It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 
 ## Summary
 
-- Total methods: `165`
+- Total methods: `166`
 - Peer methods present: `SWAG`, `BayesianNeuralNetwork`, `MixtureDensityLoss`
 
 ### By Family
@@ -34,7 +34,7 @@ It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 | `inference` | 1 |
 | `likelihood_ratio` | 2 |
 | `mc_dropout` | 1 |
-| `mdn` | 1 |
+| `mdn` | 2 |
 | `multivariate` | 1 |
 | `observation_mapping` | 3 |
 | `ordinal` | 2 |
@@ -61,7 +61,7 @@ It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 |---|---:|
 | `Core` | 7 |
 | `Strong` | 20 |
-| `Available` | 138 |
+| `Available` | 139 |
 
 ## Method Rows
 
@@ -166,6 +166,7 @@ Legend: `*` suffix means partial support. This snapshot is for discovery and com
 | `WifiRatioEnsemble` | `likelihood_ratio` | `Available` | `parameter_estimation`, `simulation_based_inference`, `likelihood_ratio`, `confidence_intervals` | `epistemic*`, `calibration`, `ood*` | `torchregress.inference.WifiRatioEnsemble` |
 | `MCDropoutWrapper` | `mc_dropout` | `Strong` | `epistemic_uq`, `low_compute` | `epistemic`, `aleatoric*`, `decomposition*`, `calibration*`, `ood*` | `torchregress.ensemble.MCDropoutWrapper` |
 | `MixtureDensityLoss` | `mdn` | `Available` | `multimodal`, `non_gaussian`, `multi_target` | `aleatoric`, `calibration*`, `ood*` | `torchregress.losses.MixtureDensityLoss` |
+| `StudentTMixture` | `mdn` | `Available` | `multimodal`, `non_gaussian`, `multi_target`, `missing_labels`, `censored` | `aleatoric`, `calibration*`, `ood*` | `torchregress.losses.StudentTMixture` |
 | `TaskAgnosticCorrelations` | `multivariate` | `Available` | `covariance_evaluation`, `conditioning` | `calibration*`, `ood*` | `torchregress.metrics.TaskAgnosticCorrelations` |
 | `CommonScaleSplineHead` | `observation_mapping` | `Available` | `multi_source`, `common_bias` | `calibration*`, `ood*` | `torchregress.calibration.CommonScaleSplineHead` |
 | `ConditionBiasHead` | `observation_mapping` | `Available` | `multi_source`, `conditional_bias` | `calibration*`, `ood*` | `torchregress.calibration.ConditionBiasHead` |
@@ -239,7 +240,7 @@ Legend: `*` suffix means partial support. This snapshot is for discovery and com
 
 ### Multimodal (`multimodal=yes`)
 
-`SLSConformal`, `BinnedDensityLoss`, `JointBinnedDensityLoss`, `InputNoiseBinnedPDFLoss`, `InputNoiseMDNLoss`, `DensityEnsemble`, `ContrastiveFlowLoss`, `NormalizingFlowLoss`, `SLSLoss`, `NormalizingFlowMap`, `FlowMatchingMLP`, `MixtureDensityLoss`, `EnhancedPoissonGaussianContaminationMixtureLoss`, `PoissonGaussianContaminationMixtureLoss`
+`SLSConformal`, `BinnedDensityLoss`, `JointBinnedDensityLoss`, `InputNoiseBinnedPDFLoss`, `InputNoiseMDNLoss`, `DensityEnsemble`, `ContrastiveFlowLoss`, `NormalizingFlowLoss`, `SLSLoss`, `NormalizingFlowMap`, `FlowMatchingMLP`, `MixtureDensityLoss`, `StudentTMixture`, `EnhancedPoissonGaussianContaminationMixtureLoss`, `PoissonGaussianContaminationMixtureLoss`
 
 ### Noisy Features / EIV (`noisy_features_eiv=yes`)
 

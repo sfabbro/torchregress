@@ -190,6 +190,7 @@ nav = [
     { "Flexible-Shape Families" = "losses/families.md" },
     { "Distributional Modeling" = [
       { "Mixture Density Networks" = "losses/mdn.md" },
+      { "Student-t Mixtures" = "losses/student_t_mixture.md" },
       { "Normalizing Flows" = "losses/nflows.md" },
       { "Flow Research Notes" = "losses/flow_research.md" },
       { "Neural Ratio Estimation" = "losses/nre.md" },

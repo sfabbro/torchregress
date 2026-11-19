@@ -114,7 +114,7 @@ For `[..., N]` sequences (spectra, light curves, profiles), batched over the lea
 
 ## Quantile, expectile, distributional
 
-→ **Guides:** [Quantile & expectile](../losses/quantile_expectile.md) · [MDN](../losses/mdn.md) · [Flows](../losses/nflows.md) · [Evidential](../losses/advanced.md)
+→ **Guides:** [Quantile & expectile](../losses/quantile_expectile.md) · [MDN](../losses/mdn.md) · [Student-t mixtures](../losses/student_t_mixture.md) · [Flows](../losses/nflows.md) · [Evidential](../losses/advanced.md)
 
 | Symbol | Signature | Description |
 |:-------|:----------|:------------|
@@ -126,7 +126,8 @@ For `[..., N]` sequences (spectra, light curves, profiles), batched over the lea
 | `ExpectileCrossoverLoss` | `ExpectileCrossoverLoss(expectiles=[...])` | + non-crossing penalty (levels must be strictly ascending) |
 | `quantile_loss` | `quantile_loss(y_pred, target, quantile=0.5, mask=None, weights=None, reduction="mean")` | Functional pinball loss |
 | `expectile_loss` | `expectile_loss(y_pred, target, expectile=0.5, mask=None, weights=None, reduction="mean")` | Functional expectile loss |
-| `MixtureDensityLoss` | `MixtureDensityLoss(n_components=5, reduction="mean")` | Mixture Density Network NLL |
+| `MixtureDensityLoss` | `MixtureDensityLoss(n_components, n_features, covariance_type="diagonal", min_std=1e-3, eps=1e-8, reduction="mean", full_parameterization="precision", df=math.inf, learn_df=False)`; `distribution(y_pred) → StudentTMixture` | Mixture Density Network NLL; Gaussian components at `df=math.inf`, multivariate Student-t otherwise |
+| `StudentTMixture` | `StudentTMixture(logits, loc, *, scale_tril=None, precision_tril=None, scale_diag=None, df=math.inf)` | Batched mixture of multivariate Student-t: `log_prob`/`component_log_prob(value, mask=None)`, `component_observation_log_prob(value, design, noise_var, *, offset=None, valid=None)`, `component_censored_log_prob(limit, design, noise_var, *, offset=None, upper=True, valid=None)`, `mixture_log_prob`, `condition(index, value, noise_var)`, `marginal_cdf`, `marginal_quantile`, `sample`, moments |
 | `NormalizingFlowLoss` | `NormalizingFlowLoss(flow=..., reduction="mean")` | Conditional flow NLL (requires `zuko`) |
 | `NoiseAwareDensityLoss` | `NoiseAwareDensityLoss(base_loss, sigma=None, mode="auto", ...)` | Marginal likelihood with Gaussian label noise; GH for scalar flows, analytic for diagonal MDNs |
 | `BinnedDensityLoss` | `BinnedDensityLoss(bin_edges, label_smoothing=0.0)` | Smoothed histogram / ordinal-CDF scalar density head |

@@ -225,9 +225,10 @@ $$p(y \mid x) = \sum_{k=1}^K \pi_k(x)\,\mathcal{N}\!\bigl(y \mid \mu_k(x),\, \si
 
 | Loss | Description |
 |:-----|:-----------|
-| `MixtureDensityLoss` | NLL for Gaussian mixtures |
+| `MixtureDensityLoss` | NLL for Gaussian mixtures, or multivariate Student-$t$ mixtures with `df` |
+| `StudentTMixture` | The mixture distribution: masked targets, noisy linear observations, censored limits, conditioning, exact marginal quantiles |
 
-Read the full [MDN guide](mdn.md) — component selection, label switching, mixture-of-mixtures ensembles.
+Read the full [MDN guide](mdn.md) — component selection, label switching, mixture-of-mixtures ensembles — and [Student-t mixtures](student_t_mixture.md).
 
 ---
 

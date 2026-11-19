@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `torchregress.losses.StudentTMixture`: batched mixture of multivariate Student-t
+  distributions (a `torch.distributions.Distribution`; `df = math.inf` components are
+  Gaussian), with covariance-Cholesky (`scale_tril`), precision-Cholesky (`precision_tril`)
+  or diagonal (`scale_diag`) scale matrices and `df` per row and/or component (fixed or a
+  tensor with gradients). The components are folded into the batch of every linear-algebra
+  call (no Python loop over components or rows): `log_prob` / `component_log_prob` of full
+  or partially observed targets (exact marginals, rows with nothing observed give 0);
+  `component_observation_log_prob` for noisy linear observations `z = A_k x + b_k + e` with
+  per-component designs and validity masks (closed form `t(A mu, A Sigma A^T + diag(n))`,
+  noise treated inside the t, exact for Gaussians; `D x D` Cholesky for `D <= P`, otherwise
+  an information form whose quadratic is a sum of squares); `component_censored_log_prob`
+  for upper/lower limits with the exact Student-t log-CDF; `mixture_log_prob` to mix summed
+  per-component terms; `condition` on a noisy coordinate (`df + 1`, `(df + q)/(df + 1)`
+  scale, reweighted components; the conditional Cholesky factor is a closed-form rank-one
+  downdate built from tail sums, so a nearly exact measurement keeps full relative
+  accuracy); `marginal_cdf` and `marginal_quantile` (safeguarded Newton with a guaranteed
+  Student-t tail-bound bracket and an active set, float64, chunked; no probability
+  clipping); `sample`, `mean`, `variance`, `covariance_matrix`. The `df`-dependent
+  normaliser uses a Stirling-difference series above `df = 100`, so the Gaussian limit is
+  approached as `O(1/df)` with no numerical floor. `tools/benchmark_student_t_mixture.py`
+  times it against a per-component loop.
+- `MixtureDensityLoss(df=..., learn_df=...)`: Student-t components (fixed `df`, or one
+  shared learned `df = softplus(raw_df)`), and `MixtureDensityLoss.distribution(y_pred)`
+  returning the head's `StudentTMixture`. The Gaussian MDN is the `df = math.inf` case of
+  the same code path.
 - `torchregress.losses.structural_similarity_1d` and `StructuralSimilarity1dLoss` (`1 - SSIM`):
   structural similarity along the last dimension of `[..., N]` sequences (spectra, light
   curves, profiles), batched over leading dimensions. Masks and per-sample weights (e.g.
@@ -110,6 +135,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remain better and sample much faster (see the flow docs).
 ### Changed
 
+- `MixtureDensityLoss` evaluates its log density, moments and samples through
+  `StudentTMixture`. The diagonal and full log densities no longer add `eps` to the
+  (already `min_std`-floored) scales, so Gaussian NLLs change by `O(eps / min_std)`; the
+  private `_log_prob_diagonal`, `_log_prob_full` and `_component_marginal_std` are removed.
+  `NoiseAwareDensityLoss` uses its analytic diagonal-MDN shortcuts only for Gaussian
+  components.
 - `solve_normal_equations` does less work per call, with bit-identical results (6,144
   randomized cases, both dtypes, all flags): the non-negative solve's standard errors reuse
   each row's last free-block Cholesky factor instead of factorising every final free block

@@ -2,7 +2,7 @@
 
 > ← [Evidential Regression](advanced.md) | [Normalizing Flows](nflows.md) →
 
-Mixture Density Networks model the conditional distribution $p(y \mid x)$ as a **mixture of Gaussian components**, capturing multimodality, heteroscedastic noise, and complex distributional shapes.
+Mixture Density Networks model the conditional distribution $p(y \mid x)$ as a **mixture of Gaussian (or multivariate Student-$t$) components**, capturing multimodality, heteroscedastic noise, heavy tails, and complex distributional shapes.
 
 !!! abstract "When to use"
     When the output distribution has **multiple modes** — e.g., inverse problems with multiple solutions, financial regimes, or multi-path trajectory prediction.
@@ -50,6 +50,8 @@ loss_fn = MixtureDensityLoss(
 | `covariance_type` | `str` | `"diagonal"` | `"diagonal"` or `"full"` |
 | `full_parameterization` | `str` | `"precision"` | For `"full"`: the triangular factor parameterises the precision or the covariance (see [below](#full-covariance-precision-or-covariance-factor)) |
 | `min_std` | `float` | `1e-3` | Minimum std for stability |
+| `df` | `float` | `math.inf` | Component degrees of freedom: `math.inf` is Gaussian, finite gives Student-$t$ components (see [below](#student-t-components)) |
+| `learn_df` | `bool` | `False` | Learn one shared `df` (starting at the finite `df`) |
 
 ### Model Output Size
 
@@ -94,6 +96,35 @@ The precision form is linear in $T_k$ and needs no triangular solve, which makes
 
 !!! warning "Sampling from a precision factor"
     In precision mode `_extract_distribution_parameters` returns the precision factor $T$ ($P = T T^\top$), not a covariance Cholesky factor. A covariance square root is $T^{-\top}$: a draw is $\mu + T^{-\top}\varepsilon$, **not** $\mu + T\varepsilon$. Use `loss_fn.sample(...)` (and `predict_interval`), which handle both parameterisations, rather than sampling from the extracted factors yourself. A harness suite that used $T$ as if it were $L$ got 0.00 interval coverage.
+
+### Student-t components
+
+With a finite `df`, every component is a multivariate Student-$t$ with the same location and scale-matrix layout:
+
+$$
+p(y \mid x) = \sum_{k=1}^K \pi_k(x)\; t_{\nu}\!\bigl(y \mid \mu_k(x),\, \Sigma_k(x)\bigr),
+$$
+
+where $\Sigma_k$ is the scale matrix (covariance $\tfrac{\nu}{\nu-2}\Sigma_k$). Both families are evaluated by one implementation, [`StudentTMixture`](student_t_mixture.md); the Gaussian MDN is its $\nu = \infty$ case, and the $\nu$-dependent terms converge to it as $O(1/\nu)$.
+
+```python
+import torch
+
+from torchregress.losses import MixtureDensityLoss
+
+loss_fn = MixtureDensityLoss(n_components=3, n_features=2, covariance_type="full", df=5.0)
+# or learn one shared df: MixtureDensityLoss(..., df=5.0, learn_df=True)
+y_pred = torch.randn(64, loss_fn.expected_output_size)
+loss = loss_fn(y_pred, torch.randn(64, 2))
+
+mixture = loss_fn.distribution(y_pred)  # StudentTMixture
+q = mixture.marginal_quantile([0.05, 0.5, 0.95])  # exact per-target quantiles [64, 2, 3]
+```
+
+!!! tip "When Student-t components help"
+    Heavy-tailed or contaminated targets: a Gaussian component must widen (or a spare component must chase outliers) to cover them, while a Student-$t$ component down-weights them. With `learn_df=True`, include `loss_fn.parameters()` in the optimiser. `predict_mean_std` returns infinite standard deviations for $\nu \le 2$.
+
+`loss_fn.distribution(y_pred)` also gives the masked (partially observed) log density, conditioning on a measured target and closed-form likelihoods of noisy linear observations; see [Student-t mixtures](student_t_mixture.md).
 
 ### Training
 
@@ -191,6 +222,7 @@ While MDNs are highly expressive, they present several training and optimization
 
 ## Next steps
 
+- [Student-t mixtures](student_t_mixture.md) — the distribution behind the head: masks, conditioning, linear observations, censoring, exact quantiles
 - [Normalizing Flows](nflows.md) — more flexible distributions for complex targets
 - [EIV + MDN](eiv.md#multimodal-eiv-variants) — marginalize over input noise with MDN heads
 - [MDN Ensembles](../methods/ensemble/methods.md#mdnensemblemodel) — mixture-of-mixtures for decomposed uncertainty
@@ -204,3 +236,4 @@ While MDNs are highly expressive, they present several training and optimization
 |:-:|:----------|
 | 1 | C.M. Bishop. ["Mixture Density Networks."](https://publications.aston.ac.uk/id/eprint/373/) Neural Computing Research Group Report NCRG/94/004, **1994**. |
 | 2 | C.M. Bishop. *Pattern Recognition and Machine Learning*, §5.6. Springer, **2006**. |
+| 3 | K.L. Lange, R.J.A. Little and J.M.G. Taylor. ["Robust statistical modeling using the t distribution."](https://doi.org/10.1080/01621459.1989.10478852) *JASA* 84(408):881–896, **1989**. |

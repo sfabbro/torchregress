@@ -238,6 +238,37 @@
           "rows whose posterior precision is not numerically positive definite raise instead of returning a jittered value"
         ]
       }
+    },
+    {
+      "area": "student_t_mixture",
+      "surface": [
+        "StudentTMixture",
+        "MixtureDensityLoss(df=...)"
+      ],
+      "native_candidate": [
+        "torch.distributions.MixtureSameFamily",
+        "torch.distributions.MultivariateNormal",
+        "torch.distributions.StudentT",
+        "torch.linalg.cholesky_ex"
+      ],
+      "decision": "Hybrid",
+      "rationale": "torch.distributions has no multivariate Student-t, no masked (marginal) log densities, no linear-observation or censored likelihoods, no conditioning and no mixture quantiles; StudentTMixture subclasses torch.distributions.Distribution and uses native batched cholesky_ex, solve_triangular, cholesky_solve, QR, Categorical and Chi2, with the components folded into the batch.",
+      "action": "Keep the custom distribution; lock parity with scipy multivariate_t / multivariate_normal / t and torch MultivariateNormal.",
+      "coverage_evidence": {
+        "parity_tests": [
+          "tests/losses/test_student_t_mixture.py::TestLogProb::test_matches_scipy",
+          "tests/losses/test_student_t_mixture.py::TestLogProb::test_masked_matches_scipy_marginal",
+          "tests/losses/test_student_t_mixture.py::TestLogProb::test_single_component_equals_distribution",
+          "tests/losses/test_student_t_mixture.py::TestObservation::test_matches_explicit_construction",
+          "tests/losses/test_student_t_mixture.py::TestObservation::test_censored_matches_scipy",
+          "tests/losses/test_student_t_mixture.py::TestQuantilesAndSampling::test_single_component_quantile_matches_scipy",
+          "tests/losses/test_mdn.py::TestStudentTComponents::test_matches_scipy_multivariate_t"
+        ],
+        "known_divergences": [
+          "noisy linear observations and conditioning treat the Gaussian noise as sharing the t mixing variable (exact for df = inf); the exact density of A x + e with independent Gaussian e is not a Student-t",
+          "MixtureDensityLoss no longer adds eps to the diagonal scales inside the log density (scales are floored by min_std); Gaussian NLLs differ from the previous release by O(eps / min_std)"
+        ]
+      }
     }
   ]
 }

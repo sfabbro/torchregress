@@ -1002,8 +1002,29 @@ _METHODS: tuple[MethodMetadata, ...] = (
         aleatoric="yes",
         decomposition="no",
         notes=(
+            "Gaussian components by default; df < inf gives multivariate Student-t "
+            "components (df fixed or learned) through StudentTMixture. "
             "Single-model mixture predictive spread is not epistemic/aleatoric "
             "decomposition; use MDNEnsembleModel for model-disagreement signals."
+        ),
+    ),
+    MethodMetadata(
+        name="StudentTMixture",
+        family="mdn",
+        public_path="torchregress.losses.StudentTMixture",
+        task_tags=("multimodal", "non_gaussian", "multi_target", "missing_labels", "censored"),
+        maturity="Available",
+        multimodal="yes",
+        multi_target="yes",
+        non_gaussian="yes",
+        aleatoric="yes",
+        calibration="partial",
+        notes=(
+            "Batched mixture of multivariate Student-t (df = inf is Gaussian) with "
+            "components folded into the batch: masked log densities, noisy linear "
+            "observations with per-component designs (Gaussian noise treated inside "
+            "the t), exact Student-t censored limits, conditioning on a measured "
+            "coordinate, exact marginal CDF and quantiles, sampling and moments."
         ),
     ),
     MethodMetadata(

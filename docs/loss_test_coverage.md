@@ -209,6 +209,7 @@ The matrix above covers the core loss surface; these additional public symbols a
 | `StructuralSimilarity1dLoss` | `ssim.py` | `tests/losses/test_ssim.py::TestLossClass` | DEDICATED |
 | `marginalize_linear_nuisance` | `linear_nuisance.py` | `tests/losses/test_linear_nuisance.py::TestDenseParity` + `TestFlatPrior` + `TestMasking` | DEDICATED |
 | `MarginalizedNuisanceGaussianNLLLoss` | `linear_nuisance.py` | `tests/losses/test_linear_nuisance.py::TestLossClass` | DEDICATED |
+| `StudentTMixture` | `student_t_mixture.py` | `tests/losses/test_student_t_mixture.py::TestLogProb` + `TestObservation` + `TestCondition` + `TestQuantilesAndSampling` + `TestGradients` + `TestRobustness` | DEDICATED |
 | `LinearNuisanceMarginal` | `linear_nuisance.py` | `tests/losses/test_linear_nuisance.py::TestDenseParity::test_full_prior_covariance_matches_multivariate_normal` | DIRECT-LIGHT |
 
 ### Internal helpers in `utils/gaussian_output.py`
