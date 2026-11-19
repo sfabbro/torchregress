@@ -112,6 +112,20 @@ def _lgamma_ratio(x: Tensor, a: Tensor) -> Tensor:
     return torch.where(small, direct, series)
 
 
+def _compact(t: Tensor) -> Tensor:
+    """View of ``t`` with every broadcast (stride-0) dimension reduced to size 1.
+
+    Functions of ``df`` alone (the ``lgamma`` normaliser) are then evaluated once
+    per distinct value instead of once per row and component; the result
+    broadcasts back (and autograd sums its gradient over the broadcast, exactly
+    as through the original ``expand``).
+    """
+    for i, (stride, size) in enumerate(zip(t.stride(), t.shape, strict=True)):
+        if stride == 0 and size > 1:
+            t = t.narrow(i, 0, 1)
+    return t
+
+
 def _t_log_density(quad: Tensor, half_log_det: Tensor, df: Tensor, dim: Tensor) -> Tensor:
     r"""Log density of a ``dim``-variate ``t_df`` from its Mahalanobis term.
 
@@ -128,12 +142,17 @@ def _t_log_density(quad: Tensor, half_log_det: Tensor, df: Tensor, dim: Tensor) 
     out_dtype = torch.promote_types(quad.dtype, half_log_det.dtype)
     work = _work_dtype(quad.device)
     q = quad.to(work)
+    # The normaliser depends on (df, dim) only: evaluate it on their compact views.
+    nu_c = _compact(df).to(work)
+    d_c = _compact(dim).to(work)
+    inf_c = torch.isinf(nu_c)
+    norm = _lgamma_ratio(0.5 * torch.where(inf_c, torch.ones_like(nu_c), nu_c), 0.5 * d_c)
     nu = df.to(work)
     d = dim.to(work)
     inf = torch.isinf(nu)
     nu_s = torch.where(inf, torch.ones_like(nu), nu)
     half_d = 0.5 * d
-    finite = _lgamma_ratio(0.5 * nu_s, half_d) - 0.5 * (nu_s + d) * torch.log1p(q / nu_s)
+    finite = norm - 0.5 * (nu_s + d) * torch.log1p(q / nu_s)
     gauss = -0.5 * q
     core = torch.where(inf, gauss, finite) - half_d * _LOG_2PI
     return core.to(out_dtype) - half_log_det.to(out_dtype)
@@ -699,19 +718,30 @@ class StudentTMixture(Distribution):
         denom = t_prev * t_i
         safe_denom = torch.where(denom > 0, denom, torch.ones_like(denom))
         col_scale = torch.where(denom > 0, torch.rsqrt(safe_denom), torch.zeros_like(denom))
-        g_low = -(vv.unsqueeze(-1) * (vv * col_scale).unsqueeze(-2)).tril(-1)
-        g = g_low + torch.diag_embed(g_diag)
         resid = z - self.loc[..., j]  # [..., K]
         q = resid.square() / s
         nu = self.df
         inf = torch.isinf(nu)
         nu_s = torch.where(inf, torch.ones_like(nu), nu)
         factor = torch.where(inf, torch.ones_like(nu), (nu_s + q) / (nu_s + 1.0))
-        new_l = (lmat @ g) * torch.sqrt(factor)[..., None, None]
+        # new_l = sqrt(factor) L G without forming G (O(P²) per component, not
+        # O(P³)): (L G)[:, k] = L[:, k] G_kk − v_k c_k Σ_{i>k} L[:, i] v_i, the
+        # inner sums one matrix product with the strictly lower ones matrix.
+        root = torch.sqrt(factor).unsqueeze(-1)
+        strict = torch.ones(n_dim, n_dim, dtype=dtype, device=lmat.device).tril(-1)
+        after = (lmat * vv.unsqueeze(-2)) @ strict
+        new_l = torch.addcmul(
+            lmat * (g_diag * root).unsqueeze(-2),
+            after,
+            (vv * col_scale * root).unsqueeze(-2),
+            value=-1.0,
+        )
         new_loc = self.loc + cov_col * (resid / s).unsqueeze(-1)
         one = torch.ones((), dtype=dtype, device=lmat.device)
         pred = _t_log_density(q, 0.5 * torch.log(s), nu, one)
         new_logw = torch.log_softmax(self.log_weights + pred, dim=-1)
+        if bool(ok.all()):
+            return StudentTMixture(new_logw, new_loc, scale_tril=new_l, df=nu + 1.0)
         okk = ok.unsqueeze(-1)
         return StudentTMixture(
             torch.where(okk, new_logw, self.log_weights),
@@ -735,15 +765,26 @@ class StudentTMixture(Distribution):
 
     @staticmethod
     def _log_cdf_and_log_pdf(
-        x: Tensor, logw: Tensor, loc: Tensor, scale: Tensor, df: Tensor
+        x: Tensor,
+        logw: Tensor,
+        loc: Tensor,
+        scale: Tensor,
+        df: Tensor,
+        upper: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
-        """Mixture marginal ``log F`` and ``log f`` at ``x [..., 1]``; params ``[..., K]``."""
+        """Mixture marginal ``log F`` and ``log f`` at ``x [..., 1]``; params ``[..., K]``.
+
+        Where ``upper [..., 1]`` is true the first output is the log survival
+        function ``log(1 − F)`` instead (accurate relative to ``1 − F`` in the
+        upper tail, where ``F`` itself rounds to 1).
+        """
         z = (x - loc) / scale
         zero = scale == 0
         if bool(zero.any()):  # point-mass (exactly conditioned) components
             step = torch.where(x >= loc, math.inf, -math.inf).to(z.dtype)
             z = torch.where(zero, step, z)
-        log_cdf = torch.logsumexp(logw + _t_log_cdf(z, df).to(z.dtype), dim=-1)
+        zc = z if upper is None else torch.where(upper, -z, z)
+        log_cdf = torch.logsumexp(logw + _t_log_cdf(zc, df).to(z.dtype), dim=-1)
         one = torch.ones((), dtype=z.dtype, device=z.device)
         safe = torch.where(zero, torch.ones_like(scale), scale)
         zf = torch.where(zero, torch.zeros_like(z), z)
@@ -792,8 +833,10 @@ class StudentTMixture(Distribution):
         every component (``F(lo) ≤ q ≤ F(hi)``, valid for any ``ν > 0``), Newton
         steps with the exact mixture density, and bisection whenever a step leaves
         the bracket or does not halve the previous one, so it converges for
-        multimodal mixtures and heavy tails alike. Everything is float64 and
-        chunked over rows.
+        multimodal mixtures and heavy tails alike. Levels above 1/2 are solved on
+        the survival function ``1 − F(x) = 1 − q`` (exact in floating point), so a
+        far upper-tail quantile is as accurate relative to ``1 − q`` as a lower one
+        is to ``q``. Everything is float64 and chunked over rows.
 
         Args:
             q: A level or a 1-D sequence of levels in ``(0, 1)``.
@@ -850,6 +893,11 @@ class StudentTMixture(Distribution):
             p.unsqueeze(-2).expand(shape).reshape(-1, n_comp) for p in (logw, loc, scale, df)
         )
         target = levels.view(1, 1, -1).expand(shape[:-1]).reshape(-1)
+        # Levels above 1/2 are solved on the survival function, 1 − F(x) = 1 − q
+        # (1 − q is exact in floating point for q ≥ 1/2), so upper-tail quantiles
+        # keep the relative accuracy of 1 − q instead of an absolute eps / f(x).
+        upper = target > 0.5
+        tail = torch.where(upper, 1.0 - target, target)
         qk = target.unsqueeze(-1)
         # Bracket: every component's CDF is <= q at lo and >= q at hi.
         lo = (loc_e - _t_tail_bound(qk, df_e) * scale_e).amin(-1)
@@ -867,11 +915,19 @@ class StudentTMixture(Distribution):
         for _ in range(max_iter):
             if active.numel() == 0:
                 break
-            xa, lo_a, hi_a, q_a = x[active], lo[active], hi[active], target[active]
-            log_cdf, log_pdf = StudentTMixture._log_cdf_and_log_pdf(
-                xa.unsqueeze(-1), logw_e[active], loc_e[active], scale_e[active], df_e[active]
+            xa, lo_a, hi_a = x[active], lo[active], hi[active]
+            up_a = upper[active]
+            log_tail, log_pdf = StudentTMixture._log_cdf_and_log_pdf(
+                xa.unsqueeze(-1),
+                logw_e[active],
+                loc_e[active],
+                scale_e[active],
+                df_e[active],
+                up_a.unsqueeze(-1),
             )
-            g = log_cdf.exp() - q_a
+            # g = F(x) − q in both forms: (1 − q) − (1 − F) on the upper side.
+            p_tail = log_tail.exp()
+            g = torch.where(up_a, tail[active] - p_tail, p_tail - tail[active])
             lo_a = torch.where(g < 0, xa, lo_a)
             hi_a = torch.where(g > 0, xa, hi_a)
             step = g / log_pdf.exp()

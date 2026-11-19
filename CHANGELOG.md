@@ -24,14 +24,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per-component terms; `condition` on a noisy coordinate (`df + 1`, `(df + q)/(df + 1)`
   scale, reweighted components; the conditional Cholesky factor is a closed-form rank-one
   downdate built from tail sums, so a nearly exact measurement keeps full relative
-  accuracy); `marginal_cdf` and `marginal_quantile` (safeguarded Newton with a guaranteed
+  accuracy, applied in O(P²) per component without forming the P x P downdate factor);
+  `marginal_cdf` and `marginal_quantile` (safeguarded Newton with a guaranteed
   Student-t tail-bound bracket and an active set, float64, chunked; no probability
-  clipping); `sample`, `mean`, `variance`, `covariance_matrix`. The `df`-dependent
+  clipping; levels above 1/2 are solved on the survival function, so upper-tail quantiles
+  are as accurate relative to `1 - q` as lower ones are to `q`); `sample`, `mean`, `variance`, `covariance_matrix`. The `df`-dependent
   normaliser uses a Stirling-difference series above `df = 100`, so the Gaussian limit is
   approached as `O(1/df)` with no numerical floor. `tools/benchmark_student_t_mixture.py`
   times it against a per-component loop.
 - `MixtureDensityLoss(df=..., learn_df=...)`: Student-t components (fixed `df`, or one
-  shared learned `df = softplus(raw_df)`), and `MixtureDensityLoss.distribution(y_pred)`
+  shared `df = df_init * exp(raw_df)` learned on the log scale: `raw_df` starts at 0, so the
+  initial `df` is exact in any dtype, and an optimiser step moves `df` by a fixed fraction,
+  reaching the Gaussian regime geometrically instead of stalling near `df ~ 10`), and `MixtureDensityLoss.distribution(y_pred)`
   returning the head's `StudentTMixture`. The Gaussian MDN is the `df = math.inf` case of
   the same code path.
 - `torchregress.losses.structural_similarity_1d` and `StructuralSimilarity1dLoss` (`1 - SSIM`):
@@ -141,6 +145,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   private `_log_prob_diagonal`, `_log_prob_full` and `_component_marginal_std` are removed.
   `NoiseAwareDensityLoss` uses its analytic diagonal-MDN shortcuts only for Gaussian
   components.
+- `MixtureDensityLoss.forward(mask=...)` with a per-feature mask uses the exact marginal
+  NLL of each row's observed features (rows with none are dropped) instead of dropping
+  every partially labelled row; masked target entries may be NaN. Per-feature `weights`
+  are averaged over each row's observed features.
+- `MixtureDensityLoss.predict_interval` returns exact marginal quantiles
+  (`StudentTMixture.marginal_quantile`) instead of Monte Carlo estimates from 10,000 draws;
+  `n_samples` is accepted and ignored.
 - `solve_normal_equations` does less work per call, with bit-identical results (6,144
   randomized cases, both dtypes, all flags): the non-negative solve's standard errors reuse
   each row's last free-block Cholesky factor instead of factorising every final free block
@@ -163,6 +174,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `NormalizingFlowLoss` spline-range warning identified spline flows by searching the class
   name for "nsf", which also matched "TransformerFlow"; it now checks for zuko's NSF or a
   `tail_bound` attribute.
+- `test_large_df_tends_to_gaussian` failed for about 4% of global RNG states: at
+  `df = 1e12` the test's own subtraction of two log densities has an absolute error of
+  `df * eps * |log p|` (about 2e-3); its tolerance now includes that bound.
 - `test_recommended_tail_bound_is_data_range_with_margin_clipped` used an unseeded
   `torch.randn(500)` and failed for about 1.6% of global RNG states; the input is now seeded.
 - Docs: corrected author lists for Miller, Weniger & Forré (CNRE) and Elsharkawy & Kahn;

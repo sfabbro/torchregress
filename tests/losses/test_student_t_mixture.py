@@ -115,13 +115,16 @@ class TestLogProb:
         logits, loc, cov = _params(diag=form == "scale_diag")
         x = torch.randn(5, 4, dtype=F64)
         gauss = _mixture(logits, loc, cov, math.inf, form).log_prob(x)
-        # The gap is O(1/nu) with no numerical floor: nu * gap converges.
-        scaled = [
-            df * (_mixture(logits, loc, cov, df, form).log_prob(x) - gauss)
-            for df in (1e6, 1e9, 1e12)
-        ]
-        torch.testing.assert_close(scaled[1], scaled[2], rtol=1e-3, atol=1e-3)
-        torch.testing.assert_close(scaled[0], scaled[2], rtol=1e-2, atol=1e-2)
+        # The gap is O(1/nu) with no numerical floor in the density itself:
+        # nu * gap converges. The test's own subtraction of two log densities
+        # costs about eps * |log p| each, i.e. nu * eps * |log p| after scaling
+        # (2e-3 at nu = 1e12, log p ~ -8), so that bound is added to atol.
+        dfs = (1e6, 1e9, 1e12)
+        scaled = [df * (_mixture(logits, loc, cov, df, form).log_prob(x) - gauss) for df in dfs]
+        floor = [4 * torch.finfo(F64).eps * df * gauss.abs() for df in dfs]
+        for i, tol in ((1, 1e-3), (0, 1e-2)):
+            err = (scaled[i] - scaled[2]).abs()
+            assert torch.all(err <= tol + tol * scaled[2].abs() + floor[i] + floor[2])
 
     def test_single_component_equals_distribution(self):
         logits, loc, cov = _params(k=1)
@@ -472,6 +475,26 @@ class TestQuantilesAndSampling:
         dist = stats.norm if math.isinf(df) else stats.t(df)
         ref = loc[0, 0, :, None].numpy() + scale[0, 0, :, None].numpy() * dist.ppf(levels)
         np.testing.assert_allclose(got.numpy(), ref, rtol=1e-9, atol=1e-9)
+
+    @pytest.mark.parametrize("df", [0.6, 1.0, 4.0, math.inf])
+    def test_far_upper_tail_quantiles_are_relatively_accurate(self, df):
+        # Upper levels are solved on the survival function: the quantile at
+        # 1 - p matches scipy's isf(p) to relative precision (a CDF-space solve
+        # is limited to an absolute error of about eps / f(x) there) and the
+        # solution is symmetric with the lower tail.
+        mix = StudentTMixture(
+            torch.zeros(1, 1, dtype=F64),
+            torch.zeros(1, 1, 1, dtype=F64),
+            scale_diag=torch.ones(1, 1, 1, dtype=F64),
+            df=df,
+        )
+        p = np.array([1e-6, 1e-9, 1e-12])
+        dist = stats.norm if math.isinf(df) else stats.t(df)
+        levels = 1.0 - p  # rounded: the exact upper-tail mass is 1 - levels
+        upper = mix.marginal_quantile(levels.tolist())[0, 0].numpy()
+        lower = mix.marginal_quantile(p.tolist())[0, 0].numpy()
+        np.testing.assert_allclose(upper, dist.isf(1.0 - levels), rtol=1e-11)
+        np.testing.assert_allclose(lower, dist.ppf(p), rtol=1e-11)
 
     @pytest.mark.parametrize("form", FORMS)
     def test_mixture_quantiles_invert_cdf(self, form):
