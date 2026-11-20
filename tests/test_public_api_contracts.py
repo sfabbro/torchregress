@@ -259,6 +259,12 @@ EXPECTED_EXPORTS = {
         "maximum_likelihood_estimate",
         "MixtureFractionEstimate",
         "WifiRatioEnsemble",
+        "BinnedCoverage",
+        "CriticalValueRegressor",
+        "NeymanConfidenceSet",
+        "SmoothCoverage",
+        "binned_conditional_coverage",
+        "smooth_conditional_coverage",
     ],
     "constraints": [
         "NonNegativeHead",

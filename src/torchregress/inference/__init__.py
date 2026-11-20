@@ -1,5 +1,13 @@
 """Inference utilities for population/parameter uncertainty."""
 
+from .neyman import (
+    BinnedCoverage,
+    CriticalValueRegressor,
+    NeymanConfidenceSet,
+    SmoothCoverage,
+    binned_conditional_coverage,
+    smooth_conditional_coverage,
+)
 from .orthogonal import (
     OrthogonalEstimate,
     median_heuristic_bandwidth,
@@ -43,4 +51,10 @@ __all__ = [
     "maximum_likelihood_estimate",
     "MixtureFractionEstimate",
     "WifiRatioEnsemble",
+    "BinnedCoverage",
+    "CriticalValueRegressor",
+    "NeymanConfidenceSet",
+    "SmoothCoverage",
+    "binned_conditional_coverage",
+    "smooth_conditional_coverage",
 ]

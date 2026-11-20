@@ -27,7 +27,7 @@ always validate empirical coverage by parameter region.
 from __future__ import annotations
 
 import math
-from typing import Callable, Optional
+from typing import Callable, Optional, Protocol
 
 import torch
 from torch import Tensor
@@ -38,6 +38,18 @@ from .conformal import finite_sample_quantile
 _ELEMENT_BUDGET = 1 << 22
 # Sample vectors (rows x n_samples) per ``sample_fn`` call / moment chunk.
 _SAMPLE_BUDGET = 1 << 20
+
+
+class _CriticalValueModel(Protocol):
+    """Interface of a critical-value regressor accepted by the WALDO classes.
+
+    Satisfied by :class:`WaldoCriticalValueRegressor` and by
+    :class:`torchregress.inference.CriticalValueRegressor` (single level).
+    """
+
+    def fit(self, features: Tensor, scores: Tensor, /) -> object: ...
+
+    def predict_critical(self, features: Tensor, /) -> Tensor: ...
 
 
 def waldo_statistic(
@@ -198,6 +210,12 @@ class WaldoConformal:
         critical_value_fn: Optional callable ``target -> critical value`` used
             instead of the binned estimate (for externally fitted quantile
             regression).  It must accept ``[N, D]`` and return ``[N]``.
+        critical_value_regressor: Optional regressor fitted on the calibration
+            targets and Wald scores at :meth:`calibrate` (``fit(target, scores)``,
+            ``predict_critical(target)``): :class:`WaldoCriticalValueRegressor`
+            (binned 1-D key) or the multi-parameter
+            :class:`torchregress.inference.CriticalValueRegressor` (quantile MLP
+            or k-NN on the full target vector, LF2I-style).
         min_variance: Variance floor used by the score.
 
     Shapes:
@@ -212,7 +230,7 @@ class WaldoConformal:
         *,
         critical_bins: Optional[int] = None,
         critical_value_fn: Optional[Callable[[Tensor], Tensor]] = None,
-        critical_value_regressor: Optional[WaldoCriticalValueRegressor] = None,
+        critical_value_regressor: Optional[_CriticalValueModel] = None,
         covariance_type: str = "diagonal",
         min_variance: float = 1e-8,
     ) -> None:
@@ -558,7 +576,7 @@ class WaldoPosteriorCalibrator:
         alpha: float = 0.1,
         *,
         critical_bins: Optional[int] = None,
-        critical_value_regressor: Optional[WaldoCriticalValueRegressor] = None,
+        critical_value_regressor: Optional[_CriticalValueModel] = None,
         covariance_type: str = "full",
         chunk_size: Optional[int] = None,
     ) -> None:
@@ -646,7 +664,7 @@ class WaldoDensityConformal:
         alpha: float = 0.1,
         *,
         critical_bins: Optional[int] = None,
-        critical_value_regressor: Optional[WaldoCriticalValueRegressor] = None,
+        critical_value_regressor: Optional[_CriticalValueModel] = None,
         covariance_type: str = "full",
         n_samples: int = 256,
         chunk_size: Optional[int] = None,
