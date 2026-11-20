@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import re
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -537,3 +539,11 @@ def test_constant_matches_log_two_pi() -> None:
         torch.zeros(1, 3, dtype=F64), known_variance=torch.ones(3, dtype=F64)
     )
     assert math.isclose(float(res.nll), 1.5 * math.log(2 * math.pi), rel_tol=1e-14)
+
+
+def test_docs_example_runs() -> None:
+    page = Path(__file__).resolve().parents[2] / "docs" / "losses" / "known_covariance.md"
+    blocks = re.findall(r"```python\s*\n(.*?)```", page.read_text(encoding="utf-8"), re.DOTALL)
+    assert blocks
+    for block in blocks:
+        exec(compile(block, str(page), "exec"), {})

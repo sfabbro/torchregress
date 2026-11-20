@@ -183,6 +183,7 @@ nav = [
       { "Beta Negative Log-Likelihood" = "losses/beta_nll.md" },
       { "Wasserstein Bound Surrogate" = "losses/gaussian_wasserstein.md" },
       { "Linear-Nuisance Marginal Likelihood" = "losses/linear_nuisance.md" },
+      { "Known + Model Covariance" = "losses/known_covariance.md" },
     ] },
     { "Outlier-Resistant" = "losses/robust.md" },
     { "Structural Similarity (1-D)" = "losses/structural_similarity.md" },

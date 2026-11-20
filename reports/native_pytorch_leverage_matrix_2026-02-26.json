@@ -269,6 +269,35 @@
           "MixtureDensityLoss no longer adds eps to the diagonal scales inside the log density (scales are floored by min_std); Gaussian NLLs differ from the previous release by O(eps / min_std)"
         ]
       }
+    },
+    {
+      "area": "known_covariance_gaussian_nll",
+      "surface": [
+        "known_covariance_gaussian_nll",
+        "KnownCovarianceGaussianNLL"
+      ],
+      "native_candidate": [
+        "torch.distributions.MultivariateNormal",
+        "torch.distributions.LowRankMultivariateNormal",
+        "torch.linalg.cholesky_ex"
+      ],
+      "decision": "Hybrid",
+      "rationale": "MultivariateNormal evaluates the same density once the caller assembles C_known + diag(s^2) + U U^T, but has no per-dimension masks (exact marginals), no equilibration (scipy rejects, and float32 loses accuracy on, badly scaled covariances), no learned fractional scatter, no reported jitter and no chi2 / whitened-residual outputs; the custom path pads masked dimensions to blockdiag(C_oo, I) and calls native batched cholesky_ex and solve_triangular on the equilibrated matrix.",
+      "action": "Keep the thin custom wrapper over native batched Cholesky; lock parity with scipy, MultivariateGaussianLoss, LowRankGaussianLoss and the Woodbury path of marginalize_linear_nuisance.",
+      "coverage_evidence": {
+        "parity_tests": [
+          "tests/losses/test_known_covariance.py::TestScipyParity::test_dense_known_plus_model_matches_scipy",
+          "tests/losses/test_known_covariance.py::TestMasking::test_masked_equals_principal_submatrix_marginal",
+          "tests/losses/test_known_covariance.py::TestSpecialCases::test_diagonal_case_equals_existing_diagonal_losses",
+          "tests/losses/test_known_covariance.py::TestSpecialCases::test_dense_known_only_matches_multivariate_gaussian_loss",
+          "tests/losses/test_known_covariance.py::TestSpecialCases::test_low_rank_matches_woodbury",
+          "tests/losses/test_known_covariance.py::TestSpecialCases::test_matches_marginalized_multisource"
+        ],
+        "known_divergences": [
+          "about 1.6x the cost of a bare MultivariateNormal on a caller-assembled covariance (padding, equilibration and validation passes over [B, D, D])",
+          "rows whose equilibrated covariance is not numerically positive definite raise unless max_jitter > 0; the jitter is relative to the diagonal and reported per row"
+        ]
+      }
     }
   ]
 }

@@ -2,7 +2,7 @@
   "artifact": "method_catalog",
   "version": 1,
   "summary": {
-    "total_methods": 168,
+    "total_methods": 169,
     "families": {
       "bnn": 7,
       "calibration_transform": 7,
@@ -31,7 +31,7 @@
       "point_loss": 2,
       "poisson": 4,
       "poisson_gaussian": 4,
-      "probabilistic_loss": 12,
+      "probabilistic_loss": 13,
       "quantile": 2,
       "representation_regularizer": 1,
       "robust_algorithm": 2,
@@ -48,7 +48,7 @@
     "maturity": {
       "Core": 7,
       "Strong": 20,
-      "Available": 141
+      "Available": 142
     },
     "peer_uq_methods_present": {
       "SWAG": true,
@@ -603,6 +603,29 @@
       "imbalance": "no",
       "noisy_features_eiv": "no",
       "notes": "Exact Gaussian NLL of [B, N] rows with known per-sample precision and a linear nuisance (continuum, baseline, calibration polynomial) integrated out by Woodbury: one m x m Cholesky per row, exact masking, flat priors as the restricted likelihood (fail closed when unidentified). marginalize_linear_nuisance also returns the posterior nuisance and the conditional residual. Noise is known, not learned."
+    },
+    {
+      "name": "KnownCovarianceGaussianNLL",
+      "family": "probabilistic_loss",
+      "public_path": "torchregress.losses.KnownCovarianceGaussianNLL",
+      "task_tags": [
+        "multi_target",
+        "known_noise",
+        "missing_labels",
+        "calibration"
+      ],
+      "maturity": "Available",
+      "multimodal": "no",
+      "multi_target": "yes",
+      "non_gaussian": "no",
+      "epistemic": "no",
+      "aleatoric": "yes",
+      "decomposition": "no",
+      "calibration": "partial",
+      "ood_support": "partial",
+      "imbalance": "no",
+      "noisy_features_eiv": "no",
+      "notes": "Exact Gaussian NLL of [B, D] residuals under a per-row known covariance (dense or diagonal) plus a model covariance diag(s^2) + U U^T that is learned (fractional (a*y)^2 + b^2 or constant scatter, fractional or constant low-rank factor) and/or predicted per row. Equilibrated batched Cholesky, exact marginalisation of masked dimensions, opt-in reported jitter; known_covariance_gaussian_nll returns chi2, log-det, dof and whitened residuals for calibration diagnostics. O(D^3) per row."
     },
     {
       "name": "StructuralSimilarity1dLoss",

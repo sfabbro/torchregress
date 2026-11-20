@@ -374,6 +374,25 @@ _METHODS: tuple[MethodMetadata, ...] = (
         ),
     ),
     MethodMetadata(
+        name="KnownCovarianceGaussianNLL",
+        family="probabilistic_loss",
+        public_path="torchregress.losses.KnownCovarianceGaussianNLL",
+        task_tags=("multi_target", "known_noise", "missing_labels", "calibration"),
+        maturity="Available",
+        multi_target="yes",
+        non_gaussian="no",
+        aleatoric="yes",
+        calibration="partial",
+        notes=(
+            "Exact Gaussian NLL of [B, D] residuals under a per-row known covariance (dense or "
+            "diagonal) plus a model covariance diag(s^2) + U U^T that is learned (fractional "
+            "(a*y)^2 + b^2 or constant scatter, fractional or constant low-rank factor) and/or "
+            "predicted per row. Equilibrated batched Cholesky, exact marginalisation of masked "
+            "dimensions, opt-in reported jitter; known_covariance_gaussian_nll returns chi2, "
+            "log-det, dof and whitened residuals for calibration diagnostics. O(D^3) per row."
+        ),
+    ),
+    MethodMetadata(
         name="StructuralSimilarity1dLoss",
         family="point_loss",
         public_path="torchregress.losses.StructuralSimilarity1dLoss",

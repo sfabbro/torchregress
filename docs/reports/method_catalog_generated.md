@@ -8,7 +8,7 @@ It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 
 ## Summary
 
-- Total methods: `168`
+- Total methods: `169`
 - Peer methods present: `SWAG`, `BayesianNeuralNetwork`, `MixtureDensityLoss`
 
 ### By Family
@@ -42,7 +42,7 @@ It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 | `point_loss` | 2 |
 | `poisson` | 4 |
 | `poisson_gaussian` | 4 |
-| `probabilistic_loss` | 12 |
+| `probabilistic_loss` | 13 |
 | `quantile` | 2 |
 | `representation_regularizer` | 1 |
 | `robust_algorithm` | 2 |
@@ -62,7 +62,7 @@ It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 |---|---:|
 | `Core` | 7 |
 | `Strong` | 20 |
-| `Available` | 141 |
+| `Available` | 142 |
 
 ## Method Rows
 
@@ -192,6 +192,7 @@ Legend: `*` suffix means partial support. This snapshot is for discovery and com
 | `GaussianLatentForwardObservationNLLLoss` | `probabilistic_loss` | `Available` | `forward_observation`, `measurement_noise`, `quadrature` | `aleatoric`, `calibration*`, `ood*` | `torchregress.losses.GaussianLatentForwardObservationNLLLoss` |
 | `GaussianNLLLoss` | `probabilistic_loss` | `Core` | `heteroscedastic_noise`, `aleatoric_uq` | `aleatoric`, `calibration*`, `ood*` | `torchregress.losses.GaussianNLLLoss` |
 | `GaussianWassersteinBoundLoss` | `probabilistic_loss` | `Available` | `heteroscedastic_noise`, `multivariate_targets`, `mean_covariance_supervision` | `aleatoric*`, `calibration*`, `ood*` | `torchregress.losses.GaussianWassersteinBoundLoss` |
+| `KnownCovarianceGaussianNLL` | `probabilistic_loss` | `Available` | `multi_target`, `known_noise`, `missing_labels`, `calibration` | `aleatoric`, `calibration*`, `ood*` | `torchregress.losses.KnownCovarianceGaussianNLL` |
 | `LowRankGaussianLoss` | `probabilistic_loss` | `Strong` | `multi_target`, `scalability` | `aleatoric`, `calibration*`, `ood*` | `torchregress.losses.LowRankGaussianLoss` |
 | `MarginalizedMultiSourceGaussianNLLLoss` | `probabilistic_loss` | `Available` | `multi_target`, `correlated_targets`, `missing_labels`, `noisy_labels` | `aleatoric`, `calibration*`, `ood*` | `torchregress.losses.MarginalizedMultiSourceGaussianNLLLoss` |
 | `MarginalizedNuisanceGaussianNLLLoss` | `probabilistic_loss` | `Available` | `sequence`, `known_noise`, `nuisance_marginalization`, `missing_labels` | `aleatoric*`, `calibration*`, `ood*` | `torchregress.losses.MarginalizedNuisanceGaussianNLLLoss` |

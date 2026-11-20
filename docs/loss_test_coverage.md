@@ -209,6 +209,9 @@ The matrix above covers the core loss surface; these additional public symbols a
 | `StructuralSimilarity1dLoss` | `ssim.py` | `tests/losses/test_ssim.py::TestLossClass` | DEDICATED |
 | `marginalize_linear_nuisance` | `linear_nuisance.py` | `tests/losses/test_linear_nuisance.py::TestDenseParity` + `TestFlatPrior` + `TestMasking` | DEDICATED |
 | `MarginalizedNuisanceGaussianNLLLoss` | `linear_nuisance.py` | `tests/losses/test_linear_nuisance.py::TestLossClass` | DEDICATED |
+| `known_covariance_gaussian_nll` | `known_covariance.py` | `tests/losses/test_known_covariance.py::TestScipyParity` + `TestMasking` + `TestSpecialCases` + `TestGradients` + `TestNumerics` | DEDICATED |
+| `KnownCovarianceGaussianNLL` | `known_covariance.py` | `tests/losses/test_known_covariance.py::TestLearnedScatter` + `TestLossClass` | DEDICATED |
+| `KnownCovarianceGaussianResult` | `known_covariance.py` | `tests/losses/test_known_covariance.py::TestScipyParity::test_dense_known_plus_model_matches_scipy` | DIRECT-LIGHT |
 | `StudentTMixture` | `student_t_mixture.py` | `tests/losses/test_student_t_mixture.py::TestLogProb` + `TestObservation` + `TestCondition` + `TestQuantilesAndSampling` + `TestGradients` + `TestRobustness` | DEDICATED |
 | `LinearNuisanceMarginal` | `linear_nuisance.py` | `tests/losses/test_linear_nuisance.py::TestDenseParity::test_full_prior_covariance_matches_multivariate_normal` | DIRECT-LIGHT |
 

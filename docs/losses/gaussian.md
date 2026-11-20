@@ -29,6 +29,7 @@ $$\boxed{\;\mathcal{L}_{\text{NLL}}(y, \mu, \sigma^2) = \frac{1}{2}\log(2\pi\sig
 | **`MultivariateGaussianLoss`** | Full | $(\mu, \Sigma)$ | [MultivariateGaussianLoss](../api/losses.md) | Correlated multi-output (small $k$) |
 | **`LowRankGaussianLoss`** | Low-Rank + Diag | $(\mu, W, d)$ | [LowRankGaussianLoss](../api/losses.md) | Correlated multi-output (large $k$) |
 | **`MarginalizedNuisanceGaussianNLLLoss`** | Known diag + $UP^{-1}U^\top$ | $\mu$ (noise and basis $U$ given) | [MarginalizedNuisanceGaussianNLLLoss](../api/losses.md#sequence-shape-losses) | Sequences with a continuum / baseline marginalised exactly ([guide](linear_nuisance.md)) |
+| **`KnownCovarianceGaussianNLL`** | Known (dense or diag) + learned $\operatorname{diag}(s^2) + UU^\top$ | $\mu$ (known covariance given) | [KnownCovarianceGaussianNLL](../api/losses.md#gaussian-heteroscedastic) | Published per-object covariances with model error learned by ML ([guide](known_covariance.md)) |
 
 ---
 

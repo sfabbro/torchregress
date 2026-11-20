@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `torchregress.losses.KnownCovarianceGaussianNLL` and `known_covariance_gaussian_nll`:
+  Gaussian NLL of `[B, D]` residuals under a per-row **known** covariance (dense
+  `[B, D, D]` / shared `[D, D]`, or diagonal `known_variance`) plus a **model**
+  covariance `diag(s^2) + U U^T`, learned by the loss (`scatter="fractional"`:
+  `(a * y_pred)^2 + b^2`; `scatter="constant"`: `b^2`; `rank=k` with a fractional
+  `U = y_pred * V` or constant `U = V` factor; `a`, `b` on the log scale) and/or passed
+  per row (`model_scale`, `model_factor`; they add). Exact batched Cholesky of the
+  Jacobi-equilibrated total covariance, masked dimensions marginalised exactly
+  (principal submatrix, `NaN` at masked entries ignored), fail-closed validation in
+  one host sync, opt-in relative jitter for failing rows only (reported per row).
+  The functional returns `KnownCovarianceGaussianResult(nll, chi2, log_det, dof,
+  whitened, jitter)` for chi2 / whitened-residual calibration diagnostics;
+  `KnownCovarianceGaussianNLL.evaluate` gives the same with the learned terms. New
+  guide page "Known + Model Covariance" and `tools/benchmark_known_covariance.py`.
 - `torchregress.inference.likelihood`: estimator-agnostic maximum-likelihood estimates and
   profile-likelihood intervals for continuous multivariate parameters in a box, from any score
   `score(theta [M, P], x [M, ...]) -> [M]` equal to `log p(x | theta)` up to a function of `x`.

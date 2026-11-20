@@ -42,7 +42,7 @@ $$\mathcal{L} = \frac{1}{\sum w_i m_i} \sum w_i m_i \, \ell(y_{\text{pred}, i}, 
 
 ## Gaussian & heteroscedastic
 
-→ **Guides:** [Gaussian losses](../losses/gaussian.md) · [Faithful Gaussian](../losses/faithful_gaussian.md) · [Beta-NLL](../losses/beta_nll.md) · [Wasserstein bound](../losses/gaussian_wasserstein.md)
+→ **Guides:** [Gaussian losses](../losses/gaussian.md) · [Faithful Gaussian](../losses/faithful_gaussian.md) · [Beta-NLL](../losses/beta_nll.md) · [Wasserstein bound](../losses/gaussian_wasserstein.md) · [Known + model covariance](../losses/known_covariance.md)
 
 | Symbol | Signature | Output |
 |:-------|:----------|:-------|
@@ -56,6 +56,9 @@ $$\mathcal{L} = \frac{1}{\sum w_i m_i} \sum w_i m_i \, \ell(y_{\text{pred}, i}, 
 | `symmetric_spd_matrix_sqrt` | `symmetric_spd_matrix_sqrt(sigma, *, eps=1e-8)` | Matrix square root for Wasserstein bound |
 | `MultivariateGaussianLoss` | `MultivariateGaussianLoss(...)` | mean + full Σ |
 | `LowRankGaussianLoss` | `LowRankGaussianLoss(min_variance=1e-6, jitter=1e-6, eps=1e-8, reduction="mean")` | mean + W·Wᵀ + D |
+| `known_covariance_gaussian_nll` | `known_covariance_gaussian_nll(residual, known_covariance=None, *, known_variance=None, model_scale=None, model_factor=None, mask=None, return_whitened=False, jitter=0.0, max_jitter=0.0, compute_dtype=None) → KnownCovarianceGaussianResult` | Exact per-row NLL of `N(0, C_known + diag(s²) + U Uᵀ)`; equilibrated batched Cholesky, masked dimensions marginalised (principal submatrix), χ², log-det, dof, whitened residuals |
+| `KnownCovarianceGaussianNLL` | `KnownCovarianceGaussianNLL(n_features=None, *, scatter="none", rank=0, factor="fractional", init_fraction=1e-2, init_floor=1e-3, learn_floor=True, init_factor_scale=None, jitter=0.0, max_jitter=0.0, compute_dtype=None, reduction="mean")`; `forward(y_pred, target, known_covariance=None, known_variance=None, model_scale=None, model_factor=None, mask=None, weights=None)`; `evaluate(...)`; `model_covariance_terms(y_pred)` | Reducing loss over rows with learned model covariance: `scatter="fractional"` → `(a⊙ŷ)² + b²`, `"constant"` → `b²`, `rank=k` → `U = ŷ⊙V` or `V` |
+| `KnownCovarianceGaussianResult` | `NamedTuple(nll, chi2, log_det, dof, whitened, jitter)` | Result of `known_covariance_gaussian_nll` / `KnownCovarianceGaussianNLL.evaluate` |
 | `create_gaussian_nll` | `create_gaussian_nll(covariance_type="diagonal")` | Factory |
 | `low_rank_output_dim` | `low_rank_output_dim(n_features, rank) → int` | → See [Utilities API](utils.md) |
 | `split_low_rank_gaussian_output` | `split_low_rank_gaussian_output(y_pred, n_features, rank)` | → See [Utilities API](utils.md) |

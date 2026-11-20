@@ -101,12 +101,13 @@ Parametric losses for the Gaussian family — supporting **heteroscedastic** (in
 | `MultivariateGaussianLoss` | $\boldsymbol{\mu}, \mathbf{L}$ | Correlated multi-output regression | [`MultivariateGaussianLoss`](../api/losses.md) |
 | `LowRankGaussianLoss` | $\boldsymbol{\mu}, \mathbf{U}, \mathbf{d}$ | Scalable multivariate ($\Sigma = UU^\top + \text{diag}(d)$) | [`LowRankGaussianLoss`](../api/losses.md) |
 | `MarginalizedNuisanceGaussianNLLLoss` | $\hat{\mathbf{y}}$ (known noise $\lambda$, nuisance basis $U$) | Sequences with a continuum / baseline / calibration marginalised exactly ($\Sigma = \Lambda^{-1} + U P^{-1} U^\top$) | [`MarginalizedNuisanceGaussianNLLLoss`](../api/losses.md#sequence-shape-losses) |
+| `KnownCovarianceGaussianNLL`, `known_covariance_gaussian_nll` | $\hat{\mathbf{y}}$ (known per-row covariance; learned or predicted model scatter) | Published per-object covariances plus a learned fractional / low-rank model covariance ($\Sigma = C_{\text{known}} + \operatorname{diag}(s^2) + UU^\top$), exact masking, $\chi^2$ diagnostics | [`KnownCovarianceGaussianNLL`](../api/losses.md#gaussian-heteroscedastic) |
 | `create_gaussian_nll()` | — | Factory: picks the right variant |
 
 !!! info "GaussianNLL ↔ WeightedMSE continuum"
     Setting `GaussianNLLLoss(fixed_variance=σ²)` makes the model predict **only the mean**, and the loss reduces to a **scaled MSE**.  The factory `create_gaussian_nll(use_mse_for_unit_variance=True)` returns `WeightedMSELoss` when variance is fixed at 1.  This means GaussianNLL and MSE are endpoints of a **single continuum**.
 
-Read the full [Gaussian losses guide](gaussian.md) for deep dives on diagonal, full-covariance, and low-rank variants. Also see [Beta-NLL](beta_nll.md) for stabilized training, [Faithful Gaussian & CRPS](faithful_gaussian.md) for decoupled mean/variance training and a proper-score alternative, and [Wasserstein bound](gaussian_wasserstein.md) for covariance supervision.
+Read the full [Gaussian losses guide](gaussian.md) for deep dives on diagonal, full-covariance, and low-rank variants, and [Known + model covariance](known_covariance.md) for published per-object covariances with a learned model term. Also see [Beta-NLL](beta_nll.md) for stabilized training, [Faithful Gaussian & CRPS](faithful_gaussian.md) for decoupled mean/variance training and a proper-score alternative, and [Wasserstein bound](gaussian_wasserstein.md) for covariance supervision.
 
 ---
 
