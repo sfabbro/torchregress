@@ -111,6 +111,20 @@ This is a **simulator-free local approximation**.  It can tighten regions where
 the Wald statistic is heteroscedastic, but it does not recover WALDO's original
 simulator-based conditional guarantee; validate coverage by target region.
 
+For multi-parameter targets, learn $C(y)$ on the full target vector with the
+LF2I quantile regressor instead (a single-level
+`torchregress.inference.CriticalValueRegressor` has the same `fit` /
+`predict_critical` interface), and check conditional coverage with its
+diagnostics; see [Neyman Confidence Sets](neyman.md):
+
+```python
+from torchregress.inference import CriticalValueRegressor
+from torchregress.losses import WaldoConformal
+
+cp = WaldoConformal(alpha=0.1, critical_value_regressor=CriticalValueRegressor(0.1))
+cp.calibrate(mean_cal, y_cal, variance_cal)
+```
+
 ## References
 
 | # | Reference |

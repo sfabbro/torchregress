@@ -1226,6 +1226,33 @@ _METHODS: tuple[MethodMetadata, ...] = (
         ),
     ),
     MethodMetadata(
+        name="NeymanConfidenceSet",
+        family="neyman_construction",
+        public_path="torchregress.inference.NeymanConfidenceSet",
+        task_tags=(
+            "parameter_estimation",
+            "confidence_regions",
+            "calibration",
+            "simulation_based_inference",
+            "heteroscedastic",
+            "imbalance",
+        ),
+        maturity="Available",
+        multi_target="yes",
+        non_gaussian="yes",
+        calibration="yes",
+        imbalance="partial",
+        notes=(
+            "LF2I Neyman construction {theta : lambda(theta; x) <= C(theta)} for any test "
+            "statistic (likelihood ratio, WALDO, ...). CriticalValueRegressor learns "
+            "C(theta) by non-crossing multi-level quantile regression (MLP) or a k-NN "
+            "finite-sample quantile on labelled calibration pairs, so coverage targets every "
+            "theta independently of the calibration population; binned_conditional_coverage "
+            "and smooth_conditional_coverage flag regions below nominal. Approximate: "
+            "accuracy is limited where calibration data are sparse."
+        ),
+    ),
+    MethodMetadata(
         name="FlowMatchingMLP",
         family="flow_matching",
         public_path="torchregress.models.FlowMatchingMLP",
@@ -2320,7 +2347,11 @@ _TASK_RECOMMENDATIONS: tuple[TaskRecommendation, ...] = (
     TaskRecommendation(
         task="Likelihood-ratio / simulation-based parameter estimation",
         recommended_start="NeuralRatioLoss",
-        strong_alternatives=("ContrastiveFlowLoss", "NormalizingFlowLoss"),
+        strong_alternatives=(
+            "ContrastiveFlowLoss",
+            "NormalizingFlowLoss",
+            "NeymanConfidenceSet (prior-free confidence sets from any statistic)",
+        ),
         notes=(
             "Use NRE when a simulator can generate (parameters, observations) and the "
             "target is an MLE/MAP estimate, likelihood-ratio test or hypothesis ranking. "
@@ -2328,7 +2359,9 @@ _TASK_RECOMMENDATIONS: tuple[TaskRecommendation, ...] = (
             "posterior weights and intervals with SBC/TARP before trusting them. "
             "ContrastiveFlowLoss is the flow-log-density variant; an NPE-style "
             "p(theta|x) conditional flow is the alternative when amortised posterior "
-            "samples are needed."
+            "samples are needed. For confidence sets with nominal coverage at every theta, "
+            "whatever the training population, calibrate the statistic with "
+            "NeymanConfidenceSet on labelled (theta, x) pairs."
         ),
     ),
     TaskRecommendation(

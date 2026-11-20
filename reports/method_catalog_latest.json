@@ -2,7 +2,7 @@
   "artifact": "method_catalog",
   "version": 1,
   "summary": {
-    "total_methods": 166,
+    "total_methods": 167,
     "families": {
       "bnn": 7,
       "calibration_transform": 7,
@@ -25,6 +25,7 @@
       "mc_dropout": 1,
       "mdn": 2,
       "multivariate": 1,
+      "neyman_construction": 1,
       "observation_mapping": 3,
       "ordinal": 2,
       "point_loss": 2,
@@ -47,7 +48,7 @@
     "maturity": {
       "Core": 7,
       "Strong": 20,
-      "Available": 139
+      "Available": 140
     },
     "peer_uq_methods_present": {
       "SWAG": true,
@@ -2192,6 +2193,31 @@
       "imbalance": "no",
       "noisy_features_eiv": "no",
       "notes": "Dependency-free local quantile approximation to WALDO's critical-value function, learned from held-out scores instead of simulator draws. Simulator-free local approximation; not the original conditional guarantee."
+    },
+    {
+      "name": "NeymanConfidenceSet",
+      "family": "neyman_construction",
+      "public_path": "torchregress.inference.NeymanConfidenceSet",
+      "task_tags": [
+        "parameter_estimation",
+        "confidence_regions",
+        "calibration",
+        "simulation_based_inference",
+        "heteroscedastic",
+        "imbalance"
+      ],
+      "maturity": "Available",
+      "multimodal": "no",
+      "multi_target": "yes",
+      "non_gaussian": "yes",
+      "epistemic": "no",
+      "aleatoric": "no",
+      "decomposition": "no",
+      "calibration": "yes",
+      "ood_support": "partial",
+      "imbalance": "partial",
+      "noisy_features_eiv": "no",
+      "notes": "LF2I Neyman construction {theta : lambda(theta; x) <= C(theta)} for any test statistic (likelihood ratio, WALDO, ...). CriticalValueRegressor learns C(theta) by non-crossing multi-level quantile regression (MLP) or a k-NN finite-sample quantile on labelled calibration pairs, so coverage targets every theta independently of the calibration population; binned_conditional_coverage and smooth_conditional_coverage flag regions below nominal. Approximate: accuracy is limited where calibration data are sparse."
     },
     {
       "name": "FlowMatchingMLP",

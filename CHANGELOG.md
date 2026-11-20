@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `torchregress.inference` Neyman confidence sets with parameter-dependent critical values
+  (LF2I; Dalmasso et al., arXiv:2107.03920): `{theta : lambda(theta; x) <= C_alpha(theta)}`
+  for any statistic oriented so that large values reject (likelihood ratio, WALDO, ...), with
+  coverage targeting every `theta` independently of the calibration population.
+  `CriticalValueRegressor(alpha, method="mlp" | "knn")` learns `C_alpha(theta)` from labelled
+  calibration pairs `theta [N, P]`, `statistic [N]` for one or several levels: a
+  quantile-regression MLP (pinball loss from `utils.quantile`, standardised inputs, head =
+  lowest quantile + softplus increments so levels never cross, initialised at the marginal
+  quantiles, held-out early stopping with reduce-on-plateau, seeded and deterministic; a
+  non-negative statistic is fitted on the log scale, exact by quantile equivariance) or a
+  chunked k-nearest-neighbour finite-sample quantile. `NeymanConfidenceSet` gives
+  `contains(statistic, theta)` and candidate-bank masks `region(statistic_fn, theta_bank, x)`;
+  `binned_conditional_coverage` (Wilson intervals, Bonferroni over bins) and
+  `smooth_conditional_coverage` (ridge-penalised logistic regression with a Scheffé
+  simultaneous band) estimate `P(covered | theta)` on held-out data and flag the regions
+  significantly below nominal. A single-level `CriticalValueRegressor` is accepted as
+  `critical_value_regressor` by `WaldoConformal`, `WaldoPosteriorCalibrator` and
+  `WaldoDensityConformal` (their behaviour is otherwise unchanged).
 - `torchregress.losses.StudentTMixture`: batched mixture of multivariate Student-t
   distributions (a `torch.distributions.Distribution`; `df = math.inf` components are
   Gaussian), with covariance-Cholesky (`scale_tril`), precision-Cholesky (`precision_tril`)

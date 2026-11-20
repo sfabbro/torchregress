@@ -3,9 +3,11 @@
 Complete reference for `torchregress.inference`. This package implements
 **Prediction-Powered Inference (PPI)** — confidence-interval estimators that
 combine a small trusted-labeled set with a large model-predicted unlabeled set
-to improve statistical efficiency while preserving frequentist coverage — and
+to improve statistical efficiency while preserving frequentist coverage —,
 **likelihood-ratio posterior reweighting** utilities for neural ratio
-estimation (NRE), contrastive ratio models and grid likelihood scans.
+estimation (NRE), contrastive ratio models and grid likelihood scans, and
+**Neyman confidence sets** with learned, parameter-dependent critical values
+(LF2I).
 
 For background, see [PPI + conformal](../guide/method-selection.md) and the
 [inference example](../examples/index.md).
@@ -208,6 +210,38 @@ mle, index = maximum_likelihood_estimate(log_ratio[None, :], theta)
     These utilities summarize a *finite supplied bank*. They do not correct for a truncated or
     poorly covering proposal; check the ESS and widen the bank/proposal if it is small. `-inf`
     log-ratios are rejected — encode hard exclusions with a large finite penalty.
+
+---
+
+## Neyman confidence sets (LF2I)
+
+→ **Guide:** [Neyman Confidence Sets](../methods/neyman.md)
+
+Neyman construction $R(x) = \{\theta : \lambda(\theta; x) \le C_\alpha(\theta)\}$
+for any statistic $\lambda$ that is large for incompatible $\theta$, with
+$C_\alpha(\theta)$, the $1-\alpha$ quantile of $\lambda(\theta; X)$ under
+$X \sim p(x \mid \theta)$, learned by quantile regression of
+$\lambda_i = \lambda(\theta_i; x_i)$ on $\theta_i$ over labelled calibration pairs
+(Dalmasso et al., LF2I).  Coverage targets every $\theta$, independently of the
+calibration population.
+
+| Symbol | Description |
+|:-------|:------------|
+| `CriticalValueRegressor(alpha=0.1, *, method="mlp", hidden=(64, 64), max_epochs=300, batch_size=512, lr=3e-3, weight_decay=0.0, val_fraction=0.2, patience=25, n_neighbors=None, transform="auto", seed=0)` | Estimates $C_\alpha(\theta)$ for one level (`alpha` scalar, `predict -> [M]`) or several (`alpha` sequence, `predict -> [M, L]`, columns in the given order, never crossing). `method="mlp"`: quantile-regression MLP on standardised `theta` (pinball loss, head = lowest quantile + softplus increments, initialised at the marginal quantiles, held-out early stopping with reduce-on-plateau, deterministic for a `seed`); `transform="auto"` fits `log(lambda + 0.01 mean(lambda))` when every statistic is non-negative. `method="knn"`: finite-sample quantile of the `k` nearest calibration statistics in standardised `theta` (default `k = ceil(N**(4/(4+P))/2)`, at least `ceil(10/min(alpha))`; `+inf` when `alpha < 1/(k+1)`). `fit(theta [N, P], statistic [N])`, `predict(theta)`, `predict_critical(theta)` (single level; the `WaldoConformal(critical_value_regressor=...)` interface). Attributes `levels`, `method_`, `transform_`, `n_neighbors_`, `best_epoch_`, `history_`. |
+| `NeymanConfidenceSet(critical_value)` | Wraps a fitted `CriticalValueRegressor` or a callable `theta [M, P] -> [M]` / `[M, L]`. `NeymanConfidenceSet.calibrate(theta, statistic, alpha=0.1, **regressor_kwargs)` fits and wraps. `contains(statistic [...], theta [..., P]) -> bool [...]` (or `[..., L]`); `region(statistic_fn, theta_bank, x, *, chunk_size=None) -> bool [N, K]` (or `[N, K, L]`) with `statistic_fn(theta_bank, x) -> [n, K]` and a shared `[K, P]` or per-row `[N, K, P]` bank; `critical_value(theta [..., P])`. |
+| `binned_conditional_coverage(theta, covered, *, nominal, bins=10, binning="uniform", confidence=0.95, bonferroni=True)` | Empirical coverage in bins along each parameter, with Wilson score intervals (Bonferroni over all non-empty bins). Returns one `BinnedCoverage` per parameter. |
+| `BinnedCoverage` | Frozen dataclass: `parameter`, `edges`, `count`, `coverage`, `lower`, `upper`, `under_covered` (upper bound below nominal), `over_covered`, `nominal`. |
+| `smooth_conditional_coverage(theta, covered, *, nominal, evaluate_at=None, degree=3, interactions=True, ridge=1e-3, confidence=0.95, simultaneous=True, max_iter=100, tol=1e-10)` | Logistic regression of the indicators on a polynomial basis of standardised `theta` (ridge-penalised Newton), with a Scheffé simultaneous band (or pointwise). Returns `SmoothCoverage`. |
+| `SmoothCoverage` | Frozen dataclass: `probability`, `lower`, `upper`, `under_covered`, `over_covered`, `nominal`, `coefficients`, `covariance`. |
+
+```python
+from torchregress.inference import NeymanConfidenceSet, binned_conditional_coverage
+
+cs = NeymanConfidenceSet.calibrate(theta_cal, stat_cal, alpha=[0.32, 0.05])
+covered = cs.contains(stat_test, theta_test)            # [N, 2] bool
+report = binned_conditional_coverage(theta_test, covered[:, 0], nominal=0.68)
+masks = cs.region(statistic_fn, theta_bank, x_test)     # [N, K, 2] bool
+```
 
 ---
 
