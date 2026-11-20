@@ -185,6 +185,7 @@ def test_reduction_behavior():
         "CumulativeCDFLoss",  # Needs bin centers
         "StructuralSimilarity1dLoss",  # Needs sequences longer than its window (tested in test_ssim)
         "MarginalizedNuisanceGaussianNLLLoss",  # Needs precision + nuisance basis
+        "KnownCovarianceGaussianNLL",  # Needs a known covariance or model scatter
     ]
 
     # Flexible-shape family losses consume multi-column parameter vectors

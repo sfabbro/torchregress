@@ -121,6 +121,11 @@ from .imbalanced import (
     LDSLoss,
     PropensityWeightedLoss,
 )
+from .known_covariance import (
+    KnownCovarianceGaussianNLL,
+    KnownCovarianceGaussianResult,
+    known_covariance_gaussian_nll,
+)
 from .linear_nuisance import (
     LinearNuisanceMarginal,
     MarginalizedNuisanceGaussianNLLLoss,
@@ -320,6 +325,8 @@ __all__ = [
     "InputNoiseMDNLoss",
     "InverseGaussianLoss",
     "JohnsonSUNLLLoss",
+    "KnownCovarianceGaussianNLL",
+    "KnownCovarianceGaussianResult",
     "LDSLoss",
     "LatentMarginalizationLoss",
     "LevelSetConformalPredictor",
@@ -418,6 +425,7 @@ __all__ = [
     "gev_nll",
     "johnson_su_nll",
     "list_regression_losses",
+    "known_covariance_gaussian_nll",
     "low_rank_output_dim",
     "marginalize_linear_nuisance",
     "quantile_loss",
