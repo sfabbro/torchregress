@@ -5,7 +5,9 @@ Complete reference for `torchregress.inference`. This package implements
 combine a small trusted-labeled set with a large model-predicted unlabeled set
 to improve statistical efficiency while preserving frequentist coverage — and
 **likelihood-ratio posterior reweighting** utilities for neural ratio
-estimation (NRE), contrastive ratio models and grid likelihood scans.
+estimation (NRE), contrastive ratio models and grid likelihood scans, and
+**maximum-likelihood estimates with profile-likelihood intervals** for any
+score function.
 
 For background, see [PPI + conformal](../guide/method-selection.md) and the
 [inference example](../examples/index.md).
@@ -208,6 +210,36 @@ mle, index = maximum_likelihood_estimate(log_ratio[None, :], theta)
     These utilities summarize a *finite supplied bank*. They do not correct for a truncated or
     poorly covering proposal; check the ESS and widen the bank/proposal if it is small. `-inf`
     log-ratios are rejected — encode hard exclusions with a large finite penalty.
+
+## Maximum likelihood and profile intervals (`inference.likelihood`)
+
+→ **Guide:** [Likelihood-ratio inference](../methods/likelihood_inference.md)
+
+A *score function* is any callable `score(theta [M, P], x [M, ...]) -> [M]` equal to
+$\log p(x \mid \theta)$ up to an additive function of $x$, evaluated row by row and twice
+differentiable in $\theta$. All results are detached; `bounds` is a `[P, 2]` box.
+
+| Symbol | Description |
+|:-------|:------------|
+| `maximize_score(score, x, bounds, *, n_candidates=256, n_starts=4, steps=50, init=None, tol=None, chunk_size=None, generator=None)` | Batched global maximization (the MLE). Scrambled Sobol candidates, topographical start selection (discrete local maxima over the $2P$ nearest candidates), projected saddle-free Newton ascent with exact Hessians and Armijo backtracking. `init` `[N, P]` adds a start per row. Returns `ScoreMaximum(theta [N, P], score [N], at_bound [N, P])`. Deterministic given `generator`. |
+| `profile_interval(score, x, theta_hat, s_max, index, threshold, bounds, *, n_scan=8, steps=20, max_iter=50, tol=None, chunk_size=None)` | Profile-likelihood interval $\{t: \max_{\theta_j = t} s \ge s_{\max} - c\}$ for parameter `index`; `threshold` $c$ is a scalar or `[N]`. Scans the profile to each bound (warm-started inner Newton maximization), brackets the **outermost** crossing, refines it by Illinois regula falsi on $\sqrt{2(s_{\max} - p)}$. Returns `ProfileInterval(lower, upper, lower_at_bound, upper_at_bound)`. |
+| `likelihood_ratio_statistic(score, x, theta0, s_max, *, clamp=True, chunk_size=None)` | $\lambda = s_{\max} - s(\theta_0, x)$ for `theta0` `[N, P]` (result `[N]`) or a bank `[N or 1, K, P]` (result `[N, K]`). Clamped at 0: a negative value means `theta0` scores above the reported maximum and is never rejected. |
+| `wilks_threshold(confidence, df=1)` | $\tfrac12\chi^2_{\mathrm{df}}(\text{confidence})$ (0.5 for 68.27 %, 1.92 for 95 % at `df=1`). |
+| `ratio_classifier_score(classifier)` | Score of a `build_ratio_classifier` module or of the `NeuralRatioLoss` holding it. |
+| `flow_score(flow)` | Score of a `ContrastiveFlowLoss` / `NormalizingFlowLoss` (`log_prob(theta, x)`) or of a conditional flow (`flow(theta).log_prob(x)`). |
+| `ScoreMaximum` / `ProfileInterval` | Named tuples returned by `maximize_score` and `profile_interval`. |
+
+```python
+from torchregress.inference import (
+    maximize_score, profile_interval, ratio_classifier_score, wilks_threshold,
+)
+
+score = ratio_classifier_score(classifier.eval())           # NRE logit = log p(x|theta) + c(x)
+theta_hat, s_max, at_bound = maximize_score(score, x, bounds, init=posterior_mean)
+lo, hi, lo_flag, hi_flag = profile_interval(
+    score, x, theta_hat, s_max, index=2, threshold=wilks_threshold(0.68), bounds=bounds
+)
+```
 
 ---
 

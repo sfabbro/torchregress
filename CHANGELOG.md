@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `torchregress.inference.likelihood`: estimator-agnostic maximum-likelihood estimates and
+  profile-likelihood intervals for continuous multivariate parameters in a box, from any score
+  `score(theta [M, P], x [M, ...]) -> [M]` equal to `log p(x | theta)` up to a function of `x`.
+  `maximize_score` (batched over rows: scrambled Sobol candidates, topographical start selection
+  over the `2P` nearest candidates, projected saddle-free Newton ascent with exact autograd
+  Hessians and Armijo backtracking, optional `init` start, `at_bound` flags, deterministic given a
+  generator); `profile_interval` (continuation scan of the profile to each bound with warm-started
+  inner Newton maximization, outermost crossing refined by Illinois regula falsi on the signed root
+  `sqrt(2 (s_max - p))`, scalar or per-row thresholds, bound flags);
+  `likelihood_ratio_statistic` (per-row hypotheses or banks, clamped at 0); `wilks_threshold`
+  (`chi2` quantile / 2); adapters `ratio_classifier_score` (`NeuralRatioLoss` classifiers) and
+  `flow_score` (`ContrastiveFlowLoss` / conditional flows). New guide page
+  "Likelihood-Ratio Inference" and `tools/benchmark_likelihood_inference.py`.
 - `torchregress.losses.StudentTMixture`: batched mixture of multivariate Student-t
   distributions (a `torch.distributions.Distribution`; `df = math.inf` components are
   Gaussian), with covariance-Cholesky (`scale_tril`), precision-Cholesky (`precision_tril`)

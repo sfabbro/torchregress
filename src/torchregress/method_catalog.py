@@ -1310,6 +1310,31 @@ _METHODS: tuple[MethodMetadata, ...] = (
         ),
     ),
     MethodMetadata(
+        name="maximize_score",
+        family="likelihood_ratio",
+        public_path="torchregress.inference.maximize_score",
+        task_tags=(
+            "parameter_estimation",
+            "simulation_based_inference",
+            "likelihood_ratio",
+            "confidence_intervals",
+        ),
+        maturity="Available",
+        multimodal="partial",
+        multi_target="yes",
+        non_gaussian="yes",
+        calibration="partial",
+        notes=(
+            "Estimator-agnostic MLE and profile-likelihood intervals (inference.likelihood: "
+            "maximize_score, profile_interval, likelihood_ratio_statistic, wilks_threshold) "
+            "for any score log p(x|theta) + c(x): NRE classifier, conditional flow or analytic. "
+            "Batched Sobol multistart with topographical start selection and projected Newton "
+            "ascent in a box; profile intervals by continuation scan + Illinois root finding "
+            "(outermost crossing). Prior-free, so no pull toward the training population; "
+            "Wilks thresholds are asymptotic, pass per-row Neyman critical values otherwise."
+        ),
+    ),
+    MethodMetadata(
         name="NeuralRatioLoss",
         family="likelihood_ratio",
         public_path="torchregress.losses.NeuralRatioLoss",

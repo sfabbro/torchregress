@@ -145,6 +145,14 @@ mean and covariance, with a critical-value regressor calibrated on held-out
 data. **Start here when you want parameter confidence sets rather than
 prediction intervals.**
 
+### [Likelihood-Ratio Inference](likelihood_inference.md)
+
+Maximum-likelihood estimates and profile-likelihood intervals for continuous
+multivariate parameters from any score function (ratio classifier, conditional
+flow or analytic log-likelihood), batched over rows. **Start here when a
+posterior is pulled toward the training population and you need frequentist
+estimates instead.**
+
 ### [Visualization](visualization.md)
 
 Diagnostic plots for calibration, residuals, learning curves, and method
