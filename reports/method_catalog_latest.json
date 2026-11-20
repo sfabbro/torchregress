@@ -2,7 +2,7 @@
   "artifact": "method_catalog",
   "version": 1,
   "summary": {
-    "total_methods": 167,
+    "total_methods": 168,
     "families": {
       "bnn": 7,
       "calibration_transform": 7,
@@ -48,7 +48,7 @@
     "maturity": {
       "Core": 7,
       "Strong": 20,
-      "Available": 140
+      "Available": 141
     },
     "peer_uq_methods_present": {
       "SWAG": true,
