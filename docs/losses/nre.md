@@ -489,6 +489,7 @@ calibration diagnostics (see [calibration metrics](../metrics/calibration.md)).
 - [Loss catalogue](index.md) — where NRE sits among regression objectives
 - [Gaussian losses](gaussian.md) — plain NLL when a normalized Gaussian likelihood is acceptable
 - [Likelihood-ratio posterior utilities](../api/inference.md) — turn log-ratios into posterior weights, effective sample sizes and MLE/MAP estimates
+- [Likelihood-ratio inference](../methods/likelihood_inference.md) — continuous MLE and profile-likelihood intervals from the trained classifier (`ratio_classifier_score`)
 - [SBC and TARP](../metrics/calibration.md#simulation-based-calibration-sbc-and-tarp) — validate posterior calibration before reporting intervals
 - [Calibration metrics](../metrics/calibration.md) — diagnose ratio/logit calibration downstream
 - [Conformal prediction](../methods/conformal/index.md) — distribution-free prediction intervals

@@ -1,5 +1,15 @@
 """Inference utilities for population/parameter uncertainty."""
 
+from .likelihood import (
+    ProfileInterval,
+    ScoreMaximum,
+    flow_score,
+    likelihood_ratio_statistic,
+    maximize_score,
+    profile_interval,
+    ratio_classifier_score,
+    wilks_threshold,
+)
 from .orthogonal import (
     OrthogonalEstimate,
     median_heuristic_bandwidth,
@@ -43,4 +53,12 @@ __all__ = [
     "maximum_likelihood_estimate",
     "MixtureFractionEstimate",
     "WifiRatioEnsemble",
+    "ProfileInterval",
+    "ScoreMaximum",
+    "flow_score",
+    "likelihood_ratio_statistic",
+    "maximize_score",
+    "profile_interval",
+    "ratio_classifier_score",
+    "wilks_threshold",
 ]

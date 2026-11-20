@@ -2,7 +2,7 @@
   "artifact": "method_catalog",
   "version": 1,
   "summary": {
-    "total_methods": 166,
+    "total_methods": 167,
     "families": {
       "bnn": 7,
       "calibration_transform": 7,
@@ -21,7 +21,7 @@
       "imbalanced_algorithm": 4,
       "imbalanced_loss": 11,
       "inference": 1,
-      "likelihood_ratio": 2,
+      "likelihood_ratio": 3,
       "mc_dropout": 1,
       "mdn": 2,
       "multivariate": 1,
@@ -47,7 +47,7 @@
     "maturity": {
       "Core": 7,
       "Strong": 20,
-      "Available": 139
+      "Available": 140
     },
     "peer_uq_methods_present": {
       "SWAG": true,
@@ -2304,6 +2304,29 @@
       "imbalance": "no",
       "noisy_features_eiv": "no",
       "notes": "wifi ensembles (Benevedes & Thaler 2025): log r = w0 + sum_i w_i f_i over frozen ratio estimators, convex weight fit on held-out data, sandwich covariance; frequentist error bars on log r(x) and mixture fractions (Gong-Samaniego). Valid when the member span contains the true log ratio."
+    },
+    {
+      "name": "maximize_score",
+      "family": "likelihood_ratio",
+      "public_path": "torchregress.inference.maximize_score",
+      "task_tags": [
+        "parameter_estimation",
+        "simulation_based_inference",
+        "likelihood_ratio",
+        "confidence_intervals"
+      ],
+      "maturity": "Available",
+      "multimodal": "partial",
+      "multi_target": "yes",
+      "non_gaussian": "yes",
+      "epistemic": "no",
+      "aleatoric": "no",
+      "decomposition": "no",
+      "calibration": "partial",
+      "ood_support": "partial",
+      "imbalance": "no",
+      "noisy_features_eiv": "no",
+      "notes": "Estimator-agnostic MLE and profile-likelihood intervals (inference.likelihood: maximize_score, profile_interval, likelihood_ratio_statistic, wilks_threshold) for any score log p(x|theta) + c(x): NRE classifier, conditional flow or analytic. Batched Sobol multistart with topographical start selection and projected Newton ascent in a box; profile intervals by continuation scan + Illinois root finding (outermost crossing). Prior-free, so no pull toward the training population; Wilks thresholds are asymptotic, pass per-row Neyman critical values otherwise."
     },
     {
       "name": "NeuralRatioLoss",

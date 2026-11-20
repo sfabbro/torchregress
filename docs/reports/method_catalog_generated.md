@@ -2,13 +2,13 @@
 
 _Generated provenance_: `tools/render_method_catalog.py:render_markdown`
 _Source artifacts_: `reports/method_catalog_latest.json`
-_Generated date_: `2026-11-19`
+_Generated date_: `2026-11-20`
 
 It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 
 ## Summary
 
-- Total methods: `166`
+- Total methods: `167`
 - Peer methods present: `SWAG`, `BayesianNeuralNetwork`, `MixtureDensityLoss`
 
 ### By Family
@@ -32,7 +32,7 @@ It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 | `imbalanced_algorithm` | 4 |
 | `imbalanced_loss` | 11 |
 | `inference` | 1 |
-| `likelihood_ratio` | 2 |
+| `likelihood_ratio` | 3 |
 | `mc_dropout` | 1 |
 | `mdn` | 2 |
 | `multivariate` | 1 |
@@ -61,7 +61,7 @@ It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 |---|---:|
 | `Core` | 7 |
 | `Strong` | 20 |
-| `Available` | 139 |
+| `Available` | 140 |
 
 ## Method Rows
 
@@ -164,6 +164,7 @@ Legend: `*` suffix means partial support. This snapshot is for discovery and com
 | `PredictionPoweredInference` | `inference` | `Available` | `inference`, `limited_labels`, `population_estimation` | `calibration*`, `ood*` | `torchregress.inference.ppi_mean_ci` |
 | `NeuralRatioLoss` | `likelihood_ratio` | `Available` | `parameter_estimation`, `simulation_based_inference`, `domain_shift`, `likelihood_ratio` | `calibration*`, `ood*` | `torchregress.losses.NeuralRatioLoss` |
 | `WifiRatioEnsemble` | `likelihood_ratio` | `Available` | `parameter_estimation`, `simulation_based_inference`, `likelihood_ratio`, `confidence_intervals` | `epistemic*`, `calibration`, `ood*` | `torchregress.inference.WifiRatioEnsemble` |
+| `maximize_score` | `likelihood_ratio` | `Available` | `parameter_estimation`, `simulation_based_inference`, `likelihood_ratio`, `confidence_intervals` | `calibration*`, `ood*` | `torchregress.inference.maximize_score` |
 | `MCDropoutWrapper` | `mc_dropout` | `Strong` | `epistemic_uq`, `low_compute` | `epistemic`, `aleatoric*`, `decomposition*`, `calibration*`, `ood*` | `torchregress.ensemble.MCDropoutWrapper` |
 | `MixtureDensityLoss` | `mdn` | `Available` | `multimodal`, `non_gaussian`, `multi_target` | `aleatoric`, `calibration*`, `ood*` | `torchregress.losses.MixtureDensityLoss` |
 | `StudentTMixture` | `mdn` | `Available` | `multimodal`, `non_gaussian`, `multi_target`, `missing_labels`, `censored` | `aleatoric`, `calibration*`, `ood*` | `torchregress.losses.StudentTMixture` |
