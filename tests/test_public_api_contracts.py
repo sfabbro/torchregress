@@ -267,6 +267,12 @@ EXPECTED_EXPORTS = {
         "profile_interval",
         "ratio_classifier_score",
         "wilks_threshold",
+        "BinnedCoverage",
+        "CriticalValueRegressor",
+        "NeymanConfidenceSet",
+        "SmoothCoverage",
+        "binned_conditional_coverage",
+        "smooth_conditional_coverage",
     ],
     "constraints": [
         "NonNegativeHead",

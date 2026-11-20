@@ -19,7 +19,7 @@ For conceptual guides, derivations, and worked examples, see
 | `torchregress.metrics` | Point, distribution, interval, calibration, OOD, ensemble, multivariate, ordinal, censored, decision | [Metrics API](metrics.md) |
 | `torchregress.calibration` | Variance temperature, isotonic mean, PIT, semi-conformal, label shift | [Calibration API](calibration.md) |
 | `torchregress.constraints` | Output-head constraints (non-negative, bounded, non-crossing, simplex, spectral norm) | [Constraints API](constraints.md) |
-| `torchregress.inference` | Prediction-powered inference (PPI), likelihood-ratio inference | [Inference API](inference.md) |
+| `torchregress.inference` | Prediction-powered inference (PPI), orthogonal inference, likelihood-ratio inference, Neyman confidence sets (LF2I) | [Inference API](inference.md) |
 | `torchregress.causal` | Doubly-robust ATE/CATE, overlap diagnostics, policy value | [Causal API](causal.md) |
 | `torchregress.viz` | Diagnostic, monitoring, results, and utility plotting | [Visualization API](viz.md) |
 | `torchregress.test_time` | Bayesian linear heads, OT shift conformal, BLR predictive adapters | [Test-time API](test_time.md) |
@@ -98,7 +98,7 @@ torchregress/
 ├── ensemble/              # Ensemble models and building blocks
 ├── algorithms/            # IRLS, SIMEX, RC, LatentNN, TicTac, IVON
 ├── test_time/             # Bayesian linear heads, OT shift, BLR adapters
-├── inference/             # Prediction-powered inference
+├── inference/             # PPI, ratio reweighting, Neyman confidence sets
 ├── constraints/           # Output-head constraints
 ├── comparison.py          # Comparison-example helpers (seeds, JSON summary)
 ├── prediction.py          # Predictive batch containers

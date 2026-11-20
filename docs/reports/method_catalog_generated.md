@@ -36,6 +36,7 @@ It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 | `mc_dropout` | 1 |
 | `mdn` | 2 |
 | `multivariate` | 1 |
+| `neyman_construction` | 1 |
 | `observation_mapping` | 3 |
 | `ordinal` | 2 |
 | `point_loss` | 2 |
@@ -169,6 +170,7 @@ Legend: `*` suffix means partial support. This snapshot is for discovery and com
 | `MixtureDensityLoss` | `mdn` | `Available` | `multimodal`, `non_gaussian`, `multi_target` | `aleatoric`, `calibration*`, `ood*` | `torchregress.losses.MixtureDensityLoss` |
 | `StudentTMixture` | `mdn` | `Available` | `multimodal`, `non_gaussian`, `multi_target`, `missing_labels`, `censored` | `aleatoric`, `calibration*`, `ood*` | `torchregress.losses.StudentTMixture` |
 | `TaskAgnosticCorrelations` | `multivariate` | `Available` | `covariance_evaluation`, `conditioning` | `calibration*`, `ood*` | `torchregress.metrics.TaskAgnosticCorrelations` |
+| `NeymanConfidenceSet` | `neyman_construction` | `Available` | `parameter_estimation`, `confidence_regions`, `calibration`, `simulation_based_inference`, `heteroscedastic`, `imbalance` | `calibration`, `ood*` | `torchregress.inference.NeymanConfidenceSet` |
 | `CommonScaleSplineHead` | `observation_mapping` | `Available` | `multi_source`, `common_bias` | `calibration*`, `ood*` | `torchregress.calibration.CommonScaleSplineHead` |
 | `ConditionBiasHead` | `observation_mapping` | `Available` | `multi_source`, `conditional_bias` | `calibration*`, `ood*` | `torchregress.calibration.ConditionBiasHead` |
 | `RelativeSurveySplineHead` | `observation_mapping` | `Available` | `multi_source`, `relative_bias`, `correlated_targets` | `calibration*`, `ood*` | `torchregress.calibration.RelativeSurveySplineHead` |

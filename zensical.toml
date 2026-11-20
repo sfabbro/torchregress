@@ -256,6 +256,7 @@ nav = [
     { "Marginal Contrastive Discrimination" = "methods/marginal_contrastive_density.md" },
     { "WALDO Wald Regions" = "methods/waldo.md" },
     { "Likelihood-Ratio Inference" = "methods/likelihood_inference.md" },
+    { "Neyman Confidence Sets (LF2I)" = "methods/neyman.md" },
     { "Model-Agnostic UQ Wrappers" = "methods/estimators.md" },
     { "Post-Training Calibration" = "methods/calibration.md" },
     { "Output Constraints" = "methods/constraints.md" },

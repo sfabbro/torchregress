@@ -153,6 +153,15 @@ flow or analytic log-likelihood), batched over rows. **Start here when a
 posterior is pulled toward the training population and you need frequentist
 estimates instead.**
 
+### [Neyman Confidence Sets (LF2I)](neyman.md)
+
+Confidence sets with nominal coverage at every parameter value, independent of
+the calibration population: the Neyman construction with a critical value
+$C_\alpha(\theta)$ learned by non-crossing quantile regression, for any test
+statistic (likelihood ratio, WALDO, ...), plus conditional-coverage
+diagnostics. **Start here when intervals under-cover the rare part of
+parameter space.**
+
 ### [Visualization](visualization.md)
 
 Diagnostic plots for calibration, residuals, learning curves, and method

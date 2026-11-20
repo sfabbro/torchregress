@@ -10,6 +10,14 @@ from .likelihood import (
     ratio_classifier_score,
     wilks_threshold,
 )
+from .neyman import (
+    BinnedCoverage,
+    CriticalValueRegressor,
+    NeymanConfidenceSet,
+    SmoothCoverage,
+    binned_conditional_coverage,
+    smooth_conditional_coverage,
+)
 from .orthogonal import (
     OrthogonalEstimate,
     median_heuristic_bandwidth,
@@ -61,4 +69,10 @@ __all__ = [
     "profile_interval",
     "ratio_classifier_score",
     "wilks_threshold",
+    "BinnedCoverage",
+    "CriticalValueRegressor",
+    "NeymanConfidenceSet",
+    "SmoothCoverage",
+    "binned_conditional_coverage",
+    "smooth_conditional_coverage",
 ]
