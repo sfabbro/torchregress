@@ -216,6 +216,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `maximize_score` / `profile_interval`: the projected-Newton step diagonalised every active
+  row-start's Hessian in one `torch.linalg.eigh` call; on CUDA the batched solver's workspace
+  grows with the batch (6M row-starts asked for 253 GiB). Batches are now split into chunks of
+  8192 matrices (results unchanged).
 - `NormalizingFlowLoss` spline-range warning identified spline flows by searching the class
   name for "nsf", which also matched "TransformerFlow"; it now checks for zuko's NSF or a
   `tail_bound` attribute.

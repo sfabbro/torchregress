@@ -394,3 +394,18 @@ def test_accelerator_matches_cpu() -> None:
         results.append([best.theta.cpu(), iv.lower.cpu(), iv.upper.cpu()])
     for on_cpu, on_device in zip(*results, strict=True):
         torch.testing.assert_close(on_device, on_cpu, rtol=0, atol=5e-3)
+
+
+def test_eigh_chunking_matches_one_call(monkeypatch):
+    # Large batches are split (the CUDA solver's workspace grows with the batch);
+    # results must not depend on the split.
+    import torchregress.inference.likelihood as lk
+
+    gen = torch.Generator().manual_seed(0)
+    a = torch.randn(1000, 3, 3, dtype=torch.float64, generator=gen)
+    sym = a + a.transpose(1, 2)
+    ref_vals, ref_vecs = torch.linalg.eigh(sym)
+    monkeypatch.setattr(lk, "_EIGH_CHUNK", 64)
+    vals, vecs = lk._eigh(sym)
+    torch.testing.assert_close(vals, ref_vals, rtol=0, atol=0)
+    torch.testing.assert_close(vecs.abs(), ref_vecs.abs(), rtol=0, atol=0)

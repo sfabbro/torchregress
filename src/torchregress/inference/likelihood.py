@@ -288,13 +288,21 @@ def _chunks(total: int, size: int) -> Iterator[slice]:
         yield slice(start, min(start + size, total))
 
 
+#: Matrices per ``torch.linalg.eigh`` call. The batched CUDA solver's workspace
+#: grows with the batch (about 45 kB per 3 x 3 matrix was observed: one call on
+#: 6M row-starts asked for 253 GiB), so large batches are split.
+_EIGH_CHUNK = 8192
+
+
 def _eigh(matrix: Tensor) -> tuple[Tensor, Tensor]:
-    """Batched symmetric eigendecomposition (host fallback where unsupported)."""
+    """Batched symmetric eigendecomposition, in bounded chunks (host fallback on MPS)."""
     if matrix.device.type == "mps":
-        values, vectors = torch.linalg.eigh(matrix.cpu())
+        values, vectors = _eigh(matrix.cpu())
         return values.to(matrix.device), vectors.to(matrix.device)
-    values, vectors = torch.linalg.eigh(matrix)
-    return values, vectors
+    if matrix.shape[0] <= _EIGH_CHUNK:
+        return torch.linalg.eigh(matrix)
+    parts = [torch.linalg.eigh(matrix[sl]) for sl in _chunks(matrix.shape[0], _EIGH_CHUNK)]
+    return torch.cat([v for v, _ in parts]), torch.cat([w for _, w in parts])
 
 
 def _call_score(score: ScoreFn, theta: Tensor, x: Tensor) -> Tensor:
