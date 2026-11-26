@@ -273,6 +273,64 @@ class TestQuantileMarginals:
             QuantileMarginals(torch.tensor([0.5, 0.4], dtype=F64), torch.zeros(1, 1, 2, dtype=F64))
 
 
+class TestQuantileTailFloor:
+    """Collapsed outer knots must not give an astronomically light tail."""
+
+    @staticmethod
+    def _grid() -> tuple[torch.Tensor, torch.Tensor]:
+        levels = torch.arange(1, 32, dtype=F64) / 32
+        knots = Normal(torch.zeros((), dtype=F64), torch.ones((), dtype=F64)).icdf(levels)
+        return levels, knots.reshape(1, 1, -1).clone()
+
+    def test_exact_gaussian_grid_is_not_floored(self) -> None:
+        levels, q = self._grid()
+        floored = QuantileMarginals(levels, q)
+        free = QuantileMarginals(levels, q, tail_floor=0.0)
+        torch.testing.assert_close(floored.left_scale, free.left_scale)
+        torch.testing.assert_close(floored.right_scale, free.right_scale)
+        # the two-knot tail of a Gaussian grid is above half the matched Gaussian tail
+        sigma_tail = (1 / 32) / (math.exp(-0.5 * float(q[0, 0, 0]) ** 2) / math.sqrt(2 * math.pi))
+        assert float(free.left_scale) > 0.5 * sigma_tail
+
+    def test_collapsed_outer_knots_are_floored(self) -> None:
+        levels, q = self._grid()
+        q[0, 0, 1] = q[0, 0, 0] + 1e-3  # the two lowest quantiles almost coincide
+        q[0, 0, -2] = q[0, 0, -1] - 1e-3
+        free = QuantileMarginals(levels, q, tail_floor=0.0)
+        floored = QuantileMarginals(levels, q)
+        assert float(free.left_scale) < 2e-3 and float(free.right_scale) < 2e-3
+        # floor = 0.5 * sigma_hat * tau_1 / phi(z_1), sigma_hat from the quartile knots (= 1)
+        z1 = float(Normal(0.0, 1.0).icdf(torch.tensor(1 / 32, dtype=F64)))
+        expected = 0.5 * (1 / 32) / (math.exp(-0.5 * z1**2) / math.sqrt(2 * math.pi))
+        torch.testing.assert_close(floored.left_scale, torch.full((1, 1), expected, dtype=F64))
+        torch.testing.assert_close(floored.right_scale, torch.full((1, 1), expected, dtype=F64))
+        y = (q[..., 0] - 0.3).reshape(1, 1)  # 0.3 below the lowest knot
+        assert float(free.log_prob(y)) < -100.0
+        assert float(floored.log_prob(y)) > -5.0
+        # still a distribution: the CDF is continuous at the knot and the tail mass is tau_1
+        torch.testing.assert_close(
+            floored.cdf(q[..., 0].reshape(1, 1)), torch.full((1, 1), 1 / 32, dtype=F64)
+        )
+        u = torch.tensor([[1e-4]], dtype=F64)
+        torch.testing.assert_close(floored.cdf(floored.icdf(u)), u, rtol=1e-9, atol=0)
+
+    def test_sample_marginals_use_the_floor(self) -> None:
+        gen = torch.Generator().manual_seed(4)
+        draws = torch.randn(6, 200, 2, generator=gen, dtype=F64)
+        ordered = draws.sort(dim=1).values
+        ordered[:, 1] = ordered[:, 0] + 1e-9  # two tied extreme draws
+        free = SampleMarginals(ordered, tail_knots=2, tail_floor=0.0)
+        floored = SampleMarginals(ordered, tail_knots=2)
+        # ties are separated by 1e-6 of the knot spread, so the free scale is about 1e-5
+        assert float(free.left_scale.max()) < 1e-4
+        assert float(floored.left_scale.min()) > 0.05
+
+    def test_rejects_negative_floor(self) -> None:
+        levels, q = self._grid()
+        with pytest.raises(ValueError, match="tail_floor"):
+            QuantileMarginals(levels, q, tail_floor=-0.1)
+
+
 class TestBinnedMarginals:
     def test_bin_masses_and_tail_mass(self) -> None:
         edges = torch.tensor([0.0, 1.0, 3.0, 4.0], dtype=F64)

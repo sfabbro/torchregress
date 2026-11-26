@@ -225,7 +225,7 @@ def main(
         seed_policy=f"one seed ({cfg.seed}) for data, splits, initialisation and evaluation draws",
         train_budget=(
             f"n_train={cfg.n_train}, at most {cfg.max_epochs} epochs, patience {cfg.patience}, "
-            "estimator defaults otherwise (60% of the rows train, the rest validate, "
+            "estimator defaults otherwise (75% of the rows train, the rest validate, "
             "recalibrate and calibrate the region)"
         ),
         metric_policy=(

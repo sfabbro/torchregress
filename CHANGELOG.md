@@ -354,6 +354,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ScaleRecalibrator(..., about="mean" | "center")` takes its per-target scaling about either.
 ### Changed
 
+- `JointRegressor` holds out less by default: `val_fraction=0.1`, `recal_fraction=0.05`,
+  `conformal_fraction=0.1` (were 0.15, 0.10, 0.15), so 75% of the rows train the heads instead
+  of 60%. Measured on three harness designs with known densities (4,000 rows, two seeds), the
+  test log-score gap to the oracle fell by 0.02 to 0.12 nats for the Gaussian and mixture
+  heads on every design, and region coverage was unchanged within its sampling noise. The
+  first full-size harness run had shown a hand-written Gaussian MLP trained on 85% of the rows
+  ahead of the library's Gaussian head (0.33 against 0.41 nats).
 - `JointRegressor(method="sklar")` and the Sklar member of `method="auto"` with
   `marginals=None` now fit both built-in marginal engines (`QuantileNetworkEngine`,
   `MixtureNetworkEngine` with `n_components` components) once on the training rows and keep
@@ -412,6 +419,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `QuantileMarginals`, `SampleMarginals` and `BinnedMarginals`: the exponential tail scales
+  are floored at `tail_floor` (default 0.5) times the scale of a Gaussian tail matched to the
+  interquartile range. Outer knots that almost coincide (noisy extreme quantiles, two close
+  order statistics, a narrow outermost bin) gave a tail scale near zero, hence log densities
+  of -100 and below just outside the grid. Found in the first full-size harness run, where
+  the quantile-grid ladder rows had a log-score gap of 1.3 to 1.7 nats with a standard error
+  of 0.38 on one design; with the floor the mean marginal log density on that design goes
+  from -1.57 +/- 0.09 to -1.40 +/- 0.04 and the worst row from -129 to -16. `tail_floor=0`
+  restores the old tails.
 - `metrics.energy_score`: the distance to the observation is `torch.linalg.vector_norm`, whose
   gradient is zero where a draw equals the observation; the square root of a sum of squares
   gave a NaN gradient there, which a float32 generator trained by the score hits within a few

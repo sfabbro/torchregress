@@ -185,9 +185,19 @@ def test_automatic_choice_picks_the_better_engine_on_fresh_rows() -> None:
     # engine has the better held-out marginal log score (measured on 4,000 fresh
     # rows: gap to the truth +0.37 nats for quantiles, +0.49 for mixtures; with 4,000
     # rows the mixture engine wins, +0.12 against +0.19, and is chosen).
+    # The split is fixed here (15% / 10% / 15%) so the engines see exactly those 600 rows.
     x, y = _skewed_data(1000, 0)
     x_te, y_te = _skewed_data(4000, 10_000)
-    model = JointRegressor("sklar", max_epochs=200, patience=20, seed=0, device="cpu").fit(x, y)
+    model = JointRegressor(
+        "sklar",
+        max_epochs=200,
+        patience=20,
+        seed=0,
+        device="cpu",
+        val_fraction=0.15,
+        recal_fraction=0.10,
+        conformal_fraction=0.15,
+    ).fit(x, y)
     assert set(model.marginal_scores_) == {"quantile", "mixture"}
     assert model.marginal_engine_ == max(model.marginal_scores_, key=model.marginal_scores_.get)
     assert model._x_stats is not None and model._y_stats is not None

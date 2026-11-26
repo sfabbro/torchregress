@@ -49,22 +49,22 @@ Default configuration (4,000 training rows, 1,000 test rows, seed 0, laptop CPU 
 Method                     | NLL    | NLLGap | Energy | Variogram | Cov90  | LogVol90 | BoxCov90 | train_s | eval_s
 ---------------------------+--------+--------+--------+-----------+--------+----------+----------+---------+---------
 oracle                     | 2.0742 | 0.0000 | 0.7454 | 0.3175    | -      | -        | 0.7140   | -       | -
-independent targets        | 3.0660 | 0.9919 | 0.7846 | 0.3827    | -      | -        | 0.7610   | -       | -
-JointRegressor('gaussian') | 2.6468 | 0.5726 | 0.7722 | 0.3489    | 0.9070 | 2.5530   | 0.7640   | 1.1029  | 0.1306
-JointRegressor('mixture')  | 2.2375 | 0.1634 | 0.7518 | 0.3201    | 0.8970 | 2.0923   | 0.7360   | 0.8170  | 0.4885
-JointRegressor('flow')     | 2.3342 | 0.2601 | 0.7623 | 0.3260    | 0.9150 | 2.4272   | 0.7300   | 2.8196  | 12.8047
-JointRegressor('sklar')    | 2.4893 | 0.4152 | 0.7699 | 0.3319    | 0.8850 | 2.4013   | 0.7260   | 7.1927  | 13.3084
-JointRegressor('energy')   | -      | -      | 0.7642 | 0.3328    | 0.9060 | 2.9326   | 0.6960   | 1.7958  | 0.2675
-JointRegressor('auto')     | 2.2128 | 0.1386 | 0.7523 | 0.3209    | 0.8930 | 2.1056   | 0.7150   | 15.4346 | 10.3603
+independent targets        | 3.0642 | 0.9901 | 0.7820 | 0.3752    | -      | -        | 0.7650   | -       | -
+JointRegressor('gaussian') | 2.6451 | 0.5709 | 0.7697 | 0.3427    | 0.9160 | 2.5761   | 0.7660   | 1.0186  | 0.1318
+JointRegressor('mixture')  | 2.2530 | 0.1788 | 0.7524 | 0.3224    | 0.9150 | 2.2486   | 0.7340   | 0.6542  | 0.4725
+JointRegressor('flow')     | 2.3585 | 0.2843 | 0.7623 | 0.3241    | 0.9000 | 2.3047   | 0.6650   | 2.8958  | 13.1344
+JointRegressor('sklar')    | 2.4613 | 0.3871 | 0.7621 | 0.3287    | 0.9060 | 2.4660   | 0.7160   | 10.4279 | 14.3259
+JointRegressor('energy')   | -      | -      | 0.7611 | 0.3313    | 0.9060 | 2.9808   | 0.7230   | 2.5926  | 0.6922
+JointRegressor('auto')     | 2.2173 | 0.1432 | 0.7504 | 0.3196    | 0.9050 | 2.1314   | 0.7220   | 21.0984 | 8.4645
 ```
 
 Reading it, for this problem and this seed:
 
-- Dropping the correlations costs 0.42 nats per row against the same Gaussian head (0.99 against 0.57), and it shows in the variogram score (0.383 against 0.349) much more than in the energy score.
-- The stacked default has the smallest gap to the oracle (0.14 nats). The mixture head alone is close (0.16 nats, with a region of the same size), because the truth is a mixture.
-- Every conformal region is within two standard errors of 0.90 (one standard error is about 0.015 with 600 calibration rows and 1,000 test rows). Per-target 90% intervals taken together cover 70% to 76%.
-- The energy head needs no density family and evaluates in a quarter of a second where the flow needs thirteen, but it has no log density and its region is the largest.
-- The Sklar route picks mixture marginals and the conditional-mixture dependence rung on its validation rows and ends at 0.42 nats, between the single Gaussian (0.57) and the flow (0.26): the two modes move all three targets together, and that shared mode has to be learned by the dependence model from the normal scores.
+- Dropping the correlations costs 0.42 nats per row against the same Gaussian head (0.99 against 0.57), and it shows in the variogram score (0.375 against 0.343) much more than in the energy score.
+- The stacked default has the smallest gap to the oracle (0.14 nats) and the smallest region. The mixture head alone is close (0.18 nats), because the truth is a mixture.
+- Every conformal region is within two standard errors of 0.90 (one standard error is about 0.018 with 400 calibration rows and 1,000 test rows). Per-target 90% intervals taken together cover 67% to 77%.
+- The energy head needs no density family and evaluates in under a second where the flow needs thirteen, but it has no log density and its region is the largest.
+- The Sklar route picks mixture marginals and the conditional-mixture dependence rung on its validation rows and ends at 0.39 nats, between the single Gaussian (0.57) and the flow (0.28): the two modes move all three targets together, and that shared mode has to be learned by the dependence model from the normal scores.
 
 !!! warning "One problem, one seed"
     The ranking is an illustration of what each head can and cannot represent, not a benchmark. The harness suite `joint_regression` in torchregress-harness runs the same heads on several designs and real datasets with seeds and external baselines.
@@ -72,7 +72,7 @@ Reading it, for this problem and this seed:
 ## Fairness and comparability
 
 - One seed for the data, the splits, initialisation and the evaluation draws; every head sees the same rows.
-- Same `max_epochs` and `patience` for every head; estimator defaults otherwise (60% of the rows train, the rest validate, recalibrate and calibrate the region).
+- Same `max_epochs` and `patience` for every head; estimator defaults otherwise (75% of the rows train, the rest validate, recalibrate and calibrate the region).
 - `independent targets` is not trained separately: it reuses the Gaussian head, so the difference between the two rows is the correlation alone.
 
 ## When this fails

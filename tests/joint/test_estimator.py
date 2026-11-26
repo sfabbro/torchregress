@@ -178,15 +178,16 @@ class TestScalingDefaults:
     def test_default_cap_does_not_bind_on_small_data(self) -> None:
         x, y = self._data(400)
         model = JointRegressor("gaussian", max_epochs=1, device="cpu").fit(x, y)
-        assert (model.n_val_, model.n_recal_, model.n_conformal_) == (60, 40, 60)
+        assert (model.n_val_, model.n_recal_, model.n_conformal_) == (40, 20, 40)
         assert model.batch_size_ == 256
 
     def test_auto_batch_size_grows_with_the_training_set(self) -> None:
         x, y = self._data(300_000)
         model = JointRegressor("gaussian", max_epochs=1, hidden=(16,), device="cpu").fit(x, y)
-        assert (model.n_val_, model.n_recal_, model.n_conformal_) == (20_000, 20_000, 20_000)
-        assert model.n_train_ == 240_000
-        assert model.batch_size_ == 1024  # 240,000 / 1024 = 235 steps, 240,000 / 512 > 400
+        # 10%, 5% and 10% of 300,000 are 30,000, 15,000 and 30,000: two splits hit the cap
+        assert (model.n_val_, model.n_recal_, model.n_conformal_) == (20_000, 15_000, 20_000)
+        assert model.n_train_ == 245_000
+        assert model.batch_size_ == 1024  # 245,000 / 1024 = 240 steps, 245,000 / 512 > 400
         fixed = JointRegressor("gaussian", max_epochs=1, batch_size=64, device="cpu")
         assert fixed.fit(*self._data(400)).batch_size_ == 64
 

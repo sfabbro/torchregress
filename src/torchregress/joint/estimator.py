@@ -724,7 +724,7 @@ class JointRegressor:
     ``round(val_fraction * N)`` validation rows (early stopping and stacking),
     ``round(recal_fraction * N)`` recalibration rows and
     ``round(conformal_fraction * N)`` conformal rows (each at least 8 and at most
-    ``max_holdout``); the rest (60% with the defaults 15%, 10%, 15%, more once the
+    ``max_holdout``); the rest (75% with the defaults 10%, 5%, 10%, more once the
     cap binds: 94% at a million rows) trains the heads.  The counts are
     ``n_val_``, ``n_recal_``, ``n_conformal_`` and ``n_train_``.  :meth:`calibrate`
     replaces the conformal rows with data you supply.
@@ -765,9 +765,9 @@ class JointRegressor:
         batch_size: Union[int, str] = "auto",
         lr: float = 2e-3,
         weight_decay: float = 1e-5,
-        val_fraction: float = 0.15,
-        recal_fraction: float = 0.1,
-        conformal_fraction: float = 0.15,
+        val_fraction: float = 0.1,
+        recal_fraction: float = 0.05,
+        conformal_fraction: float = 0.1,
         max_holdout: int = 20_000,
         recalibrate: bool = True,
         score: Union[str, ConformalScore] = "auto",

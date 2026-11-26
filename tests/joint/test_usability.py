@@ -217,8 +217,8 @@ def _fitted(n: int = 200, **kw) -> tuple[JointRegressor, torch.Tensor, torch.Ten
 
 def test_split_sizes_are_reported() -> None:
     model, _, _ = _fitted(200)
-    assert (model.n_val_, model.n_recal_, model.n_conformal_) == (30, 20, 30)
-    assert model.n_train_ == 200 - 30 - 20 - 30
+    assert (model.n_val_, model.n_recal_, model.n_conformal_) == (20, 10, 20)
+    assert model.n_train_ == 200 - 20 - 10 - 20
 
 
 def test_validation_log_score_is_in_data_units() -> None:

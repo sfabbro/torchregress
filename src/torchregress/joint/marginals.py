@@ -261,6 +261,40 @@ class _PiecewiseMarginals(Marginals):
         self.left_scale = left_scale
         self.right_scale = right_scale
 
+    def _floor_tail_scales(self, floor: float) -> None:
+        r"""Floor the tail scales at ``floor`` times a Gaussian-matched tail scale.
+
+        With :math:`\hat\sigma = \mathrm{IQR} / 1.349` from the quartiles of the
+        piecewise CDF and outermost levels :math:`\tau_1`, :math:`\tau_K`,
+
+        .. math::
+            b_L \ge \rho\, \hat\sigma\, \frac{\tau_1}{\varphi(\Phi^{-1}(\tau_1))}, \qquad
+            b_R \ge \rho\, \hat\sigma\, \frac{1 - \tau_K}{\varphi(\Phi^{-1}(\tau_K))},
+
+        where :math:`\tau / \varphi(\Phi^{-1}(\tau))` is the ratio :math:`F / f`
+        of a standard normal at its :math:`\tau`-quantile (the local scale of
+        its tail).  Outer knots that almost coincide would otherwise give a
+        tail scale near zero and a density that is astronomically small just
+        outside the grid.
+        """
+        if floor < 0:
+            raise ValueError(f"tail_floor must be non-negative, got {floor}")
+        if floor == 0:
+            return
+        n, d = self.batch_size, self.event_dim
+        quarter = torch.full((n, d), 0.25, dtype=self.knots.dtype, device=self.knots.device)
+        sigma = (self.icdf(1.0 - quarter) - self.icdf(quarter)) / 1.3489795003921634
+        levels = self.levels.expand(n, d, self.knots.shape[-1]).double()
+
+        def mills(tail: Tensor) -> Tensor:  # F / f of a standard normal at the tail level
+            score = torch.special.ndtri(tail)
+            return tail * math.sqrt(2.0 * math.pi) * torch.exp(0.5 * score.square())
+
+        left = floor * sigma * mills(levels[..., 0]).to(sigma.dtype)
+        right = floor * sigma * mills(1.0 - levels[..., -1]).to(sigma.dtype)
+        self.left_scale = torch.maximum(self.left_scale, left)
+        self.right_scale = torch.maximum(self.right_scale, right)
+
     def _with_parts(
         self, knots: Tensor, levels: Tensor, left_scale: Tensor, right_scale: Tensor
     ) -> "_PiecewiseMarginals":
@@ -392,6 +426,17 @@ class QuantileMarginals(_PiecewiseMarginals):
     the right.  With ``tail_knots = 2`` the tail passes through the two
     outermost knots.
 
+    **Tail floor.**  Outer knots that sit almost on top of each other (noisy
+    extreme quantiles, two close order statistics) would give a tail scale
+    near zero and a density that is astronomically small just outside the
+    grid.  The fitted scales are therefore floored at ``tail_floor`` times the
+    scale of a Gaussian tail matched to the interquartile range of the
+    marginal, :math:`b \ge \rho\,\hat\sigma\,\tau / \varphi(\Phi^{-1}(\tau))`
+    with :math:`\hat\sigma = \mathrm{IQR}/1.349` and :math:`\tau` the mass of
+    that tail.  The floor only binds when the fitted tail is lighter than a
+    fraction :math:`\rho` of a Gaussian's; a truly bounded target then gets a
+    little mass beyond its bound.  ``tail_floor=0`` turns it off.
+
     Repairs, both documented properties of the input rather than silent
     fixes of the model:
 
@@ -408,9 +453,17 @@ class QuantileMarginals(_PiecewiseMarginals):
         tail_knots: Knots per side used to fit the tail scales (at least 2,
             at most ``Q``).  Default ``max(2, round(Q / 50))``: 20 for a
             999-level grid, as in TabICL.
+        tail_floor: Floor :math:`\rho` of the tail scales, as a share of the
+            Gaussian-matched tail scale (default 0.5; 0 for none).
     """
 
-    def __init__(self, levels: Tensor, quantiles: Tensor, tail_knots: Optional[int] = None) -> None:
+    def __init__(
+        self,
+        levels: Tensor,
+        quantiles: Tensor,
+        tail_knots: Optional[int] = None,
+        tail_floor: float = 0.5,
+    ) -> None:
         if levels.dim() != 1 or levels.shape[0] < 2:
             raise ValueError(f"levels must be [Q] with Q >= 2, got {tuple(levels.shape)}")
         if quantiles.dim() != 3 or quantiles.shape[-1] != levels.shape[0]:
@@ -425,9 +478,12 @@ class QuantileMarginals(_PiecewiseMarginals):
         m = max(2, round(n_levels / 50)) if tail_knots is None else int(tail_knots)
         if not 2 <= m <= n_levels:
             raise ValueError(f"tail_knots must lie in [2, {n_levels}], got {m}")
+        if tail_floor < 0:
+            raise ValueError(f"tail_floor must be non-negative, got {tail_floor}")
         q = _strictly_increasing(quantiles)
         left, right = self._tail_scales(levels, q, m)
         self._set_parts(q, levels.reshape(1, 1, -1), left, right)
+        self._floor_tail_scales(float(tail_floor))
 
     @staticmethod
     def _tail_scales(levels: Tensor, q: Tensor, m: int) -> tuple[Tensor, Tensor]:
@@ -455,16 +511,21 @@ class SampleMarginals(QuantileMarginals):
     Args:
         samples: ``[n, S, d]`` with ``S >= 2``.
         tail_knots: As in :class:`QuantileMarginals`.
+        tail_floor: As in :class:`QuantileMarginals`.
     """
 
-    def __init__(self, samples: Tensor, tail_knots: Optional[int] = None) -> None:
+    def __init__(
+        self, samples: Tensor, tail_knots: Optional[int] = None, tail_floor: float = 0.5
+    ) -> None:
         if samples.dim() != 3 or samples.shape[1] < 2:
             raise ValueError(f"samples must be [n, S, d] with S >= 2, got {tuple(samples.shape)}")
         n_draws = int(samples.shape[1])
         levels = torch.arange(1, n_draws + 1, device=samples.device, dtype=samples.dtype) / (
             n_draws + 1
         )
-        super().__init__(levels, samples.movedim(1, 2), tail_knots=tail_knots)
+        super().__init__(
+            levels, samples.movedim(1, 2), tail_knots=tail_knots, tail_floor=tail_floor
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -657,7 +718,10 @@ class BinnedMarginals(_PiecewiseMarginals):
     Inside :math:`[e_0, e_B]` the density is piecewise constant,
     :math:`(1 - t)\, p_k / (e_k - e_{k-1})` on bin :math:`k`; outside, the
     tail mass :math:`t/2` on each side decays exponentially with the width of
-    the outermost bin as scale.  Bins with zero probability would make the
+    the outermost bin as scale, floored at ``tail_floor`` times the scale of a
+    Gaussian tail matched to the interquartile range (as in
+    :class:`QuantileMarginals`; a narrow outermost bin would otherwise make
+    the density collapse just outside the edges).  Bins with zero probability would make the
     CDF flat, so the probabilities are first floored,
     :math:`p \leftarrow (1 - \lambda) p + \lambda / B` with
     :math:`\lambda` = ``min_prob`` :math:`\cdot B`.
@@ -667,10 +731,17 @@ class BinnedMarginals(_PiecewiseMarginals):
         probs: Non-negative bin probabilities ``[n, d, B]`` summing to one over ``B``.
         tail_mass: Total mass :math:`t` placed outside the edges (half on each side).
         min_prob: Probability floor per bin (as a share of a uniform bin).
+        tail_floor: Floor of the tail scales, as a share of the Gaussian-matched
+            tail scale (default 0.5; 0 for none).
     """
 
     def __init__(
-        self, edges: Tensor, probs: Tensor, tail_mass: float = 1e-3, min_prob: float = 1e-6
+        self,
+        edges: Tensor,
+        probs: Tensor,
+        tail_mass: float = 1e-3,
+        min_prob: float = 1e-6,
+        tail_floor: float = 0.5,
     ) -> None:
         if probs.dim() != 3 or probs.shape[-1] < 1:
             raise ValueError(f"probs must be [n, d, B], got {tuple(probs.shape)}")
@@ -700,3 +771,4 @@ class BinnedMarginals(_PiecewiseMarginals):
         widths = edges.diff(dim=-1)
         self.tail_mass = float(tail_mass)
         self._set_parts(edges.contiguous(), levels, widths[..., 0], widths[..., -1])
+        self._floor_tail_scales(float(tail_floor))

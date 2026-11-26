@@ -152,13 +152,13 @@ print(f"joint region covers:   {inside.float().mean():.3f} of the new rows")
 ```
 
 ```text
-rows: 4800 train, 3200 held out
+rows: 6000 train, 2000 held out
 corr(y1, y2) in row 0: 0.89
-joint region covers:   0.892 of the new rows
+joint region covers:   0.900 of the new rows
 ```
 
-`fit` trains on 60% of the rows and keeps the rest to stop training (15%),
-recalibrate (10%) and calibrate regions (15%); for large data see the recipes. `"gaussian"` asks for one
+`fit` trains on 75% of the rows and keeps the rest to stop training (10%),
+recalibrate (5%) and calibrate regions (10%); for large data see the recipes. `"gaussian"` asks for one
 multivariate normal per row, fast and right for this example; `JointRegressor()`
 fits and combines more flexible heads (section 4.2). The draws of row 0 have
 $\operatorname{corr}(y_1, y_2) = 0.89$: the model learned that the two move
@@ -174,11 +174,11 @@ print(f"all three intervals cover at once:       {each.all(1).float().mean():.3f
 ```
 
 ```text
-each 90% interval covers its own target: [0.896 0.899 0.894]
-all three intervals cover at once:       0.766
+each 90% interval covers its own target: [0.906 0.884 0.89 ]
+all three intervals cover at once:       0.764
 ```
 
-Each interval covers its own target, but all three hold together for only 77%
+Each interval covers its own target, but all three hold together for only 76%
 of the rows. With per-target intervals $C_j$ at level $1 - \alpha$, only the
 union bound holds,
 
@@ -209,7 +209,7 @@ fig = plot_corner_plot(
 This draws the figure of section 1.
 
 - **Diagonal: one target at a time** (its *marginal*). The shaded band holds the
-  central 68%, the line is the median; the title reads $y_1 = 0.84^{+0.47}_{-0.48}$.
+  central 68%, the line is the median; the title reads $y_1 = 0.86^{+0.49}_{-0.50}$.
 - **Below the diagonal: pairs.** The contours hold 68% and 95% of the draws. The
   $(y_1, y_2)$ panel is a narrow tilted ellipse: "$y_1$ high and $y_2$ low" is
   implausible although each value alone is plausible. Panels with $y_3$ are round.
@@ -230,7 +230,7 @@ print(f"joint region, |x1| <= 1: {inside[~noisy].float().mean():.3f}")
 ```
 
 ```text
-joint region, |x1| > 1:  0.893
+joint region, |x1| > 1:  0.909
 joint region, |x1| <= 1: 0.891
 ```
 
@@ -258,8 +258,8 @@ $$
 
 the upper bound for almost surely distinct scores. The probability is over the
 calibration set **and** the new pair: an average over $\mathbf x$, not a
-statement at each $\mathbf x$ (Lei et al. 2018; Hoff 2023). With 1,200
-calibration rows, one run moves by about a point: 0.892 above is a 90% result.
+statement at each $\mathbf x$ (Lei et al. 2018; Hoff 2023). With 800
+calibration rows, one run moves by about a point: 0.900 above is a 90% result.
 
 !!! warning "Keep calibration rows apart"
     Train and recalibrate on other rows, or the exchangeability is lost.
@@ -302,8 +302,8 @@ for name, p_cal, p_new in (("full", cal, dist), ("independent", cal_independent,
 ```
 
 ```text
-full         coverage 0.892, median log volume 0.70
-independent  coverage 0.890, median log volume 1.54
+full         coverage 0.903, median log volume 0.80
+independent  coverage 0.888, median log volume 1.58
 ```
 
 ![Diagnostics of a model that ignores the dependence](../assets/images/joint/guide/example_diagnostics_independent.png)
@@ -311,7 +311,7 @@ independent  coverage 0.890, median log volume 1.54
 The per-target PIT curves stay blue: each target alone is right. The joint
 checks are red: predicted correlation 0 against an observed 0.90, a rising
 dependence histogram, an HPD curve above the diagonal. Its calibrated region
-still covers 89% but is $e^{1.54 - 0.70} \approx 2.3$ times larger: calibration
+still covers 89% but is $e^{1.58 - 0.80} \approx 2.2$ times larger: calibration
 protected the 90%, the model paid in size.
 
 | Panel (function) | Statistic | If red, it says | Try |
@@ -333,7 +333,7 @@ only the correlation is wrong (Pinson and Tastu 2013): read it next to the
     All checks are averages over rows, never a check at one $\mathbf x$. Per-target
     PITs are necessary, not sufficient, and a worst slab near nominal or an ERT
     near zero does not prove conditional coverage. In our runs, training on 4,000 instead
-    of 8,000 rows turned three of the six rank histograms red. Check on as many
+    of 8,000 rows turned the average-rank histogram red (Holm p = 0.03). Check on as many
     held-out rows as you can.
 
 ### 3.5 Missing targets
@@ -353,8 +353,8 @@ print(f"complete rows covered:   {region_h.contains(y_new)[1000:].float().mean()
 ```
 
 ```text
-rows without y3 covered: 0.889
-complete rows covered:   0.890
+rows without y3 covered: 0.913
+complete rows covered:   0.911
 ```
 
 `log_prob(y, mask=seen)` returns the density of the observed targets.
@@ -401,8 +401,8 @@ print(f"(y1, y2) region covers: {region_pair.contains(y_new[:, :2]).float().mean
 ```
 
 ```text
-log p(y1, y2) of row 0: 0.2237
-(y1, y2) region covers: 0.897
+log p(y1, y2) of row 0: 0.1907
+(y1, y2) region covers: 0.895
 ```
 
 | Tradition | Operation | Call | Answer |
@@ -448,13 +448,13 @@ for name, d, r in (("gaussian (JointRegressor)", dist, region), ("MDN (as_joint)
 ```
 
 ```text
-gaussian (JointRegressor)  log score -0.842, coverage 0.892, median log volume 0.71
+gaussian (JointRegressor)  log score -0.851, coverage 0.900, median log volume 0.77
 MDN (as_joint)             log score -1.185, coverage 0.895, median log volume 1.05
 ```
 
 Compare joint predictives by held-out log score and regions by size at equal
 coverage: both cover 90%, and the Gaussian head, which matches how the data
-were simulated, has the higher log score and $e^{1.05 - 0.71} \approx 1.4$ times
+were simulated, has the higher log score and $e^{1.05 - 0.77} \approx 1.3$ times
 smaller regions. `plot_corner_plot(dist, others={"MDN": mdn})` overlays them.
 Sample-based scores (`energy_score`, `variogram_score`) take draws sample first:
 pass `dist.sample(S).movedim(1, 0)`.
@@ -805,16 +805,17 @@ fig = plot_corner_plot(
 ```
 
 ```text
-gaussian  KL 0.133 +- 0.014 nats, HPD KS p = 3.7e-05, SBC min p = 0.26
-mixture   KL 0.058 +- 0.009 nats, HPD KS p = 0.35, SBC min p = 0.34
+gaussian  KL 0.119 +- 0.013 nats, HPD KS p = 0.00013, SBC min p = 0.001
+mixture   KL 0.069 +- 0.008 nats, HPD KS p = 0.77, SBC min p = 0.18
 ```
 
 ![Learned posterior against the exact posterior for one data set](../assets/images/joint/guide/npe_corner_exact.png)
 
-The mixture head is closer (0.06 against 0.13 nats) and its HPD regions hold
-their stated mass over 2,000 data sets; the Gaussian head's do not, an error in
-the joint shape that SBC, one parameter at a time, misses here (p = 0.26). For
-data set 17 the learned posterior is slightly wider than the exact one.
+The mixture head is closer (0.07 against 0.12 nats) and its HPD regions hold
+their stated mass over 2,000 data sets; the Gaussian head's do not, and SBC,
+one parameter at a time, also rejects it (smallest p = 0.001). For
+data set 17 the learned posterior sits slightly low in $a$ and is otherwise
+close to the exact one.
 **Cross-check against your sampler:** overlay its draws with `others=`, and test
 that their HPD levels under the learned posterior, `post.hpd_level(draws[None])`,
 are uniform (`hpd_calibration`; thin the chain first). **Hand draws on:**
@@ -835,7 +836,7 @@ print(f"{model.n_conformal_} calibration rows, coverage {model.region(x_new).con
 ```
 
 ```text
-2000 calibration rows, coverage 0.892
+2000 calibration rows, coverage 0.903
 ```
 
 **Weights and groups.** Options of `JointConformal`. Integer `groups=` (to
@@ -854,7 +855,7 @@ print([f"group {g}: {inside_g[g_new == g].float().mean():.3f}" for g in (0, 1)])
 ```
 
 ```text
-['group 0: 0.890', 'group 1: 0.904']
+['group 0: 0.893', 'group 1: 0.914']
 ```
 
 **Recalibrate.** Here a joint predictive made too narrow on purpose (half the
@@ -873,9 +874,9 @@ for name, d in (("too narrow", too_narrow(dist)), ("recalibrated", recal.transfo
 ```
 
 ```text
-scale factors [1.36 1.36 1.41]
-too narrow   HPD KS 0.320, log score -1.315
-recalibrated HPD KS 0.034, log score -0.845
+scale factors [1.38 1.36 1.44]
+too narrow   HPD KS 0.332, log score -1.352
+recalibrated HPD KS 0.038, log score -0.853
 ```
 
 **SLS regions.** A super-level-set model learns a region directly, without a
@@ -908,7 +909,7 @@ SLSRegion: coverage 0.900, median log volume 0.89
 
 **Large data.** Held-out splits are capped at `max_holdout` rows each (20,000 by
 default): more held-out rows add little, so with a million rows 94% of them
-train the heads instead of 60%. With `batch_size="auto"` (the default) the batch
+train the heads instead of 75%. With `batch_size="auto"` (the default) the batch
 grows from 256 up to 4096 so that an epoch stays under about 400 steps;
 `batch_size_` reports the size used. Below about 100,000 training rows nothing
 changes. Scoring and regions need no draws for the scale recalibration, which
