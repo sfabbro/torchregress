@@ -110,6 +110,13 @@ See [Normalizing Flow Maps](../methods/normalizing_flow_maps.md).
 
 `GaussianCopulaSplineHead` is a conditional, full-vector spline flow built from a full-covariance Gaussian base and coordinatewise monotone rational-quadratic splines. Intrinsic likelihoods for any observed subset marginalize missing coordinates analytically. Gaussian label-noise convolution uses caller-supplied finite normal quadrature nodes and requires convergence checks. The copula is Gaussian: the model cannot express arbitrary nonlinear or tail dependence. It requires the optional `flows` extra.
 
+`MarginalContrastiveDensity` and `NormalizingFlowMap` follow the flow-head
+convention (`log_prob(context, y)`, `sample(context, n)`), so
+`torchregress.joint.ConditionalModelJoint` wraps them as joint predictives for
+conformal regions and diagnostics (→ See [Joint Multi-Target Regression](../guide/joint-regression.md)).
+`GaussianCopulaSplineHead` does not (its draws are `[S, B, D]` and its density is
+`intrinsic_log_prob(context, y, mask)`).
+
 
 ## MarginalContrastiveDensity
 

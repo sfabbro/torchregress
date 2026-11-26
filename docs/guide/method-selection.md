@@ -44,7 +44,7 @@ loss = tr.losses.WeightedHuberLoss()
 <!-- BEGIN:TASK_MATRIX_GENERATED -->
 _Generated provenance_: `tools/render_method_catalog.py:render_task_matrix_table`
 _Source artifacts_: `reports/method_catalog_latest.json`
-_Generated date_: `2026-11-20`
+_Generated date_: `2026-11-26`
 
 | Task / Constraint | Recommended Start | Strong Alternatives | Notes |
 |---|---|---|---|
@@ -58,7 +58,7 @@ _Generated date_: `2026-11-20`
 | Epistemic + aleatoric decomposition | `HeteroscedasticEnsembleModel` | `HeteroscedasticBNN`, `MDNEnsembleModel`, `HeteroscedasticBatchEnsembleModel` | Requires both model-disagreement and per-member variance/distribution modeling. |
 | Multimodal targets | `MixtureDensityLoss` | `MDNEnsembleModel`, `BinnedPDFEnsembleModel`, `NormalizingFlowLoss` | MDN is usually easier to debug first; ensembles of MDN or ordered-bin heads are the next move when mode averaging matters. |
 | Non-Gaussian / skewed tails | `QuantileLoss` / `ExpectileLoss` / `TweedieLoss` | `MixtureDensityLoss`, `NormalizingFlowLoss` | Choose by target support and evaluation metric. |
-| Multi-target correlated outputs | `MultivariateGaussianLoss` / `LowRankGaussianLoss` | `MixtureDensityLoss`, `NormalizingFlowLoss` | Prefer low-rank/full covariance when Gaussian is enough. |
+| Multi-target correlated outputs | `MultivariateGaussianLoss` / `LowRankGaussianLoss` | `MixtureDensityLoss`, `NormalizingFlowLoss`, `JointRegressor` | Prefer low-rank/full covariance when Gaussian is enough. JointRegressor fits and stacks joint heads from arrays and gives conformal regions with a joint coverage guarantee (see the Joint Multi-Target Regression guide). |
 | Noisy features / measurement error | `InputNoiseAugmentationLoss + GaussianCRPSLoss` / `MixtureDensityLoss` / `InputNoiseBinnedPDFLoss` | `FunctionalEIVLoss`, `StructuralEIVLoss`, `OrthogonalDistanceRegressionLoss`, `ForwardInversionRegressor`, `SplitMeasurementLoss`, `CorrectedScoreEIVLoss` | Start with explicit input-noise marginalization and test-time predictive averaging, then escalate to Jacobian-based EIV losses only if they clearly help. When attenuation bias dominates and labels are much more precise than the features, prefer the generative y->x inversion or a corrected-score loss; with repeat exposures use the split-measurement loss. |
 | Noisy labels / label corruption | `WeightedHuberLoss` | `BaseEnsembleModel`, `ConformalLoss` | Prefer robust baselines before heavier methods. |
 | Imbalanced / rare-target regression | `GaussianCRPSLoss` / `QuantileLoss + tail-slice evaluation` | `DensityConformal`, `FeatureDistributionSmoother`, `PrimeLoss`, `ConR`, `ContinuousGroupDRO`, `VIRRegressor`, `BalancedMSEBMC`, `RankSimLoss` | VIR adds evidential predictive uncertainty to imbalanced regression; use it when tail accuracy and calibrated uncertainty are both required. Astronomical benchmarks do not justify density weighting as default. Advanced research methods (DensityWeightedLoss, LDSLoss) should only be tried if coverage/calibration allow for tail gains. Representation-level methods (FDS, PRIME, ConR) and group-robust training (Group DRO over target bins) address feature collapse and worst-regime bias that output reweighting cannot fix. |
@@ -78,6 +78,13 @@ _Generated date_: `2026-11-20`
 | OOD scoring / selective prediction | `BaseEnsembleModel + OOD metrics` | `HeteroscedasticBatchEnsembleModel + OOD metrics`, `SWAG + OOD metrics`, `BayesianNeuralNetwork + OOD metrics` | Use multiple signals; no single OOD score is sufficient. |
 <!-- END:TASK_MATRIX_GENERATED -->
 
+!!! tip "Several correlated targets"
+    For a joint predictive distribution over several targets (stacked Gaussian,
+    mixture, flow and copula heads), conformal regions with a **joint** coverage
+    guarantee, missing targets and multivariate calibration checks, start from
+    `JointRegressor` and the [Joint Multi-Target Regression](joint-regression.md)
+    guide.
+
 ## Method Capability Matrix (Peer Framing)
 
 Legend:
@@ -89,15 +96,15 @@ Legend:
 <!-- BEGIN:FAMILY_CAPABILITY_MATRIX_GENERATED -->
 _Generated provenance_: `tools/render_method_catalog.py:render_family_capability_matrix_table`
 _Source artifacts_: `reports/method_catalog_latest.json`
-_Generated date_: `2026-11-20`
+_Generated date_: `2026-11-26`
 
 | Method Family | Multi-target | Multimodal | Non-Gaussian | Epistemic | Aleatoric | Decomposition | Calibration | OOD Support | Imbalance | Noisy Features (EIV) |
 |---|---|---|---|---|---|---|---|---|---|---|
 | `bnn` (7) | yes | no | partial | yes | yes | yes | partial | partial | no | no |
-| `calibration_transform` (7) | yes | no | partial | no | no | no | yes | partial | no | no |
+| `calibration_transform` (10) | yes | no | yes | no | no | no | yes | partial | no | no |
 | `causal` (2) | yes | no | partial | no | no | no | partial | partial | no | no |
 | `censored` (3) | yes | no | yes | no | no | no | partial | partial | no | no |
-| `conformal` (18) | yes | yes | yes | partial | no | no | yes | partial | yes | no |
+| `conformal` (19) | yes | yes | yes | partial | no | no | yes | partial | yes | no |
 | `constraints` (2) | yes | no | partial | no | no | no | partial | partial | no | no |
 | `density_loss` (3) | yes | yes | yes | no | yes | no | partial | partial | no | no |
 | `eiv` (16) | yes | yes | partial | no | no | no | yes | partial | no | yes |
@@ -110,6 +117,7 @@ _Generated date_: `2026-11-20`
 | `imbalanced_algorithm` (4) | yes | no | partial | no | no | no | partial | partial | yes | no |
 | `imbalanced_loss` (11) | yes | no | partial | no | no | no | partial | partial | yes | no |
 | `inference` (1) | yes | no | partial | no | no | no | partial | partial | no | no |
+| `joint_distribution` (2) | yes | yes | yes | no | yes | no | yes | partial | no | no |
 | `likelihood_ratio` (3) | yes | partial | yes | partial | no | no | yes | partial | no | no |
 | `mc_dropout` (1) | yes | no | partial | yes | partial | partial | partial | partial | no | no |
 | `mdn` (2) | yes | yes | yes | no | yes | no | partial | partial | no | no |
@@ -162,7 +170,7 @@ Next step for operational tradeoffs: [Choosing Methods by Constraint](choosing-b
 
 _Generated provenance_: `tools/render_method_catalog.py:render_method_matrix_generated_section`
 _Source artifacts_: `docs/reports/method_catalog_generated.md`, `reports/method_catalog_latest.json`
-_Generated date_: `2026-11-20`
+_Generated date_: `2026-11-26`
 
 | Method | Family | Maturity | Multi-target | Multimodal | Epistemic | Aleatoric | Decomposition | Calibration | OOD |
 |---|---|---|---|---|---|---|---|---|---|
@@ -176,7 +184,10 @@ _Generated date_: `2026-11-20`
 | `BinnedLabelShiftEstimator` | `calibration_transform` | `Strong` | yes | no | no | no | no | yes | partial |
 | `CalibratedRegressor` | `calibration_transform` | `Available` | no | no | no | no | no | yes | partial |
 | `IsotonicMeanCalibrator` | `calibration_transform` | `Available` | yes | no | no | no | no | yes | partial |
+| `LatentRecalibrator` | `calibration_transform` | `Available` | yes | no | no | no | no | yes | partial |
+| `MarginalRecalibrator` | `calibration_transform` | `Available` | yes | no | no | no | no | yes | partial |
 | `PITCalibrator` | `calibration_transform` | `Available` | yes | no | no | no | no | yes | partial |
+| `ScaleRecalibrator` | `calibration_transform` | `Available` | yes | no | no | no | no | yes | partial |
 | `SemiConformalCalibrator` | `calibration_transform` | `Strong` | yes | no | no | no | no | yes | partial |
 | `VarianceRestoringCalibrator` | `calibration_transform` | `Available` | yes | no | no | no | no | yes | partial |
 | `VarianceTemperatureScaler` | `calibration_transform` | `Available` | yes | no | no | no | no | yes | partial |
@@ -194,6 +205,7 @@ _Generated date_: `2026-11-20`
 | `ContrastiveFlowConformal` | `conformal` | `Available` | yes | no | no | no | no | yes | partial |
 | `DensityConformal` | `conformal` | `Available` | yes | no | no | no | no | yes | partial |
 | `EnsembleBatchCP` | `conformal` | `Available` | yes | no | no | no | no | yes | partial |
+| `JointConformal` | `conformal` | `Available` | yes | no | no | no | no | yes | partial |
 | `MonteCarloConformal` | `conformal` | `Available` | yes | no | partial | no | no | yes | partial |
 | `PrevalenceAdjustedCP` | `conformal` | `Available` | yes | no | no | no | no | yes | partial |
 | `SLSConformal` | `conformal` | `Available` | yes | yes | no | no | no | yes | partial |
@@ -259,6 +271,8 @@ _Generated date_: `2026-11-20`
 | `PropensityWeightedLoss` | `imbalanced_loss` | `Available` | yes | no | no | no | no | partial | partial |
 | `RankSimLoss` | `imbalanced_loss` | `Available` | no | no | no | no | no | partial | partial |
 | `PredictionPoweredInference` | `inference` | `Available` | yes | no | no | no | no | partial | partial |
+| `JointRegressor` | `joint_distribution` | `Available` | yes | yes | no | yes | no | yes | partial |
+| `SklarJoint` | `joint_distribution` | `Available` | yes | no | no | yes | no | partial | partial |
 | `NeuralRatioLoss` | `likelihood_ratio` | `Available` | partial | no | no | no | no | partial | partial |
 | `WifiRatioEnsemble` | `likelihood_ratio` | `Available` | partial | no | partial | no | no | yes | partial |
 | `maximize_score` | `likelihood_ratio` | `Available` | yes | partial | no | no | no | partial | partial |
@@ -343,10 +357,10 @@ Peer-method check: `SWAG`, `BayesianNeuralNetwork`, `MixtureDensityLoss`
 | Family | # Methods | Multi-target | Multimodal | Non-Gaussian | Epistemic | Aleatoric | Decomposition | Calibration | OOD | Imbalance | EIV |
 |---|---:|---|---|---|---|---|---|---|---|---|---|
 | `bnn` | 7 | yes | no | partial | yes | yes | yes | partial | partial | no | no |
-| `calibration_transform` | 7 | yes | no | partial | no | no | no | yes | partial | no | no |
+| `calibration_transform` | 10 | yes | no | yes | no | no | no | yes | partial | no | no |
 | `causal` | 2 | yes | no | partial | no | no | no | partial | partial | no | no |
 | `censored` | 3 | yes | no | yes | no | no | no | partial | partial | no | no |
-| `conformal` | 18 | yes | yes | yes | partial | no | no | yes | partial | yes | no |
+| `conformal` | 19 | yes | yes | yes | partial | no | no | yes | partial | yes | no |
 | `constraints` | 2 | yes | no | partial | no | no | no | partial | partial | no | no |
 | `density_loss` | 3 | yes | yes | yes | no | yes | no | partial | partial | no | no |
 | `eiv` | 16 | yes | yes | partial | no | no | no | yes | partial | no | yes |
@@ -359,6 +373,7 @@ Peer-method check: `SWAG`, `BayesianNeuralNetwork`, `MixtureDensityLoss`
 | `imbalanced_algorithm` | 4 | yes | no | partial | no | no | no | partial | partial | yes | no |
 | `imbalanced_loss` | 11 | yes | no | partial | no | no | no | partial | partial | yes | no |
 | `inference` | 1 | yes | no | partial | no | no | no | partial | partial | no | no |
+| `joint_distribution` | 2 | yes | yes | yes | no | yes | no | yes | partial | no | no |
 | `likelihood_ratio` | 3 | yes | partial | yes | partial | no | no | yes | partial | no | no |
 | `mc_dropout` | 1 | yes | no | partial | yes | partial | partial | partial | partial | no | no |
 | `mdn` | 2 | yes | yes | yes | no | yes | no | partial | partial | no | no |
@@ -388,8 +403,8 @@ Peer-method check: `SWAG`, `BayesianNeuralNetwork`, `MixtureDensityLoss`
 | Need | Catalog Filter (conceptual) | Suggested Methods |
 |---|---|---|
 | OOD + epistemic signals | `task_tag='ood'` + `epistemic=yes` | `BayesianNeuralNetwork`, `HeteroscedasticBNN`, `BaseEnsembleModel`, `BatchEnsembleRegressor`, `HeteroscedasticBatchEnsembleModel`, `HeteroscedasticEnsembleModel`, `MultiSWAG`, `SWAG` |
-| Coverage / calibration | `calibration=yes` | `BinnedLabelShiftEstimator`, `CalibratedRegressor`, `IsotonicMeanCalibrator`, `PITCalibrator`, `SemiConformalCalibrator`, `VarianceRestoringCalibrator`, `VarianceTemperatureScaler`, `CQR`, `CTI`, `CVPlus`, `ConformalLoss`, `ConformalRegressor`, `ConformalizedDensity`, `ContrastiveFlowConformal`, `DensityConformal`, `EnsembleBatchCP`, `MonteCarloConformal`, `PrevalenceAdjustedCP`, `SLSConformal`, `SplitConformal`, `UACQR`, `WaldoConformal`, `WaldoCriticalValueRegressor`, `WaldoDensityConformal`, `WaldoPosteriorCalibrator`, `RegressionCalibration`, `calibrated_deep_ensemble`, `WifiRatioEnsemble`, `NeymanConfidenceSet`, `MultiQuantileLoss`, `QuantileLoss`, `WeightedConformalRegressionAdapter` |
-| Multimodal targets | `multimodal=yes` | `SLSConformal`, `BinnedDensityLoss`, `JointBinnedDensityLoss`, `InputNoiseBinnedPDFLoss`, `InputNoiseMDNLoss`, `DensityEnsemble`, `ContrastiveFlowLoss`, `NormalizingFlowLoss`, `SLSLoss`, `NormalizingFlowMap`, `FlowMatchingMLP`, `MixtureDensityLoss`, `StudentTMixture`, `EnhancedPoissonGaussianContaminationMixtureLoss`, `PoissonGaussianContaminationMixtureLoss` |
+| Coverage / calibration | `calibration=yes` | `BinnedLabelShiftEstimator`, `CalibratedRegressor`, `IsotonicMeanCalibrator`, `LatentRecalibrator`, `MarginalRecalibrator`, `PITCalibrator`, `ScaleRecalibrator`, `SemiConformalCalibrator`, `VarianceRestoringCalibrator`, `VarianceTemperatureScaler`, `CQR`, `CTI`, `CVPlus`, `ConformalLoss`, `ConformalRegressor`, `ConformalizedDensity`, `ContrastiveFlowConformal`, `DensityConformal`, `EnsembleBatchCP`, `JointConformal`, `MonteCarloConformal`, `PrevalenceAdjustedCP`, `SLSConformal`, `SplitConformal`, `UACQR`, `WaldoConformal`, `WaldoCriticalValueRegressor`, `WaldoDensityConformal`, `WaldoPosteriorCalibrator`, `RegressionCalibration`, `calibrated_deep_ensemble`, `JointRegressor`, `WifiRatioEnsemble`, `NeymanConfidenceSet`, `MultiQuantileLoss`, `QuantileLoss`, `WeightedConformalRegressionAdapter` |
+| Multimodal targets | `multimodal=yes` | `SLSConformal`, `BinnedDensityLoss`, `JointBinnedDensityLoss`, `InputNoiseBinnedPDFLoss`, `InputNoiseMDNLoss`, `DensityEnsemble`, `ContrastiveFlowLoss`, `NormalizingFlowLoss`, `SLSLoss`, `NormalizingFlowMap`, `FlowMatchingMLP`, `JointRegressor`, `MixtureDensityLoss`, `StudentTMixture`, `EnhancedPoissonGaussianContaminationMixtureLoss`, `PoissonGaussianContaminationMixtureLoss` |
 | Imbalanced / rare targets | `imbalance=yes` | `DensityConformal`, `PrevalenceAdjustedCP`, `ContinuousGroupDRO`, `GroupDROTrainer`, `VIRLoss`, `VIRRegressor`, `BalancedMSEBMC`, `BalancedMSELoss`, `BinReweightedMSELoss`, `ConR`, `DensityWeightedLoss`, `FeatureDistributionSmoother`, `FocalRLoss`, `LDSLoss`, `PrimeLoss`, `PropensityWeightedLoss`, `RankSimLoss`, `UncertaintyAwareConR` |
 | Noisy features / EIV | `noisy_features_eiv=yes` | `CorrectedScoreEIVLoss`, `ErrorAwareFeatureEncoder`, `ForwardInversionRegressor`, `FunctionalEIVLoss`, `InputNoiseAugmentationLoss`, `InputNoiseBinnedPDFLoss`, `InputNoiseMDNLoss`, `LatentMarginalizationLoss`, `LatentNN`, `NoiseAwareRegressor`, `NoisyInputPredictor`, `OrthogonalDistanceRegressionLoss`, `RegressionCalibration`, `SIMEX`, `SplitMeasurementLoss`, `StructuralEIVLoss` |
 <!-- END:METHOD_CATALOG_GENERATED_SECTION -->
@@ -450,7 +465,7 @@ Key tradeoffs and common failure modes:
 <!-- BEGIN:DECISION_WORKFLOW_GENERATED -->
 _Generated provenance_: `tools/render_method_catalog.py:render_decision_workflow`
 _Source artifacts_: `reports/method_catalog_latest.json`
-_Generated date_: `2026-11-20`
+_Generated date_: `2026-11-26`
 
 1. Need coverage guarantees?
    Use `ConformalLoss (split / CQR / ACI patterns)`.

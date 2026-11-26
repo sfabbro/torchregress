@@ -66,6 +66,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
+from ..utils.distributions import inverse_softplus
 from ..utils.quantile import multi_quantile_loss
 
 __all__ = [
@@ -80,8 +81,12 @@ __all__ = [
 # Elements per vectorised chunk in the k-NN distance computation.
 _ELEMENT_BUDGET = 1 << 22
 
+# Statistic evaluations per chunk when the k-NN estimator re-scores neighbours.
+_RESCORE_BUDGET = 1 << 18
+
 AlphaLike = Union[float, Sequence[float]]
 CriticalValueFn = Callable[[Tensor], Tensor]
+StatisticFn = Callable[[Tensor, Tensor], Tensor]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -128,8 +133,30 @@ def _finite_sample_index(n: int, alphas: Tensor) -> Tensor:
     return torch.ceil((n + 1) * (1.0 - alphas)).long() - 1
 
 
-def _inverse_softplus(x: Tensor) -> Tensor:
-    return x + torch.log(-torch.expm1(-x))
+def _confidence_index(n: int, alphas: Tensor, confidence: float) -> Tensor:
+    """0-based order-statistic index that upper-bounds each quantile with confidence.
+
+    For i.i.d. draws, ``#{X_i <= q} ~ Binomial(n, 1 - alpha)`` where ``q`` is the
+    ``1 - alpha`` quantile, so the smallest ``m`` with ``P(Bin <= m) >= confidence``
+    gives ``P(X_(m+1) >= q) >= confidence`` (a distribution-free upper confidence
+    bound for a quantile; ``m = n`` means that no order statistic certifies it).
+    """
+    j = torch.arange(n + 1, dtype=torch.float64)
+    out = []
+    for alpha in alphas.tolist():
+        level = 1.0 - alpha
+        log_pmf = (
+            torch.lgamma(torch.tensor(n + 1.0, dtype=torch.float64))
+            - torch.lgamma(j + 1.0)
+            - torch.lgamma(n - j + 1.0)
+            + j * math.log(level)
+            + (n - j) * math.log1p(-level)
+        )
+        cdf = torch.cumsum(torch.exp(log_pmf), dim=0)
+        # 1e-12 absorbs the rounding of the cumulative sum at the last term.
+        hit = torch.nonzero(cdf >= confidence - 1e-12)
+        out.append(int(hit[0]) if hit.numel() else n)
+    return torch.tensor(out, dtype=torch.long)
 
 
 def _build_mlp(in_dim: int, hidden: Sequence[int], n_levels: int) -> nn.Sequential:
@@ -200,6 +227,31 @@ class CriticalValueRegressor:
             orders of magnitude across ``theta`` becomes additive), not what
             is estimated.  The k-NN estimator is equivariant and ignores it.
         seed: Seed for the MLP initialisation, validation split and shuffling.
+        statistic_fn: k-NN only.  ``statistic_fn(theta, x) -> [n, K]`` in the
+            convention of :meth:`NeymanConfidenceSet.region` (``theta`` is
+            ``[n, K, P]``, one candidate row per observation row here, ``K = 1``).
+            With it (and ``x`` passed to :meth:`fit`), the critical value at a
+            query :math:`\theta` is the order statistic of
+            :math:`\lambda(\theta; x_i)` over the k neighbours: their
+            *observations* are re-scored at the query parameter instead of
+            reusing :math:`\lambda(\theta_i; x_i)`.  The reference distribution
+            then differs from the exact one only through
+            :math:`p(x \mid \theta_i)` vs :math:`p(x \mid \theta)`, which is
+            what makes it valid for **discrete** statistics (counts): their
+            exact critical value is a saw-tooth in :math:`\theta` that no
+            pooled or smooth estimate can follow, and missing one tooth drops
+            a whole atom of probability from the set.
+        confidence: k-NN only.  ``None`` (default) uses the finite-sample
+            order statistic ``ceil((k+1)(1-alpha))``, whose coverage is at
+            least ``1 - alpha`` *on average over calibration sets* and so
+            fluctuates around nominal by about ``sqrt(alpha(1-alpha)/k)`` from
+            one :math:`\theta` to the next.  A value in ``(0, 1)`` uses the
+            binomial upper confidence bound for the quantile instead: at each
+            query, with probability at least ``confidence`` over the
+            calibration draw, the critical value is no smaller than the
+            ``1 - alpha`` quantile of the neighbours' reference distribution
+            (``+inf`` when k is too small to certify it).  The sets are then
+            conservative by about ``z * sqrt(alpha(1-alpha)/k)`` in coverage.
 
     The inputs are standardised (column mean and standard deviation of the
     calibration ``theta``; the statistic too for the MLP).  The MLP head
@@ -236,6 +288,8 @@ class CriticalValueRegressor:
         n_neighbors: Optional[int] = None,
         transform: Literal["auto", "none", "log"] = "auto",
         seed: int = 0,
+        statistic_fn: Optional[StatisticFn] = None,
+        confidence: Optional[float] = None,
     ) -> None:
         self._alphas, self._scalar = _parse_alpha(alpha)
         if method not in ("mlp", "knn"):
@@ -252,6 +306,12 @@ class CriticalValueRegressor:
             raise ValueError(f"transform must be 'auto', 'none' or 'log', got {transform!r}")
         if n_neighbors is not None and int(n_neighbors) < 1:
             raise ValueError("n_neighbors must be None or a positive integer")
+        if statistic_fn is not None and not callable(statistic_fn):
+            raise TypeError("statistic_fn must be None or a callable")
+        if confidence is not None and not 0.0 < float(confidence) < 1.0:
+            raise ValueError(f"confidence must be None or in (0, 1), got {confidence}")
+        if method != "knn" and (statistic_fn is not None or confidence is not None):
+            raise ValueError("statistic_fn and confidence apply to method='knn' only")
         self.method = method
         self.hidden = tuple(int(h) for h in hidden)
         self.max_epochs = int(max_epochs)
@@ -263,6 +323,8 @@ class CriticalValueRegressor:
         self.n_neighbors = None if n_neighbors is None else int(n_neighbors)
         self.transform = transform
         self.seed = int(seed)
+        self.statistic_fn = statistic_fn
+        self.confidence = None if confidence is None else float(confidence)
 
         self.method_: Optional[str] = None
         self.n_features_: Optional[int] = None
@@ -278,6 +340,7 @@ class CriticalValueRegressor:
         self._model: Optional[nn.Sequential] = None
         self._z_cal: Optional[Tensor] = None
         self._stat_cal: Optional[Tensor] = None
+        self._x_cal: Optional[Tensor] = None
 
     # ------------------------------------------------------------------ props
     @property
@@ -295,16 +358,24 @@ class CriticalValueRegressor:
         return self.method_ is not None
 
     # -------------------------------------------------------------------- fit
-    def fit(self, theta: Tensor, statistic: Tensor) -> "CriticalValueRegressor":
+    def fit(
+        self, theta: Tensor, statistic: Tensor, x: Optional[Tensor] = None
+    ) -> "CriticalValueRegressor":
         """Fit the critical-value function.
 
         Args:
             theta: Calibration parameters ``[N, P]`` (or ``[N]`` for ``P = 1``).
             statistic: ``lambda(theta_i; x_i)`` per row, ``[N]``; finite.
+            x: Calibration observations with ``N`` rows; required (and only
+                used) with ``statistic_fn``.
 
         Returns:
             ``self``.
         """
+        if (x is None) != (self.statistic_fn is None):
+            raise ValueError("x is required with statistic_fn, and only used with it")
+        if x is not None and x.shape[0] != _as_2d(theta).shape[0]:
+            raise ValueError("x and theta must agree on the number of rows")
         theta = _as_2d(theta).detach()
         statistic = statistic.detach().reshape(-1).to(theta.device, theta.dtype)
         n, p = theta.shape
@@ -326,10 +397,11 @@ class CriticalValueRegressor:
                 )
             self.n_neighbors_ = min(int(k), n)
             self._z_cal, self._stat_cal = z, statistic
+            self._x_cal = None if x is None else x.detach()
             self._model = None
         else:
             self._fit_mlp(z, statistic)
-            self._z_cal, self._stat_cal = None, None
+            self._z_cal, self._stat_cal, self._x_cal = None, None, None
         self.method_ = method
         return self
 
@@ -389,7 +461,7 @@ class CriticalValueRegressor:
             bias = q0.clone()
             if q0.numel() > 1:
                 gaps = (q0[1:] - q0[:-1]).clamp_min(1e-3)
-                bias[1:] = _inverse_softplus(gaps)
+                bias[1:] = inverse_softplus(gaps)
             head.weight.zero_()
             head.bias.copy_(bias.to(head.bias.dtype))
         model = model.to(device=device, dtype=dtype)
@@ -452,7 +524,7 @@ class CriticalValueRegressor:
         mean, std = self._theta_mean, self._theta_std
         z = (query.detach().to(mean.device, mean.dtype) - mean) / std
         if self.method_ == "knn":
-            out = self._predict_knn(z)
+            out = self._predict_knn(z, query.detach())
         else:
             out = self._predict_mlp(z)
         out = out.to(query.device, query.dtype)
@@ -481,24 +553,52 @@ class CriticalValueRegressor:
                 pred = (torch.exp(pred) - self._offset).clamp_min(0.0)
         return pred[:, inverse.to(pred.device)]
 
-    def _predict_knn(self, z: Tensor) -> Tensor:
+    def _predict_knn(self, z: Tensor, query: Tensor) -> Tensor:
         if self._z_cal is None or self._stat_cal is None or self.n_neighbors_ is None:
             raise RuntimeError("Call fit() first.")
         k = self.n_neighbors_
-        index = _finite_sample_index(k, torch.tensor(self._alphas, dtype=torch.float64))
+        alphas = torch.tensor(self._alphas, dtype=torch.float64)
+        if self.confidence is None:
+            index = _finite_sample_index(k, alphas)
+        else:
+            index = _confidence_index(k, alphas, self.confidence)
         infinite = (index >= k).to(z.device)
         safe = index.clamp_max(k - 1).to(z.device)
         rows = max(1, _ELEMENT_BUDGET // max(self._z_cal.shape[0], 1))
+        if self.statistic_fn is not None:
+            # Each row re-scores k observations: bound the statistic batch too.
+            rows = max(1, min(rows, _RESCORE_BUDGET // k))
         parts = []
         for start in range(0, z.shape[0], rows):
             dist = torch.cdist(z[start : start + rows], self._z_cal)
             nearest = torch.topk(dist, k, dim=1, largest=False).indices
-            values = torch.sort(self._stat_cal[nearest], dim=1).values
+            if self.statistic_fn is None or self._x_cal is None:
+                stats = self._stat_cal[nearest]
+            else:
+                stats = self._rescore(query[start : start + rows], nearest)
+            values = torch.sort(stats, dim=1).values
             crit = values[:, safe]
             parts.append(torch.where(infinite, torch.full_like(crit, math.inf), crit))
         if not parts:
             return torch.empty(0, len(self._alphas), device=z.device, dtype=z.dtype)
         return torch.cat(parts)
+
+    def _rescore(self, query: Tensor, nearest: Tensor) -> Tensor:
+        """``lambda(theta_m; x_i)`` for the neighbours ``i`` of each query ``m``: ``[M, k]``."""
+        assert self.statistic_fn is not None and self._x_cal is not None
+        assert self._stat_cal is not None
+        m, k = nearest.shape
+        x = self._x_cal[nearest.reshape(-1).to(self._x_cal.device)]
+        bank = query.to(x.device).unsqueeze(1).expand(m, k, query.shape[1]).reshape(m * k, 1, -1)
+        with torch.no_grad():
+            stat = self.statistic_fn(bank, x)
+        if stat.shape != (m * k, 1):
+            raise ValueError(
+                f"statistic_fn must return [n, K] = [{m * k}, 1], got {tuple(stat.shape)}"
+            )
+        if not bool(torch.isfinite(stat).all()):
+            raise ValueError("statistic_fn returned non-finite values at a query parameter")
+        return stat.reshape(m, k).to(self._stat_cal.device, self._stat_cal.dtype)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -540,6 +640,8 @@ class NeymanConfidenceSet:
         theta: Tensor,
         statistic: Tensor,
         alpha: AlphaLike = 0.1,
+        *,
+        x: Optional[Tensor] = None,
         **regressor_kwargs: Any,
     ) -> "NeymanConfidenceSet":
         """Fit a :class:`CriticalValueRegressor` on calibration pairs and wrap it.
@@ -548,10 +650,13 @@ class NeymanConfidenceSet:
             theta: Calibration parameters ``[N, P]``.
             statistic: ``lambda(theta_i; x_i)`` per row, ``[N]``.
             alpha: Miscoverage level(s).
+            x: Calibration observations ``[N, ...]``, with
+                ``method="knn", statistic_fn=...`` (re-scored neighbours; use
+                this for count data and other discrete statistics).
             **regressor_kwargs: Forwarded to :class:`CriticalValueRegressor`.
         """
         regressor = CriticalValueRegressor(alpha, **regressor_kwargs)
-        return cls(regressor.fit(theta, statistic))
+        return cls(regressor.fit(theta, statistic, x))
 
     def critical_value(self, theta: Tensor) -> Tensor:
         """Critical values at ``theta [..., P]``: shape ``[...]`` or ``[..., L]``."""

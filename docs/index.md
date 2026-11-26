@@ -156,6 +156,28 @@ For full end-to-end workflows, see the
 [Quick Start](getting-started/quickstart.md) and the
 [comprehensive comparison examples](examples/index.md).
 
+### Joint multi-target prediction
+
+Predict several targets together: one joint distribution per row, and a
+prediction region for the whole vector with a calibrated coverage statement.
+
+```python
+from torchregress.joint import JointRegressor
+
+model = JointRegressor().fit(X, Y)        # X [N, p], Y [N, d]; NaN marks a missing target
+dist = model.predict(X_new)               # one joint distribution per row
+draws = dist.sample(1000)                 # [n, 1000, d] plausible target vectors
+region = model.region(X_new, alpha=0.1)   # 90% prediction region per row
+inside = region.contains(Y_new)           # [n] booleans: is the whole vector inside?
+```
+
+![Corner plot of one joint prediction with its 90% prediction region and the true value](assets/images/joint/guide/quickstart_corner.png)
+
+Where to start: [New to Joint Prediction](guide/joint-quickstart.md) (no
+background needed), [Coming from MCMC and HMC](guide/joint-for-mcmc-users.md),
+[Coming from Simulation-Based Inference](guide/joint-for-sbi-users.md). The
+reference is [Joint Multi-Target Regression](guide/joint-regression.md).
+
 ---
 
 ## Installation

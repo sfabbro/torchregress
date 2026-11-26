@@ -27,6 +27,7 @@ EXPECTED_EXPORTS = {
         "utils",
         "models",
         "estimators",
+        "joint",
         "BaseLoss",
         "RegressionLoss",
         "DistributionLoss",
@@ -163,6 +164,64 @@ EXPECTED_EXPORTS = {
         "ConformalRegressor",
         "CalibratedRegressor",
         "calibrated_deep_ensemble",
+    ],
+    "joint": [
+        "AffineJoint",
+        "BinnedMarginals",
+        "ConditionalGaussianCopula",
+        "ConditionalModelJoint",
+        "ConformalScore",
+        "CoverageByMask",
+        "CoverageGap",
+        "DensityScore",
+        "Dependence",
+        "DependenceError",
+        "DistributionJoint",
+        "FlowDependence",
+        "FlowJoint",
+        "GaussianCopula",
+        "GaussianJoint",
+        "GaussianMarginals",
+        "HPDCalibration",
+        "HPDScore",
+        "IndependenceDependence",
+        "JointConformal",
+        "JointPredictive",
+        "JointRegion",
+        "JointRegressor",
+        "LatentRecalibratedJoint",
+        "LatentRecalibrator",
+        "LatentScore",
+        "MahalanobisScore",
+        "MarginalEngine",
+        "MaskedMarginalJoint",
+        "MarginalRecalibratedJoint",
+        "MarginalRecalibrator",
+        "Marginals",
+        "MaxResidualScore",
+        "MixtureJoint",
+        "NEESConsistency",
+        "PreRankHistograms",
+        "ProjectedJoint",
+        "QuantileMarginals",
+        "QuantileNetworkEngine",
+        "SampleBallScore",
+        "SampleJoint",
+        "SampleMarginals",
+        "ScaleRecalibrator",
+        "SchaakeShuffle",
+        "SklarJoint",
+        "TemplateJoint",
+        "WorstSlabCoverage",
+        "conditional_coverage_gap",
+        "coverage_by_mask",
+        "dependence_error",
+        "hpd_calibration",
+        "latent_calibration_error",
+        "nees_consistency",
+        "prerank_histograms",
+        "select_dependence",
+        "worst_slab_coverage",
     ],
     "ensemble": [
         "BaseEnsembleModel",
@@ -493,6 +552,45 @@ EXPECTED_SIGNATURES = {
         "(self, X: 'torch.Tensor', y: 'torch.Tensor') -> \"'WarmupMCTrainer'\""
     ),
     "algorithms.WarmupMCTrainer.predict": ("(self, X: 'torch.Tensor') -> 'torch.Tensor'"),
+    "joint.JointRegressor": (
+        "(method: 'Method' = 'auto', *, marginals: 'Optional[MarginalEngine]' = None, "
+        "hidden: 'Sequence[int]' = (128, 128), n_components: 'int' = 5, "
+        "rank: 'Optional[int]' = None, max_epochs: 'int' = 300, patience: 'int' = 30, "
+        "batch_size: 'int' = 256, lr: 'float' = 0.002, weight_decay: 'float' = 1e-05, "
+        "val_fraction: 'float' = 0.15, recal_fraction: 'float' = 0.1, "
+        "conformal_fraction: 'float' = 0.15, recalibrate: 'bool' = True, "
+        "score: 'Union[str, ConformalScore]' = 'auto', n_folds: 'int' = 3, "
+        "device: 'Optional[Union[str, torch.device]]' = None, seed: 'int' = 0) -> 'None'"
+    ),
+    "joint.JointRegressor.fit": "(self, X: 'ArrayLike', Y: 'ArrayLike') -> \"'JointRegressor'\"",
+    "joint.JointRegressor.calibrate": (
+        "(self, X: 'ArrayLike', Y: 'ArrayLike') -> \"'JointRegressor'\""
+    ),
+    "joint.JointRegressor.predict": "(self, X: 'ArrayLike') -> 'JointPredictive'",
+    "joint.JointRegressor.region": (
+        "(self, X: 'ArrayLike', alpha: 'Union[float, Sequence[float]]' = 0.1, *, "
+        "interest: 'Optional[Sequence[int]]' = None) -> 'JointRegion'"
+    ),
+    "joint.JointConformal": (
+        "(score: 'ConformalScore', alpha: 'Union[float, Sequence[float]]' = 0.1) -> 'None'"
+    ),
+    "joint.JointConformal.calibrate": (
+        "(self, predictive: 'JointPredictive', y: 'Tensor', *, "
+        "mask: 'Optional[Tensor]' = None, weights: 'Optional[Tensor]' = None, "
+        "groups: 'Optional[Tensor]' = None) -> \"'JointConformal'\""
+    ),
+    "joint.JointConformal.region": (
+        "(self, predictive: 'JointPredictive', *, test_weights: 'Optional[Tensor]' = None, "
+        "groups: 'Optional[Tensor]' = None) -> \"'JointRegion'\""
+    ),
+    "joint.ConditionalModelJoint": (
+        "(model: 'Any', context: 'Tensor', event_dim: 'Optional[int]' = None) -> 'None'"
+    ),
+    "joint.select_dependence": (
+        "(candidates: 'Sequence[Dependence]', z_val: 'Tensor', "
+        "x_val: 'Optional[Tensor]' = None, n_se: 'float' = 2.0) "
+        "-> 'tuple[Dependence, dict[str, float]]'"
+    ),
 }
 
 
@@ -718,6 +816,7 @@ def test_public_exports_snapshot_non_losses() -> None:
         "metrics": tr.metrics,
         "models": tr.models,
         "estimators": tr.estimators,
+        "joint": tr.joint,
         "ensemble": tr.ensemble,
         "semi_supervised": tr.semi_supervised,
         "algorithms": tr.algorithms,

@@ -1,16 +1,16 @@
 # Roadmap
 
-0.3.0b1 is the API cut. 0.3.0 is the release that makes that API correct,
-fast, and documented. One public name per behavior. Compatibility aliases
-are not added back.
+0.3.0b1 was the API cut; 0.3.0, the release that made that API correct, fast and
+documented, shipped on PyPI on 2026-11-04. One public name per behavior.
+Compatibility aliases are not added back.
 
 | Release | Theme | Contents | Done when |
 |:--|:--|:--|:--|
-| **0.3.0b1** | Clean API | One name per behavior. Removed duplicate exports, no-op arguments, and agent clutter. Dependency floors match the lockfile. Pre-release tags publish to TestPyPI only. | `pyproject.toml` says `0.3.0b1` and tag `v0.3.0b1` exists |
-| **0.3.0** | Correct, fast, documented | Bug fixes and performance work on the code that already exists. Docs that match the code. Harness parity. No new methods. No compatibility shims. Example pairs that differ only by dataset share one script (`--dataset`). | `pip install torchregress` works on Linux and macOS, Python 3.12–3.14, and the harness release run is green |
-| 0.4 | GPU equality | Self-hosted CUDA runner, CPU–CUDA equality for every loss and metric, OOM guard, MPS decision, bf16/fp16 where it is safe | Every loss and metric passes CPU–CUDA equality |
-| 0.5 | Estimators | Bundled conditional-flow estimator (`fit` / `sample` / `log_prob` / `interval`) and scikit-learn-style wrappers for the most-used families | The harness sbi and pzflow one-liners work |
-| 0.6 | Structured outputs | Joint intervals beyond Gaussian. Censored and errors-in-variables tutorials for survey data | Harness rows for each |
+| 0.3.0b1 (shipped) | Clean API | One name per behavior. Removed duplicate exports, no-op arguments, and agent clutter. Dependency floors match the lockfile. Pre-release tags publish to TestPyPI only. | `pyproject.toml` says `0.3.0b1` and tag `v0.3.0b1` exists |
+| 0.3.0 (shipped 2026-11-04) | Correct, fast, documented | Bug fixes and performance work on the code that already exists. Docs that match the code. Harness parity. No new methods. No compatibility shims. Example pairs that differ only by dataset share one script (`--dataset`). | `pip install torchregress` works on Linux and macOS, Python 3.12–3.14, and the harness release run is green |
+| **0.4** (next) | Joint predictions, GPU equality | `torchregress.joint` (unreleased on `main`): joint predictive distributions, the `JointRegressor` estimator, joint conformal regions, recalibration and diagnostics. Self-hosted CUDA runner, CPU–CUDA equality for every loss and metric, OOM guard, MPS decision, bf16/fp16 where it is safe | Every loss and metric passes CPU–CUDA equality |
+| 0.5 | Estimators | scikit-learn-style wrappers for the most-used families. The bundled multi-target estimator (`fit` / `sample` / `log_prob` / regions) is `torchregress.joint.JointRegressor`, targeted at 0.4 | The harness sbi and pzflow one-liners work |
+| 0.6 | Structured outputs | Censored and errors-in-variables tutorials for survey data (joint regions beyond Gaussian are in `torchregress.joint`) | Harness rows for each |
 | 1.0 | API freeze | Two minor releases with no unplanned breaking change. Every method family benchmarked. Software paper with the harness paper | No unplanned breaking change from 0.5 to 0.6 |
 
 ## 0.3.0 docs and harness work

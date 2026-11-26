@@ -8,7 +8,7 @@ This file provides merged guidance to coding agents (Claude, Gemini, Codex) when
 
 **Naming Convention:** The library name is "torchregress" (all lowercase).
 
-**Release scope:** `0.3.0b1` is the API cut (one public name per behavior, no compatibility aliases). `0.3.0` is bugs, performance of existing code, docs that match the code, and harness parity. Do not add methods or compatibility shims on the way to `0.3.0`. See `ROADMAP.md`.
+**Release scope:** `0.3.0` shipped on 2026-11-04 (one public name per behavior, no compatibility aliases). Work on `main` targets `0.4` (`torchregress.joint`, GPU equality). Keep one public name per behavior and do not add compatibility shims. See `ROADMAP.md`.
 
 ## Sibling repositories
 
@@ -158,11 +158,29 @@ torchregress/
 ├── ensemble/        # Ensemble models (DeepEnsemble, BatchEnsemble, etc.)
 ├── algorithms/      # Training algorithms (IRLS, SIMEX, RC, etc.)
 ├── test_time/       # Test-time adaptation (label shift, transport, subspace)
+├── joint/           # Joint multi-target predictives, JointRegressor, regions, recalibration, diagnostics
+├── inference/       # Likelihood-ratio, Neyman, orthogonal and prediction-powered inference
+├── models/          # Network heads and density models (tabular MLP, flows, MCD, copula spline)
+├── estimators.py    # Model-agnostic sklearn-style uncertainty wrappers (experimental)
 ├── comparison.py    # Reproducible comparison-example helpers and summary JSON
 ├── prediction.py    # Predictive batch containers
 ├── utils/           # Shared helpers (gaussian_output, validation, tensor_ops, reduction)
 └── losses/base.py   # WeightedLossWrapper and weighted point/Gaussian wrappers
 ```
+
+### Joint predictive distributions
+
+`torchregress.joint` represents a batch of `n` joint predictives over `d` targets
+(`JointPredictive`). Layouts: draws are `[n, S, d]` (batch first); `log_prob` maps
+`[n, d] -> [n]` and `[n, S, d] -> [n, S]`. The `metrics` sample scores take
+`[S, n, d]`, so pass `samples.movedim(1, 0)`. A boolean `[n, d]` mask (`True` =
+observed) integrates missing targets out; this differs from the reduction masks
+of `MultivariateGaussianLoss` / `LowRankGaussianLoss`. New joint functionality
+reuses the library primitives: conformal thresholds from the `losses.conformal`
+quantile helpers (`finite_sample_quantile` and the weighted helper), scores and
+HPD levels from `metrics`, masked Gaussian densities from
+`known_covariance_gaussian_nll`; private helpers shared inside the package live
+in `joint/_common.py`.
 
 ### Key Abstractions
 

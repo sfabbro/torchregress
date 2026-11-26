@@ -2,13 +2,13 @@
   "artifact": "method_catalog",
   "version": 1,
   "summary": {
-    "total_methods": 169,
+    "total_methods": 175,
     "families": {
       "bnn": 7,
-      "calibration_transform": 7,
+      "calibration_transform": 10,
       "causal": 2,
       "censored": 3,
-      "conformal": 18,
+      "conformal": 19,
       "constraints": 2,
       "density_loss": 3,
       "eiv": 16,
@@ -21,6 +21,7 @@
       "imbalanced_algorithm": 4,
       "imbalanced_loss": 11,
       "inference": 1,
+      "joint_distribution": 2,
       "likelihood_ratio": 3,
       "mc_dropout": 1,
       "mdn": 2,
@@ -48,7 +49,7 @@
     "maturity": {
       "Core": 7,
       "Strong": 20,
-      "Available": 142
+      "Available": 148
     },
     "peer_uq_methods_present": {
       "SWAG": true,
@@ -2241,6 +2242,143 @@
       "imbalance": "partial",
       "noisy_features_eiv": "no",
       "notes": "LF2I Neyman construction {theta : lambda(theta; x) <= C(theta)} for any test statistic (likelihood ratio, WALDO, ...). CriticalValueRegressor learns C(theta) by non-crossing multi-level quantile regression (MLP) or a k-NN finite-sample quantile on labelled calibration pairs, so coverage targets every theta independently of the calibration population; binned_conditional_coverage and smooth_conditional_coverage flag regions below nominal. Approximate: accuracy is limited where calibration data are sparse."
+    },
+    {
+      "name": "JointRegressor",
+      "family": "joint_distribution",
+      "public_path": "torchregress.joint.JointRegressor",
+      "task_tags": [
+        "multi_target",
+        "correlated_targets",
+        "conditional_density",
+        "coverage_guarantees",
+        "missing_targets"
+      ],
+      "maturity": "Available",
+      "multimodal": "yes",
+      "multi_target": "yes",
+      "non_gaussian": "yes",
+      "epistemic": "no",
+      "aleatoric": "yes",
+      "decomposition": "no",
+      "calibration": "yes",
+      "ood_support": "partial",
+      "imbalance": "no",
+      "noisy_features_eiv": "no",
+      "notes": "Joint predictive p(y | x) for y in R^d from arrays: Gaussian (full or low-rank), mixture, conditional-flow and Sklar heads on standardised targets, stacked by held-out log score, per-target scale recalibration, and conformal regions with finite-sample marginal (not per-x) coverage under exchangeability. NaN targets are integrated out exactly by the Gaussian and mixture heads. Stacking weights are not a posterior (same EM as DensityEnsemble.fit_weights). Related shipped classes: MultivariateGaussianLoss / LowRankGaussianLoss / MixtureDensityLoss / NormalizingFlowLoss (the head losses), DensityEnsemble (wrap with ConditionalModelJoint)."
+    },
+    {
+      "name": "SklarJoint",
+      "family": "joint_distribution",
+      "public_path": "torchregress.joint.SklarJoint",
+      "task_tags": [
+        "multi_target",
+        "correlated_targets",
+        "conditional_density",
+        "copula"
+      ],
+      "maturity": "Available",
+      "multimodal": "no",
+      "multi_target": "yes",
+      "non_gaussian": "yes",
+      "epistemic": "no",
+      "aleatoric": "yes",
+      "decomposition": "no",
+      "calibration": "partial",
+      "ood_support": "partial",
+      "imbalance": "no",
+      "noisy_features_eiv": "no",
+      "notes": "Any per-target marginals (Gaussian, quantile grid, histogram, draws) joined by a density on normal scores: a valid joint density for any score model. Dependence ladder IndependenceDependence / SchaakeShuffle / GaussianCopula / ConditionalGaussianCopula / FlowDependence, chosen by select_dependence on held-out out-of-fold scores (lowest rung within 2 paired standard errors of the best, never below independence). Score models with drifting marginals also reshape the marginals (Dependence.marginal_drift). Related shipped class: GaussianCopulaSplineHead (Gaussian copula with spline marginals, trained end to end)."
+    },
+    {
+      "name": "JointConformal",
+      "family": "conformal",
+      "public_path": "torchregress.joint.JointConformal",
+      "task_tags": [
+        "coverage_guarantees",
+        "multi_target",
+        "prediction_regions",
+        "missing_targets"
+      ],
+      "maturity": "Available",
+      "multimodal": "no",
+      "multi_target": "yes",
+      "non_gaussian": "yes",
+      "epistemic": "no",
+      "aleatoric": "no",
+      "decomposition": "no",
+      "calibration": "yes",
+      "ood_support": "partial",
+      "imbalance": "no",
+      "noisy_features_eiv": "no",
+      "notes": "Split conformal regions for any JointPredictive with P(Y in R(X)) >= 1 - alpha under exchangeability (marginal over x): density, HPD, latent-ball, Mahalanobis, max-residual (joint box) and sample-ball scores; weighted (covariate shift with the true likelihood ratio) and Mondrian variants; missing calibration targets via the chi-square-mapped Mahalanobis score; closed-form or importance-sampled volumes. Thresholds from finite_sample_quantile and the weighted helper of losses.conformal: same rule as the raw-tensor MultivariateScoreConformal (Mahalanobis / NLL) and ConformalizedDensity (density level sets); MultiTargetConformal is per-target with no joint guarantee."
+    },
+    {
+      "name": "ScaleRecalibrator",
+      "family": "calibration_transform",
+      "public_path": "torchregress.joint.ScaleRecalibrator",
+      "task_tags": [
+        "calibration",
+        "posthoc_calibration",
+        "multi_target"
+      ],
+      "maturity": "Available",
+      "multimodal": "no",
+      "multi_target": "yes",
+      "non_gaussian": "partial",
+      "epistemic": "no",
+      "aleatoric": "no",
+      "decomposition": "no",
+      "calibration": "yes",
+      "ood_support": "partial",
+      "imbalance": "no",
+      "noisy_features_eiv": "no",
+      "notes": "One scale factor per target about the predictive mean (variance or held-out NLL objective) for any joint predictive; dependence kept. Fixes global over- or under-dispersion only; no finite-sample guarantee. Univariate counterpart: VarianceTemperatureScaler."
+    },
+    {
+      "name": "LatentRecalibrator",
+      "family": "calibration_transform",
+      "public_path": "torchregress.joint.LatentRecalibrator",
+      "task_tags": [
+        "calibration",
+        "posthoc_calibration",
+        "multi_target"
+      ],
+      "maturity": "Available",
+      "multimodal": "no",
+      "multi_target": "yes",
+      "non_gaussian": "yes",
+      "epistemic": "no",
+      "aleatoric": "no",
+      "decomposition": "no",
+      "calibration": "yes",
+      "ood_support": "partial",
+      "imbalance": "no",
+      "noisy_features_eiv": "no",
+      "notes": "Latent recalibration (Dheur and Ben Taieb, NeurIPS 2025): a radial map of the latent space of a Gaussian or flow predictive so the latent norm follows its calibration distribution; keeps a density and a latent map. Corrects the norm, not the direction; measured by latent_calibration_error."
+    },
+    {
+      "name": "MarginalRecalibrator",
+      "family": "calibration_transform",
+      "public_path": "torchregress.joint.MarginalRecalibrator",
+      "task_tags": [
+        "calibration",
+        "posthoc_calibration",
+        "multi_target",
+        "coverage_guarantees"
+      ],
+      "maturity": "Available",
+      "multimodal": "no",
+      "multi_target": "yes",
+      "non_gaussian": "yes",
+      "epistemic": "no",
+      "aleatoric": "no",
+      "decomposition": "no",
+      "calibration": "yes",
+      "ood_support": "partial",
+      "imbalance": "no",
+      "noisy_features_eiv": "no",
+      "notes": "Per-target conformal calibrators (split conformal predictive systems) with the base dependence kept: finite-sample probabilistic calibration of each target at the knot levels, marginal over x; nothing about joint calibration. Exact density for a GaussianJoint, draws-only otherwise. Univariate counterpart: PITCalibrator."
     },
     {
       "name": "FlowMatchingMLP",

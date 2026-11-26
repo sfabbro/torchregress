@@ -55,7 +55,15 @@ recommended plots and decision guidance, see
 | `plot_simex_extrapolation` | `(lambda_values, simulated_values, extrapolator, …)` — SIMEX points + extrapolation curve + corrected estimate at `λ = -1`. |
 | `plot_risk_coverage_curve` | `(y_true, y_pred, rejection_scores, …)` — Selective-prediction risk-coverage curve (model / random / oracle) with AURCC. |
 | `plot_causal_uplift_qini` | `(uplift_scores, treatment, y_obs, …)` — Qini curve for uplift modelling with Qini area metric. |
-| `plot_corner_plot` | `(samples, *, param_names=None, true_vals=None, …)` — Publication-ready corner plot: 1-D marginal histograms plus 2-D density contours. |
+| `plot_corner_plot` | `(samples, *, member_samples=None, param_names=None, true_vals=None, quantiles=(0.16, 0.5, 0.84), show_titles=True, show_uncertainty_decomposition=True, show_scatter=None, title=None, color="#4477AA", truth_color="#CC3311", member_colors=None, figsize=None, save_path=None, return_figure=False, row=0, n_samples=10000, dims=None, max_dims=8, levels=None, level_convention="mass", smooth=1.0, marginal="kde", interval="central", label=None, others=None, region=None, region_samples=4000, return_axes=False)` — Corner plot of draws `[S, d]`, draws `[n, S, d]` or a `JointPredictive` (row `row`): smoothed 1-D marginals with median and shaded interval, 2-D highest-density contours enclosing the stated mass of the draws (68%/95% by default, or `level_convention="sigma"`), true values, a `JointRegion` overlay, other predictives (`others=`), automatic target selection above `max_dims`. The legend states the contour convention; it sits in the empty upper triangle for three or more targets, below the grid for two and to the right for one. `return_axes=True` returns `(fig, axes[k, k])`. |
+
+---
+
+## Joint diagnostics (`viz.joint`)
+
+| Symbol | Description |
+|:-------|:------------|
+| `plot_joint_diagnostics` | `(predictive, y, *, x=None, region=None, n_samples=256, preranks=None, target_names=None, max_targets=6, region_level=None, confidence=0.95, seed=0, title=None, figsize=None, save_path=None, return_figure=False, return_axes=False)` — One figure, read top to bottom: joint HPD calibration with its DKW band, predicted vs empirical correlation and their difference, pre-rank histograms with Holm-adjusted p-values, per-target PIT ECDF differences with a simultaneous band, and with `region` coverage by level and log-volumes, with `x` worst-slab coverage and the ERT conditional-coverage estimate. Every statistic comes from `torchregress.joint.diagnostics`; each panel has a one-line reading aid. `seed` fixes every random draw of the figure (predictive draws, HPD reference draws, region volumes, tie-breaking, slab split, ERT folds), so the figure is reproducible, and the caller's torch RNG state is left as it was. `return_axes=True` returns `(fig, {panel name: Axes})`. See [Joint predictive plots](../methods/visualization.md#4-joint-predictive-plots-corner-plots-and-diagnostics). |
 
 ---
 

@@ -237,6 +237,7 @@ print(restorer.describe(pred_test, y_test))
 - **Validate after calibration**: Always re-evaluate calibration metrics (ECE, PIT) on a separate test set after applying calibrators. See [Calibration metrics](../metrics/calibration.md).
 
 ## Next Steps
+- [Joint Multi-Target Regression](../guide/joint-regression.md) — multivariate counterparts (`ScaleRecalibrator`, `LatentRecalibrator`, `MarginalRecalibrator`) that keep the dependence between targets
 - [Calibration Metrics](../metrics/calibration.md) — [`expected_calibration_error`](../api/metrics.md), [`marginal_calibration_error`](../api/metrics.md)
 - [Conformal Prediction](../methods/conformal/index.md) (coverage guarantees vs post-hoc calibration)
 - [Calibration comparison example](../examples/constraints_calibration_comparison.md)

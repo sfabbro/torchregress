@@ -15,9 +15,44 @@ except ImportError as exc:  # pragma: no cover - hit only without the viz extra
         "torchregress.viz requires matplotlib; pip install 'torchregress[viz]'"
     ) from exc
 
+import math
+import textwrap
+from collections.abc import Sequence
+
+import matplotlib.colors as mcolors
+import matplotlib.patheffects as pe
 import numpy as np
 import torch
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
+from matplotlib.ticker import FixedLocator, MaxNLocator, ScalarFormatter
+from matplotlib.transforms import blended_transform_factory
+
+from torchregress.joint.predictive import JointPredictive
+from torchregress.joint.regions import JointRegion
+from torchregress.viz._corner import (
+    OVERLAY_STYLES,
+    REGION_COLOR,
+    REGION_STYLE,
+    TOL_BRIGHT,
+    RegionLevel,
+    as_numpy,
+    contour_masses,
+    draws_of,
+    ellipse_points,
+    format_estimate,
+    hpd_mask_1d,
+    kde_1d,
+    kde_2d,
+    mass_thresholds,
+    most_dependent_dims,
+    plot_range,
+    region_interval,
+    region_levels,
+    split_unit,
+    subsample,
+)
 
 # Import visualization utilities
 from torchregress.viz.utils import create_color_palette, is_lower_better
@@ -1233,301 +1268,682 @@ def _mass_contour_levels(
     return sorted(levels)
 
 
+def _mix_white(color: str, frac: float) -> Tuple[float, float, float]:
+    """``color`` blended with white (``frac`` = 1 gives white)."""
+    r, g, b = mcolors.to_rgb(color)
+    return (r + (1 - r) * frac, g + (1 - g) * frac, b + (1 - b) * frac)
+
+
+def _shades(color: str, n: int) -> List[Tuple[float, float, float]]:
+    """``n`` sequential fills of ``color``, outermost (lightest) first."""
+    if n == 1:
+        return [_mix_white(color, 0.55)]
+    return [_mix_white(color, 0.8 - 0.55 * k / (n - 1)) for k in range(n)]
+
+
+def _inner_ticks(lo: float, hi: float, n: int = 4, margin: float = 0.1) -> np.ndarray:
+    """Round ticks inside ``[lo, hi]``, away from both edges (neighbours never collide)."""
+    ticks = MaxNLocator(n).tick_values(lo, hi)
+    span = hi - lo
+    keep = (ticks >= lo + margin * span) & (ticks <= hi - margin * span)
+    return ticks[keep] if keep.sum() >= 2 else ticks[(ticks >= lo) & (ticks <= hi)]
+
+
+def _style_ticks(ax: plt.Axes, fontsize: float, x: bool, y: bool) -> None:
+    ax.tick_params(direction="in", labelsize=fontsize, length=3, top=False, right=False)
+    if x:
+        ax.xaxis.set_major_locator(FixedLocator(_inner_ticks(*ax.get_xlim())))
+        ax.xaxis.set_major_formatter(ScalarFormatter(useOffset=False))
+    if y:
+        ax.yaxis.set_major_locator(FixedLocator(_inner_ticks(*ax.get_ylim())))
+        ax.yaxis.set_major_formatter(ScalarFormatter(useOffset=False))
+
+
+_TRUTH_EFFECTS = [pe.Stroke(linewidth=2.6, foreground="white"), pe.Normal()]
+
+
 def plot_corner_plot(
-    samples: np.ndarray | torch.Tensor,
+    samples: Any,
     *,
-    member_samples: list[np.ndarray | torch.Tensor] | None = None,
-    param_names: list[str] | None = None,
-    true_vals: np.ndarray | torch.Tensor | None = None,
-    quantiles: tuple[float, ...] = (0.16, 0.50, 0.84),
+    member_samples: Optional[List[Any]] = None,
+    param_names: Optional[List[str]] = None,
+    true_vals: Optional[Union[np.ndarray, torch.Tensor]] = None,
+    quantiles: Tuple[float, ...] = (0.16, 0.50, 0.84),
     show_titles: bool = True,
     show_uncertainty_decomposition: bool = True,
-    show_scatter: bool | None = None,
-    title: str | None = None,
-    color: str = "#1f77b4",
-    truth_color: str = "#e31a1c",
-    member_colors: list[str] | None = None,
-    figsize: tuple[int, int] | None = None,
-    save_path: str | Path | None = None,
+    show_scatter: Optional[bool] = None,
+    title: Optional[str] = None,
+    color: str = "#4477AA",
+    truth_color: str = "#CC3311",
+    member_colors: Optional[List[str]] = None,
+    figsize: Optional[Tuple[float, float]] = None,
+    save_path: Optional[Union[str, Path]] = None,
     return_figure: bool = False,
-) -> plt.Figure | None:
-    """Plot a publication-ready corner plot (1D marginal histograms + 2D contours).
+    row: int = 0,
+    n_samples: int = 10_000,
+    dims: Optional[Sequence[int]] = None,
+    max_dims: int = 8,
+    levels: Optional[Sequence[float]] = None,
+    level_convention: str = "mass",
+    smooth: float = 1.0,
+    marginal: str = "kde",
+    interval: str = "central",
+    label: Optional[str] = None,
+    others: Optional[Dict[str, Any]] = None,
+    region: Optional[JointRegion] = None,
+    region_samples: int = 4000,
+    return_axes: bool = False,
+) -> Union[Figure, Tuple[Figure, np.ndarray], None]:
+    r"""Corner plot of a joint predictive: 1-D marginals and 2-D highest-density contours.
 
-    Supports displaying ensemble member posterior distributions to visualize epistemic
-    model disagreement vs. aleatoric noise.
+    The 2-D contours are highest-density regions of a smoothed density of the
+    draws (binned Gaussian KDE by FFT, robust bandwidth, fast up to ``10^6``
+    draws).  Each contour of mass :math:`m` is the level
+    :math:`t_m` with :math:`\frac1S\sum_s \mathbf 1[\hat p(y_s) \ge t_m] = m`,
+    so it encloses a fraction :math:`m` of the draws.  The figure always
+    states which levels are drawn: ``level_convention="mass"`` (default
+    68% and 95% of the mass) or ``"sigma"`` (the :math:`k\sigma` levels of a
+    2-D Gaussian, :math:`1 - e^{-k^2/2}`: 39.3% and 86.5%, the default of the
+    ``corner`` package).
 
     Args:
-        samples: Total posterior samples tensor or array [n_samples, n_params]
-        member_samples: Optional list of posterior sample arrays for each ensemble member
-        param_names: Optional list of parameter names
-        true_vals: Optional true parameter values [n_params]
-        quantiles: Quantiles for 1D marginal dashed lines (default: 0.16, 0.50, 0.84)
-        show_titles: Whether to add percentile summary titles over 1D marginals
-        show_uncertainty_decomposition: Whether to display aleatoric vs epistemic std decomposition
-        show_scatter: Whether to display background scatter points in 2D plots
-            (default: True for single model, False for ensemble)
-        title: Overall title for corner plot figure
-        color: Primary color for marginal histograms and total 2D density contours
-        truth_color: Color for ground-truth reference lines
-        member_colors: Colors for individual ensemble member contours
-        figsize: Custom figure size tuple (width, height)
-        save_path: Optional filepath to save figure
-        return_figure: If True, returns matplotlib Figure object
+        samples: Draws ``[n_samples, d]`` (array or tensor on any device and
+            dtype), draws ``[n, S, d]`` (row ``row`` is plotted), or a
+            :class:`~torchregress.joint.JointPredictive` (row ``row`` is
+            sampled ``n_samples`` times).
+        member_samples: Draws of ensemble members (same forms); adds dashed
+            member marginals and contours and, with
+            ``show_uncertainty_decomposition``, aleatoric/epistemic titles.
+        param_names: Target names; a trailing ``" [unit]"`` is kept on the axis
+            label and moved after the value in the title.
+        true_vals: True or observed values ``[d]`` (lines and a marker).
+        quantiles: Quantiles of the 1-D summary: the smallest and largest give
+            the shaded central interval, the middle one the median line and
+            title (``()`` hides both).
+        show_titles: Title each 1-D panel ``name = median^{+hi}_{-lo}`` with two
+            significant digits of the smaller error.
+        show_uncertainty_decomposition: With members, title with total,
+            aleatoric and epistemic standard deviations instead.
+        show_scatter: Draw the draws outside the outermost contour (default:
+            on without members).
+        title: Figure title.
+        color: Colour of ``samples`` (sequential fills are derived from it).
+        truth_color: Colour of the true values.
+        member_colors: Colours of the members.
+        figsize: Figure size; by default it grows with the number of panels.
+        save_path: Save the figure there (300 dpi).
+        return_figure: Return the figure (otherwise it is shown and closed).
+        row: Row of a predictive or ``[n, S, d]`` draws to plot.
+        n_samples: Draws per predictive.
+        dims: Targets to show (indices); default all, or for ``d > max_dims``
+            the targets of the most dependent pairs by absolute Spearman
+            correlation (the figure says so).
+        max_dims: Largest number of targets shown without ``dims``.
+        levels: Contour levels: masses in ``(0, 1)`` or numbers of sigmas,
+            depending on ``level_convention``.
+        level_convention: ``"mass"`` or ``"sigma"``.
+        smooth: Multiplier of the KDE bandwidth (Scott's rule for 2-D panels,
+            Silverman's for 1-D).
+        marginal: ``"kde"`` (smooth curve) or ``"hist"`` (step histogram).
+        interval: Shaded 1-D interval, ``"central"`` (from ``quantiles``) or
+            ``"hpd"`` (highest density, same mass).
+        label: Legend label of ``samples``.
+        others: ``{label: draws or predictive}`` overlaid in a colour-blind-safe
+            palette with distinct line styles (prior vs posterior, two models,
+            before vs after recalibration).
+        region: A :class:`~torchregress.joint.JointRegion` whose row ``row`` is
+            overlaid: exact ellipse or box projections for the Mahalanobis and
+            max-residual scores, otherwise the outline of accepted draws.
+        region_samples: Accepted draws for a region without a closed form.
+        return_axes: Return ``(figure, axes)`` with ``axes`` the ``[k, k]``
+            array of panels (``k`` targets shown; upper triangle hidden).
 
     Returns:
-        plt.Figure if return_figure=True, else None
+        ``(Figure, axes)`` with ``return_axes``, the ``Figure`` with
+        ``return_figure``, else ``None``.
     """
-    if isinstance(samples, torch.Tensor):
-        samples = samples.detach().cpu().numpy()
-    if true_vals is not None and isinstance(true_vals, torch.Tensor):
-        true_vals = true_vals.detach().cpu().numpy()
+    masses, contour_caption = contour_masses(levels, level_convention)
+    if marginal not in ("kde", "hist"):
+        raise ValueError(f"marginal must be 'kde' or 'hist', got {marginal!r}")
+    if interval not in ("central", "hpd"):
+        raise ValueError(f"interval must be 'central' or 'hpd', got {interval!r}")
+    if max_dims < 1:
+        raise ValueError("max_dims must be at least 1")
 
-    if member_samples is not None:
-        processed_members = []
-        for ms in member_samples:
-            if isinstance(ms, torch.Tensor):
-                ms = ms.detach().cpu().numpy()
-            processed_members.append(np.asarray(ms))
-        member_samples = processed_members
+    primary = draws_of(samples, row=row, n_samples=n_samples, name="samples")
+    d_all = primary.shape[1]
+    others_np: List[Tuple[str, np.ndarray]] = []
+    for lab, obj in (others or {}).items():
+        arr = draws_of(obj, row=row, n_samples=n_samples, name=f"others[{lab!r}]")
+        if arr.shape[1] != d_all:
+            raise ValueError(f"others[{lab!r}] has {arr.shape[1]} targets, expected {d_all}")
+        others_np.append((str(lab), arr))
+    members_np: List[np.ndarray] = []
+    for m_idx, ms in enumerate(member_samples or []):
+        arr = draws_of(ms, row=row, n_samples=n_samples, name=f"member_samples[{m_idx}]")
+        if arr.shape[1] != d_all:
+            raise ValueError(
+                f"member_samples[{m_idx}] has {arr.shape[1]} targets, expected {d_all}"
+            )
+        members_np.append(arr)
 
-    samples = np.asarray(samples)
-    if samples.ndim != 2:
-        raise ValueError("samples must be a 2D array of shape [n_samples, n_params]")
-
-    n_samples, n_params = samples.shape
     if param_names is None:
-        param_names = [f"Param {i + 1}" for i in range(n_params)]
-    elif len(param_names) != n_params:
-        msg = f"param_names length ({len(param_names)}) must match n_params ({n_params})"
+        names_all = [f"$y_{{{i + 1}}}$" for i in range(d_all)]
+    elif len(param_names) != d_all:
+        msg = f"param_names length ({len(param_names)}) must match n_params ({d_all})"
         raise ValueError(msg)
+    else:
+        names_all = list(param_names)
+    truth_all = None if true_vals is None else as_numpy(true_vals).reshape(-1)
+
+    region_lv: List[RegionLevel] = []
+    if region is not None:
+        if region.predictive.event_dim != d_all:
+            raise ValueError(
+                f"region has {region.predictive.event_dim} targets, the draws have {d_all}"
+            )
+        region_lv = region_levels(region, row=row, n_draws=region_samples)
+
+    note = None
+    if dims is not None:
+        sel = [int(t) for t in dims]
+        if not sel or len(set(sel)) != len(sel) or any(not 0 <= t < d_all for t in sel):
+            raise ValueError(f"dims must be distinct indices in [0, {d_all}), got {list(dims)}")
+    elif d_all > max_dims:
+        sel = most_dependent_dims(primary, max_dims)
+        note = (
+            f"Showing {len(sel)} of {d_all} targets: those in the most dependent "
+            "pairs (|Spearman ρ|). Pass dims= to choose."
+        )
+    else:
+        sel = list(range(d_all))
+    k = len(sel)
+
+    # ── data per shown target ────────────────────────────────────────────────
+    base_label = label or ("Predictive" if isinstance(samples, JointPredictive) else "Draws")
+    palette = [c for c in TOL_BRIGHT if c.lower() != color.lower()]
+    sets: List[Tuple[str, np.ndarray, str, Any]] = [
+        (f"{base_label} ({primary.shape[0]:,} draws)", primary[:, sel], color, "-")
+    ]
+    for o_idx, (lab, arr) in enumerate(others_np):
+        style = OVERLAY_STYLES[(o_idx + 1) % len(OVERLAY_STYLES)]
+        lab_n = f"{lab} ({arr.shape[0]:,} draws)"
+        sets.append((lab_n, arr[:, sel], palette[o_idx % len(palette)], style))
+    members_sel = [m[:, sel] for m in members_np]
+    names = [names_all[t] for t in sel]
+    truth = None
+    if truth_all is not None:
+        truth = np.array([truth_all[t] if t < truth_all.size else np.nan for t in sel])
+
+    ranges: List[Tuple[float, float]] = []
+    for c in range(k):
+        lo, hi = plot_range([s[1][:, c] for s in sets])
+        span = hi - lo
+        extras: List[float] = []
+        if truth is not None and np.isfinite(truth[c]):
+            extras.append(float(truth[c]))
+        for lv in region_lv:
+            iv = region_interval(lv, sel[c])
+            if iv is not None:
+                extras.extend(v for v in iv if math.isfinite(v))
+        for v in extras:
+            if lo - 2 * span <= v <= hi + 2 * span:
+                lo, hi = min(lo, v - 0.05 * span), max(hi, v + 0.05 * span)
+        ranges.append((lo, hi))
+    constant = [
+        all(float(np.ptp(s[1][:, c])) <= 1e-12 * max(1.0, abs(float(s[1][0, c]))) for s in sets)
+        for c in range(k)
+    ]
 
     if show_scatter is None:
-        show_scatter = member_samples is None
+        show_scatter = not members_np and not others_np
 
-    if figsize is None:
-        figsize = (2.5 * n_params, 2.5 * n_params)
-
-    fig, axes = plt.subplots(n_params, n_params, figsize=figsize)
-    if n_params == 1:
-        axes = np.array([[axes]])
-
-    # Pre-compute uncertainty decomposition if members are provided
-    alea_std, epi_std, tot_std = None, None, None
-    if member_samples is not None and len(member_samples) > 1:
-        member_means = np.array([np.mean(ms, axis=0) for ms in member_samples])
-        member_vars = np.array([np.var(ms, axis=0) for ms in member_samples])
+    alea_std = epi_std = tot_std = None
+    if len(members_sel) > 1:
+        member_means = np.array([np.mean(ms, axis=0) for ms in members_sel])
+        member_vars = np.array([np.var(ms, axis=0) for ms in members_sel])
         alea_var = np.mean(member_vars, axis=0)
         epi_var = np.var(member_means, axis=0)
-        tot_var = alea_var + epi_var
-
-        alea_std = np.sqrt(alea_var)
-        epi_std = np.sqrt(epi_var)
-        tot_std = np.sqrt(tot_var)
-
-    default_colors = ["#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2"]
-    if member_colors is None and member_samples is not None:
+        alea_std, epi_std, tot_std = (
+            np.sqrt(alea_var),
+            np.sqrt(epi_var),
+            np.sqrt(alea_var + epi_var),
+        )
+    if member_colors is None and members_sel:
         member_colors = [
-            default_colors[m % len(default_colors)] for m in range(len(member_samples))
+            palette[(m + len(others_np)) % len(palette)] for m in range(len(members_sel))
         ]
 
-    for i in range(n_params):
-        for j in range(n_params):
-            ax = axes[i, j]
+    # ── figure geometry ──────────────────────────────────────────────────────
+    panel = 2.1 if k <= 3 else 1.8 if k <= 5 else 1.5 if k <= 7 else 1.3
+    left, bottom, right = 0.85, 0.8, 0.2
+    top = 0.45 + (0.35 if title else 0.0)
+    # The legend and caption go in the empty upper triangle for k >= 3.  For k = 2
+    # they would cover the top-left panel, so they go in a band below the grid; for
+    # k = 1, in a column to the right.
+    legend_w = 2.6 if k == 1 else 0.0
+    legend_h = 0.0
+    if k == 2:
+        n_handles = len(sets) + len(members_sel) + int(truth is not None) + len(region_lv)
+        n_caption = 2 + int(bool(region_lv)) + (2 if note else 0)
+        legend_h = 0.35 + 0.2 * math.ceil(n_handles / 2) + 0.17 * n_caption
+    if figsize is None:
+        figsize = (left + right + legend_w + panel * k, bottom + legend_h + top + panel * k)
+    fig_w, fig_h = float(figsize[0]), float(figsize[1])
+    fig, axes = plt.subplots(k, k, figsize=(fig_w, fig_h), squeeze=False)
+    fig.subplots_adjust(
+        left=min(left / fig_w, 0.3),
+        right=max(1 - (right + legend_w) / fig_w, 0.5),
+        bottom=min((bottom + legend_h) / fig_h, 0.45),
+        top=max(1 - top / fig_h, 0.6),
+        wspace=0.07,
+        hspace=0.07,
+    )
+    label_fs = 10.0 if k <= 4 else 9.0
+    tick_fs = 7.5 if k <= 5 else 6.5
+    title_fs = 9.0 if k <= 5 else 8.0
 
+    q_sorted = sorted(quantiles) if quantiles else []
+    interval_mass = (q_sorted[-1] - q_sorted[0]) if len(q_sorted) >= 2 else 0.0
+    median_q = 0.5 if 0.5 in q_sorted or not q_sorted else q_sorted[len(q_sorted) // 2]
+
+    # ── 1-D marginals ────────────────────────────────────────────────────────
+    for c in range(k):
+        ax = axes[c, c]
+        lo, hi = ranges[c]
+        peak_all = 0.0
+        for s_idx, (lab, arr, col, style) in reversed(list(enumerate(sets))):
+            v = arr[:, c]
+            is_primary = s_idx == 0
+            if constant[c]:
+                ax.axvline(float(v[0]), color=col, linestyle=style, linewidth=1.4)
+                peak_all = max(peak_all, 1.0)
+                continue
+            if marginal == "kde":
+                dens = kde_1d(v, lo, hi, smooth=smooth)
+                yv = dens.density / max(float(dens.density.max()), 1e-300)
+                grid = dens.grid
+                ax.plot(grid, yv, color=col, linestyle=style, linewidth=1.5 if is_primary else 1.3)
+            else:
+                n_bins = int(np.clip(np.sqrt(v.size) / 1.5, 20, 60))
+                counts, edges = np.histogram(v, bins=n_bins, range=(lo, hi))
+                yv = counts / max(float(counts.max()), 1.0)
+                grid = 0.5 * (edges[:-1] + edges[1:])
+                ax.stairs(yv, edges, color=col, linestyle=style, linewidth=1.3)
+                dens = kde_1d(v, lo, hi, smooth=smooth) if interval == "hpd" else None
+            peak_all = max(peak_all, 1.0)
+            if not is_primary or not q_sorted:
+                continue
+            if interval_mass > 0:
+                if interval == "central":
+                    qlo, qhi = np.quantile(v, [q_sorted[0], q_sorted[-1]])
+                    mask = (grid >= qlo) & (grid <= qhi)
+                else:
+                    assert dens is not None
+                    hmask = hpd_mask_1d(dens, interval_mass)
+                    mask = np.interp(grid, dens.grid, hmask.astype(float)) > 0.5
+                ax.fill_between(
+                    grid,
+                    0,
+                    yv,
+                    where=mask,
+                    color=_mix_white(col, 0.45),
+                    linewidth=0,
+                    step="mid" if marginal == "hist" else None,
+                    zorder=0,
+                )
+            med = float(np.quantile(v, median_q))
+            ax.plot([med, med], [0, float(np.interp(med, grid, yv))], color=col, linewidth=1.2)
+
+        for m_idx, ms in enumerate(members_sel):
+            if constant[c]:
+                continue
+            dens_m = kde_1d(ms[:, c], lo, hi, smooth=smooth)
+            ref = kde_1d(sets[0][1][:, c], lo, hi, smooth=smooth).density.max()
+            ym = dens_m.density / max(float(ref), 1e-300)
+            peak_all = max(peak_all, float(ym.max()))
+            assert member_colors is not None
+            ax.plot(dens_m.grid, ym, color=member_colors[m_idx], linewidth=1.0, linestyle="--")
+
+        if truth is not None and np.isfinite(truth[c]):
+            ax.axvline(truth[c], color=truth_color, linewidth=1.3, path_effects=_TRUTH_EFFECTS)
+
+        trans = blended_transform_factory(ax.transData, ax.transAxes)
+        for l_idx, lv in enumerate(region_lv):
+            iv = region_interval(lv, sel[c])
+            if iv is None:
+                continue
+            yb = 0.035 + 0.045 * l_idx
+            ax.plot(
+                list(iv),
+                [yb, yb],
+                transform=trans,
+                color=REGION_COLOR,
+                linestyle=_region_style(l_idx),
+                linewidth=1.3,
+                marker="|",
+                markersize=6,
+                clip_on=False,
+            )
+
+        ax.set_xlim(lo, hi)
+        ax.set_ylim(0, 1.12 * peak_all)
+        ax.set_yticks([])
+        for side in ("left", "right", "top"):
+            ax.spines[side].set_visible(False)
+        base_name, unit = split_unit(names[c])
+        if show_titles and len(q_sorted) >= 2 and not constant[c]:
+            if alea_std is not None and show_uncertainty_decomposition:
+                assert epi_std is not None and tot_std is not None
+                p_title = (
+                    rf"$\sigma_{{tot}}$={tot_std[c]:.2g}"
+                    + "\n"
+                    + rf"($\sigma_{{al}}$={alea_std[c]:.2g}, "
+                    + rf"$\sigma_{{ep}}$={epi_std[c]:.2g})"
+                )
+            else:
+                v0 = sets[0][1][:, c]
+                ql, qm, qh = np.quantile(v0, [q_sorted[0], median_q, q_sorted[-1]])
+                p_title = f"{base_name} = {format_estimate(qm, qm - ql, qh - qm)}"
+                if unit:
+                    p_title += f" {unit}"
+            ax.set_title(p_title, fontsize=title_fs, pad=4)
+        elif show_titles and constant[c]:
+            ax.set_title(f"{base_name} = {sets[0][1][0, c]:.4g} (constant)", fontsize=title_fs)
+
+    # ── 2-D panels ───────────────────────────────────────────────────────────
+    for i in range(k):
+        for j in range(k):
+            ax = axes[i, j]
             if j > i:
                 ax.axis("off")
                 continue
-
             if i == j:
-                # 1D Marginal Histogram
-                x_dim = samples[:, i]
-                ax.hist(
-                    x_dim,
-                    bins=35,
-                    density=True,
-                    histtype="stepfilled",
-                    alpha=0.30,
-                    color=color,
-                    edgecolor=color,
-                    linewidth=1.2,
-                    label="Total Posterior" if member_samples is not None else None,
-                )
-
-                # Overlay member marginal KDEs if provided
-                if member_samples is not None:
-                    from scipy.stats import gaussian_kde
-
-                    for m_idx, ms in enumerate(member_samples):
-                        m_x = ms[:, i]
-                        try:
-                            kde_m = gaussian_kde(m_x)
-                            x_grid_1d = np.linspace(x_dim.min(), x_dim.max(), 100)
-                            ax.plot(
-                                x_grid_1d,
-                                kde_m(x_grid_1d),
-                                color=member_colors[m_idx],  # type: ignore[index]
-                                linewidth=1.1,
-                                linestyle="--",
-                                alpha=0.75,
-                                label=f"Member {m_idx + 1}",
-                            )
-                        except Exception:
-                            pass
-
-                if quantiles:
-                    q_vals = np.quantile(x_dim, quantiles)
-                    for q_val in q_vals:
-                        ax.axvline(q_val, color=color, linestyle="--", alpha=0.7, linewidth=1.0)
-
-                    if show_titles and len(quantiles) >= 3:
-                        if (
-                            member_samples is not None
-                            and show_uncertainty_decomposition
-                            and alea_std is not None
-                        ):
-                            p_title = (
-                                rf"$\sigma_{{\text{{tot}}}}={tot_std[i]:.2f}$"
-                                + "\n"
-                                + rf"$(\sigma_{{\text{{al}}}}={alea_std[i]:.2f}, "
-                                + rf"\sigma_{{\text{{ep}}}}={epi_std[i]:.2f})$"
-                            )
-                        else:
-                            q16, q50, q84 = q_vals[0], q_vals[1], q_vals[2]
-                            plus_err = q84 - q50
-                            minus_err = q50 - q16
-                            p_title = (
-                                rf"${q50:.2f}_{{-{minus_err:.2f}}}^{{+{plus_err:.2f}}}$"
-                                if param_names[i]
-                                else ""
-                            )
-                        ax.set_title(p_title, fontsize=8.5, pad=3)
-
-                if true_vals is not None and i < len(true_vals):
-                    ax.axvline(true_vals[i], color=truth_color, linestyle="-", linewidth=1.5)
-
-                ax.set_yticks([])
-
-            else:
-                # 2D Joint Contour
-                x_dim = samples[:, j]
-                y_dim = samples[:, i]
-
-                if show_scatter:
+                continue
+            xr, yr = ranges[j], ranges[i]
+            if constant[i] or constant[j]:
+                for _lab, arr, col, style in sets:
+                    pts = subsample(arr[:, [j, i]], 2000)
                     ax.scatter(
-                        x_dim[::4], y_dim[::4], s=2, color=color, alpha=0.10, rasterized=True
+                        pts[:, 0], pts[:, 1], s=2, color=col, alpha=0.4, lw=0, rasterized=True
                     )
-
-                # Overlay member 2D contours if provided
-                if member_samples is not None:
-                    from scipy.stats import gaussian_kde
-
-                    for m_idx, ms in enumerate(member_samples):
-                        m_x = ms[:, j]
-                        m_y = ms[:, i]
-                        try:
-                            kde_m = gaussian_kde(np.vstack([m_x, m_y]))
-                            x_grid = np.linspace(x_dim.min(), x_dim.max(), 40)
-                            y_grid = np.linspace(y_dim.min(), y_dim.max(), 40)
-                            X_g, Y_g = np.meshgrid(x_grid, y_grid)
-                            Z_g = kde_m(np.vstack([X_g.ravel(), Y_g.ravel()])).reshape(X_g.shape)
-
-                            z_max = Z_g.max()
-                            ax.contour(
-                                X_g,
-                                Y_g,
-                                Z_g,
-                                levels=[z_max * 0.50],
-                                colors=member_colors[m_idx],  # type: ignore[index]
-                                linewidths=0.9,
-                                linestyles="--",
-                                alpha=0.75,
-                            )
-                        except Exception:
-                            pass
-
-                # Total ensemble contour
-                try:
-                    from scipy.stats import gaussian_kde
-
-                    kde = gaussian_kde(np.vstack([x_dim, y_dim]))
-                    x_grid = np.linspace(x_dim.min(), x_dim.max(), 50)
-                    y_grid = np.linspace(y_dim.min(), y_dim.max(), 50)
-                    X_g, Y_g = np.meshgrid(x_grid, y_grid)
-                    Z_g = kde(np.vstack([X_g.ravel(), Y_g.ravel()])).reshape(X_g.shape)
-
-                    z_max = Z_g.max()
-                    levels = _mass_contour_levels(Z_g)
-                    ax.contour(
-                        X_g,
-                        Y_g,
-                        Z_g,
-                        levels=levels,
-                        colors=color,
-                        linewidths=1.3,
-                        alpha=0.85,
+            else:
+                for s_idx, (_lab, arr, col, style) in reversed(list(enumerate(sets))):
+                    _draw_pair(
+                        ax,
+                        arr[:, j],
+                        arr[:, i],
+                        xr,
+                        yr,
+                        masses,
+                        col,
+                        style,
+                        primary=s_idx == 0,
+                        scatter=bool(show_scatter) and s_idx == 0,
+                        smooth=smooth,
+                        linewidth=1.2 if s_idx == 0 else 1.5,
                     )
-                except Exception:
-                    pass
+                for m_idx, ms in enumerate(members_sel):
+                    assert member_colors is not None
+                    _draw_pair(
+                        ax,
+                        ms[:, j],
+                        ms[:, i],
+                        xr,
+                        yr,
+                        masses[:1],
+                        member_colors[m_idx],
+                        "--",
+                        primary=False,
+                        scatter=False,
+                        smooth=smooth,
+                        fill=False,
+                        linewidth=0.9,
+                    )
+            for l_idx, lv in enumerate(region_lv):
+                _draw_region_2d(ax, lv, sel[j], sel[i], xr, yr, _region_style(l_idx))
+            if truth is not None:
+                tx, ty = truth[j], truth[i]
+                if np.isfinite(tx):
+                    ax.axvline(tx, color=truth_color, linewidth=1.1, path_effects=_TRUTH_EFFECTS)
+                if np.isfinite(ty):
+                    ax.axhline(ty, color=truth_color, linewidth=1.1, path_effects=_TRUTH_EFFECTS)
+                if np.isfinite(tx) and np.isfinite(ty):
+                    ax.plot(
+                        tx,
+                        ty,
+                        marker="s",
+                        markersize=4.5,
+                        color=truth_color,
+                        markeredgecolor="white",
+                        markeredgewidth=0.8,
+                        zorder=6,
+                    )
+            ax.set_xlim(*xr)
+            ax.set_ylim(*yr)
 
-                if true_vals is not None:
-                    if j < len(true_vals):
-                        ax.axvline(true_vals[j], color=truth_color, linestyle="-", linewidth=1.5)
-                    if i < len(true_vals):
-                        ax.axhline(true_vals[i], color=truth_color, linestyle="-", linewidth=1.5)
-                    if j < len(true_vals) and i < len(true_vals):
-                        ax.plot(
-                            true_vals[j],
-                            true_vals[i],
-                            marker="o",
-                            color=truth_color,
-                            markersize=5,
-                        )
-
-            # Labels and tick formatting
-            if i == n_params - 1:
-                ax.set_xlabel(param_names[j], fontsize=9, fontweight="bold")
+    # ── ticks and labels ─────────────────────────────────────────────────────
+    for i in range(k):
+        for j in range(i + 1):
+            ax = axes[i, j]
+            _style_ticks(ax, tick_fs, x=True, y=i != j)
+            if i == k - 1:
+                ax.set_xlabel(names[j], fontsize=label_fs)
             else:
                 ax.set_xticklabels([])
-
             if j == 0 and i != 0:
-                ax.set_ylabel(param_names[i], fontsize=9, fontweight="bold")
+                ax.set_ylabel(names[i], fontsize=label_fs)
             elif i != j:
                 ax.set_yticklabels([])
+    fig.align_labels(axs=[axes[k - 1, j] for j in range(k)])
+    fig.align_labels(axs=[axes[i, 0] for i in range(k)])
 
-            ax.tick_params(direction="in", labelsize=7.5)
+    # ── legend and convention caption ────────────────────────────────────────
+    handles: List[Any] = []
+    for s_idx, (lab, _arr, col, style) in enumerate(sets):
+        if s_idx == 0:
+            handles.append(
+                Patch(facecolor=_mix_white(col, 0.45), edgecolor=col, linewidth=1.2, label=lab)
+            )
+        else:
+            handles.append(Line2D([], [], color=col, linestyle=style, linewidth=1.5, label=lab))
+    for m_idx in range(len(members_sel)):
+        assert member_colors is not None
+        handles.append(
+            Line2D([], [], color=member_colors[m_idx], linestyle="--", label=f"Member {m_idx + 1}")
+        )
+    if truth is not None:
+        handles.append(
+            Line2D(
+                [],
+                [],
+                color=truth_color,
+                marker="s",
+                markersize=4.5,
+                linewidth=1.2,
+                markeredgecolor="white",
+                label="True / observed value",
+            )
+        )
+    for l_idx, lv in enumerate(region_lv):
+        suffix = " (unbounded, not drawn)" if lv.kind == "unbounded" else ""
+        handles.append(
+            Line2D(
+                [],
+                [],
+                color=REGION_COLOR,
+                linestyle=_region_style(l_idx),
+                linewidth=1.4,
+                label=lv.label + suffix,
+            )
+        )
+    caption_lines = []
+    if k >= 2:
+        caption_lines.append(contour_caption + " (smoothed density)")
+    if q_sorted and interval_mass > 0:
+        kind = "central" if interval == "central" else "highest-density"
+        caption_lines.append(f"1-D: median and {100 * interval_mass:.3g}% {kind} interval")
+    if region_lv:
+        caption_lines.append(
+            "Dash-dot: conformal region (calibrated coverage), not a density contour"
+        )
+    if note:
+        caption_lines.append(note)
+    wrap = 46 if k >= 3 else 64 if k == 2 else 40
+    caption = "\n".join(textwrap.fill(line, wrap) for line in caption_lines)
+    legend_fs = 8.0 if k >= 3 else 7.5
+    ncol = 1
+    if k == 1:
+        pos = axes[0, 0].get_position()
+        anchor: Tuple[float, float] = (pos.x1 + 0.15 / fig_w, pos.y1)
+        loc = "upper left"
+    elif k == 2:
+        pos = axes[1, 0].get_position()
+        anchor = (pos.x0, legend_h / fig_h)
+        loc = "upper left"
+        ncol = 2
+    else:
+        pos = axes[0, k - 1].get_position()
+        anchor = (pos.x1, pos.y1)
+        loc = "upper right"
+    leg = fig.legend(
+        handles=handles,
+        loc=loc,
+        bbox_to_anchor=anchor,
+        ncol=ncol,
+        fontsize=legend_fs,
+        frameon=False,
+        title=caption or None,
+        title_fontsize=legend_fs,
+        alignment="left",
+        handlelength=2.6,
+        borderaxespad=0.0,
+    )
+    leg.get_title().set_color("#333333")
 
     if title:
-        fig.suptitle(title, fontsize=11, fontweight="bold", y=1.02)
-
-    # Place legend cleanly in upper right empty corner cell (0, n_params - 1)
-    if member_samples is not None and n_params > 1:
-        top_right_ax = axes[0, n_params - 1]
-        top_right_ax.axis("on")
-        top_right_ax.set_xticks([])
-        top_right_ax.set_yticks([])
-        for spine in top_right_ax.spines.values():
-            spine.set_visible(False)
-        handles, labels = axes[0, 0].get_legend_handles_labels()
-        top_right_ax.legend(
-            handles,
-            labels,
-            loc="center",
-            fontsize=8,
-            frameon=True,
-            facecolor="#f8f9fa",
-            edgecolor="#cccccc",
-        )
-
-    fig.tight_layout()
+        fig.suptitle(title, fontsize=12, fontweight="bold", y=1 - 0.15 / fig_h, va="top")
 
     if save_path is not None:
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
 
+    if return_axes:
+        return fig, axes
     if return_figure:
         return fig
-    else:
-        plt.show()
-        plt.close(fig)  # TR-VIZ-05: close figures we created
-        return None
+    plt.show()
+    plt.close(fig)  # TR-VIZ-05: close figures we created
+    return None
+
+
+_REGION_STYLES: Tuple[Any, ...] = (REGION_STYLE, (0, (2, 1.5)), (0, (8, 3)))
+
+
+def _region_style(level: int) -> Any:
+    return _REGION_STYLES[level % len(_REGION_STYLES)]
+
+
+def _draw_pair(
+    ax: plt.Axes,
+    x: np.ndarray,
+    y: np.ndarray,
+    xr: Tuple[float, float],
+    yr: Tuple[float, float],
+    masses: Sequence[float],
+    color: str,
+    style: Any,
+    *,
+    primary: bool,
+    scatter: bool,
+    smooth: float,
+    fill: bool = True,
+    linewidth: float = 1.2,
+) -> None:
+    """Highest-density contours (filled for the primary set) of one pair of targets."""
+    dens = kde_2d(x, y, xr, yr, smooth=smooth)
+    thresholds = mass_thresholds(dens.at_draws, masses)  # descending with mass
+    finite = [(m, t) for m, t in zip(masses, thresholds) if math.isfinite(t) and t > 0]
+    if not finite:
+        return
+    ts = sorted({t for _, t in finite})
+    zmax = float(dens.density.max())
+    if fill and primary:
+        bounds = ts + [max(zmax, ts[-1]) * 1.0001 + 1e-300]
+        ax.contourf(
+            dens.x, dens.y, dens.density, levels=bounds, colors=_shades(color, len(ts)), zorder=1
+        )
+    elif fill:
+        ax.contourf(
+            dens.x,
+            dens.y,
+            dens.density,
+            levels=[ts[0], max(zmax, ts[0]) * 1.0001],
+            colors=[color],
+            alpha=0.14,
+            zorder=1,
+        )
+    ax.contour(
+        dens.x,
+        dens.y,
+        dens.density,
+        levels=ts,
+        colors=[color],
+        linewidths=linewidth,
+        linestyles=[style],
+        zorder=3,
+    )
+    if scatter:
+        outside = dens.at_draws < ts[0]
+        pts = subsample(np.stack([x[outside], y[outside]], axis=1), 2500, seed=1)
+        if pts.size:
+            ax.scatter(
+                pts[:, 0],
+                pts[:, 1],
+                s=1.6,
+                color=color,
+                alpha=0.45,
+                lw=0,
+                rasterized=True,
+                zorder=0,
+            )
+
+
+def _draw_region_2d(
+    ax: plt.Axes,
+    lv: RegionLevel,
+    tx: int,
+    ty: int,
+    xr: Tuple[float, float],
+    yr: Tuple[float, float],
+    style: Any,
+) -> None:
+    """2-D projection of one region level onto targets ``(tx, ty)``."""
+    kw: Dict[str, Any] = dict(color=REGION_COLOR, linestyle=style, linewidth=1.4, zorder=5)
+    if lv.kind == "ellipse":
+        assert lv.mean is not None and lv.cov is not None
+        idx = [tx, ty]
+        pts = ellipse_points(lv.mean[idx], lv.cov[np.ix_(idx, idx)], lv.radius)
+        ax.plot(pts[:, 0], pts[:, 1], **kw)
+    elif lv.kind == "box":
+        assert lv.lower is not None and lv.upper is not None
+        x0, x1 = lv.lower[tx], lv.upper[tx]
+        y0, y1 = lv.lower[ty], lv.upper[ty]
+        ax.plot([x0, x1, x1, x0, x0], [y0, y0, y1, y1, y0], **kw)
+    elif lv.kind == "draws":
+        assert lv.draws is not None
+        px, py = lv.draws[:, tx], lv.draws[:, ty]
+        dens = kde_2d(px, py, xr, yr, smooth=0.7)
+        (t,) = mass_thresholds(dens.at_draws, [0.99])
+        if math.isfinite(t) and t > 0:
+            ax.contour(
+                dens.x,
+                dens.y,
+                dens.density,
+                levels=[t],
+                colors=[REGION_COLOR],
+                linewidths=1.4,
+                linestyles=[style],
+                zorder=5,
+            )

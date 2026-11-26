@@ -684,6 +684,15 @@ log_p_std = ensemble.log_prob_std(x_test, y_test)  # [N]
     `entropy_decomposition` scores every member's draws under every member: $M^2 S$ flow
     evaluations per row. Use small $S$ (32–128) for monitoring and larger $S$ only for reports.
 
+## Joint predictives, regions and recalibration
+
+A fitted flow head becomes a `torchregress.joint.JointPredictive` with
+`FlowJoint(flow_loss, context)` (latent map, masks when the flow supports them)
+or `ConditionalModelJoint(flow_loss_or_ensemble, context)` (any head with
+`log_prob(context, y)` and `sample(context, n)`, including `DensityEnsemble`),
+which gives conformal regions, recalibration and calibration diagnostics:
+→ See [Joint Multi-Target Regression](../guide/joint-regression.md).
+
 ## References
 
 | # | Reference |

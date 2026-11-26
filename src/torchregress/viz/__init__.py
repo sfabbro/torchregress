@@ -55,6 +55,9 @@ from torchregress.viz.diagnostic import (
     plot_uncertainty_vs_error,
 )
 
+# Joint predictive diagnostics
+from torchregress.viz.joint import plot_joint_diagnostics
+
 # Import training monitoring plots
 from torchregress.viz.monitoring import (
     plot_early_stopping,
@@ -114,6 +117,7 @@ __all__ = [
     "plot_risk_coverage_curve",
     "plot_causal_uplift_qini",
     "plot_corner_plot",
+    "plot_joint_diagnostics",
     "set_style",
     "create_grid_figure",
     "add_identity_line",

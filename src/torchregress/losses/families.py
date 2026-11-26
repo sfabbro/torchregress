@@ -33,6 +33,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+from ..utils.distributions import inverse_softplus
 from .base import BaseLoss
 from .loss_registry import register_regression_loss
 
@@ -190,8 +191,7 @@ def _inverse_softplus(sigma: Tensor, eps: float) -> Tensor:
     # ponytail: inverse of _positive for unconstrained_inputs=False mode.
     # softplus^{-1}(s) = log(expm1(s)) = s + log(-expm1(-s)); the second form
     # never overflows (expm1(s) is inf for s > ~88 in float32).
-    s = (sigma - eps).clamp(min=1e-6)
-    return s + torch.log(-torch.expm1(-s))
+    return inverse_softplus((sigma - eps).clamp(min=1e-6))
 
 
 def _as_params(y_pred: Tensor, n_params: int, name: str) -> None:

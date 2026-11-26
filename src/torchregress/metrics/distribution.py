@@ -839,6 +839,11 @@ def crps_from_samples(
     (``scoringrules.crps_ensemble(..., estimator="fair")``). A single sample
     (or ``y_samples`` with the same rank as ``y_true``) is a Dirac forecast:
     the spread term is zero and the CRPS reduces to the absolute error.
+
+    Layout: draws come **sample first**, ``y_samples [S, N, ...]``.  Draws of a
+    :class:`~torchregress.joint.JointPredictive` (``sample(S)`` returns
+    ``[N, S, D]``) must be passed as ``samples.movedim(1, 0)``; with ``S == N``
+    the wrong layout passes the shape checks and gives a wrong score.
     """
     y_true_t = convert_to_tensor(y_true)
     samples_t = convert_to_tensor(y_samples)
@@ -892,8 +897,14 @@ def energy_score(
     max_pairs: Optional[int] = None,
     reduction: str = "mean",
 ) -> Union[torch.Tensor, float]:
-    """
-    Functional energy score for multivariate probabilistic forecasts.
+    """Functional energy score for multivariate probabilistic forecasts.
+
+    ``y_samples`` is ``[S, N, D]`` and ``y_true`` ``[N, D]``.
+
+    Layout: draws come **sample first**, ``y_samples [S, N, ...]``.  Draws of a
+    :class:`~torchregress.joint.JointPredictive` (``sample(S)`` returns
+    ``[N, S, D]``) must be passed as ``samples.movedim(1, 0)``; with ``S == N``
+    the wrong layout passes the shape checks and gives a wrong score.
     """
     y_true_t = convert_to_tensor(y_true)
     y_samples_t = convert_to_tensor(y_samples)
@@ -955,7 +966,10 @@ def variogram_score(
     ``p = 0.5`` is standard).
 
     Args:
-        y_samples: Forecast samples of shape [S, N, D].
+        y_samples: Forecast samples of shape [S, N, D] (sample first: pass the
+            ``[N, S, D]`` draws of a :class:`~torchregress.joint.JointPredictive`
+            as ``samples.movedim(1, 0)``; with ``S == N`` a wrong layout is not
+            detected).
         y_true: Observations of shape [N, D].
         p: Variogram order (default 0.5).
         reduction: 'mean' | 'sum' | 'none' over the batch.

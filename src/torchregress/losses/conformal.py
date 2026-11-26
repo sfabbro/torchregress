@@ -480,6 +480,12 @@ class MultivariateScoreConformal:
 
     Covariances may be full per-point ``[n, d, d]``, a single shared
     ``[d, d]`` matrix, or diagonal ``[n, d]`` / ``[d]``.
+
+    This is the raw-tensor counterpart of
+    :class:`~torchregress.joint.JointConformal` with
+    :class:`~torchregress.joint.MahalanobisScore` (``score_fn="nll"``: with
+    :class:`~torchregress.joint.DensityScore`); both use the same threshold
+    rule.  See the joint regression guide for which to use.
     """
 
     _VALID_SCORE_FNS = ("mahalanobis", "nll")
@@ -2850,7 +2856,10 @@ class ConformalizedDensity:
     For scalar targets :meth:`predict_interval` uses :class:`CTI`'s grid level
     search and returns the tightest enclosing interval.  For multi-target
     targets the threshold and :meth:`contains` are exact level-set membership;
-    a scalar interval is intentionally not manufactured.
+    a scalar interval is intentionally not manufactured.  For multi-target
+    predictives with missing targets, nuisance targets, HPD or latent scores,
+    see :class:`~torchregress.joint.JointConformal` with
+    :class:`~torchregress.joint.DensityScore` (same score).
 
     The density callable is evaluated in row chunks of at most ``chunk_size``
     ``(context, y)`` pairs (calibration, :meth:`contains`, and

@@ -9,6 +9,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `torchregress.viz.plot_joint_diagnostics(predictive, y, *, x=None, region=None, ...)`: a
+  one-call figure of joint HPD calibration, pre-rank histograms, per-target PITs with
+  simultaneous bands, correlation error, and region coverage, size and conditional coverage,
+  all computed by `torchregress.joint.diagnostics`, with a plain-language reading aid on every
+  panel. `plot_corner_plot` now accepts a `JointPredictive` (`row=`, `n_samples=`) and draws
+  2-D highest-density contours that enclose the stated fraction of the draws (fast FFT KDE,
+  10^6 draws), with the convention always stated in the legend: `levels=`,
+  `level_convention="mass"` (68% / 95%) or `"sigma"` (39.3% / 86.5%). New options: smoothed or
+  histogram 1-D marginals with central or HPD intervals and `median^{+}_{-}` titles;
+  conformal-region overlays (`region=`); colour-blind-safe comparisons (`others=`); `dims=`
+  and automatic selection of the most dependent targets above `max_dims`; quantile-based
+  limits for heavy tails; `return_axes=`. `tools/render_joint_figures.py` regenerates the
+  documentation images.
+- `torchregress.joint` (lazy submodule, 56 exports): joint predictive distributions over
+  `d` targets. `JointPredictive` gives every head one interface (`sample` -> `[n, S, d]`,
+  `log_prob` on `[n, d]` or `[n, S, d]`, `marginal(dims)`, latent maps, masks) with declared
+  capabilities (`has_density`, `has_latent`, `exact_marginals`); adapters `GaussianJoint`,
+  `DistributionJoint`, `FlowJoint`, `SampleJoint`, `ProjectedJoint`, `AffineJoint`,
+  `MixtureJoint`, and `ConditionalModelJoint` for any density head with `log_prob(context, y)`
+  and `sample(context, n)` (`NormalizingFlowLoss`, `DensityEnsemble`,
+  `MarginalContrastiveDensity`, `NormalizingFlowMap`). `SklarJoint` joins any `Marginals` (`GaussianMarginals`,
+  `QuantileMarginals`, `BinnedMarginals`, `SampleMarginals`) with a density on normal scores,
+  a valid joint density for any score model; the dependence ladder `IndependenceDependence`,
+  `SchaakeShuffle`, `GaussianCopula` (Ledoit-Wolf shrinkage, optional low rank),
+  `ConditionalGaussianCopula` (modified Cholesky in `x`), `FlowDependence`
+  (identity-initialised spline flow) is gated by `select_dependence` (lowest rung within 2
+  paired standard errors of the best, never below independence). `JointConformal` /
+  `JointRegion`: split conformal regions with `P(Y in R(X)) >= 1 - alpha` under
+  exchangeability (marginal over `x`, not per `x`), for density, HPD, latent-ball,
+  Mahalanobis (with missing targets via the chi-square CDF), max-residual (box with a joint
+  guarantee) and sample-ball scores, weighted and Mondrian variants, nested levels,
+  closed-form or importance-sampled log-volumes, rejection sampling and bounding boxes.
+  Recalibration: `ScaleRecalibrator`, `LatentRecalibrator` (Dheur and Ben Taieb 2025),
+  `MarginalRecalibrator` (per-target conformal calibrators, finite-sample per-target
+  calibration). Diagnostics: `prerank_histograms` (six pre-ranks, Holm-adjusted),
+  `nees_consistency`, `hpd_calibration`, `coverage_by_mask`, `worst_slab_coverage`,
+  `conditional_coverage_gap` (ERT), `dependence_error`, `latent_calibration_error`, with
+  their result dataclasses (`PreRankHistograms`, `NEESConsistency`, `HPDCalibration`,
+  `CoverageByMask`, `WorstSlabCoverage`, `CoverageGap`, `DependenceError`) exported.
+  The package reuses the library's primitives: conformal thresholds from
+  `losses.conformal.finite_sample_quantile` and its weighted helper (the same thresholds as
+  `MultivariateScoreConformal` for the same scores), HPD levels from
+  `metrics.sample_hpd_level`, masked Gaussian densities from
+  `known_covariance_gaussian_nll`, `utils.distributions.normal_cdf`,
+  `utils.quantile.pinball_residual`, and one mixture-weight EM shared with
+  `DensityEnsemble.fit_weights`; `inverse_softplus` moved to `utils.distributions`.
+  `JointRegressor().fit(X, Y)` (`NaN` = missing target) fits Gaussian, mixture, flow and Sklar
+  heads on standardised targets, stacks them by held-out log score, recalibrates per-target
+  scales and conformalises on a separate split; `region(X, alpha, interest=...)` calibrates a
+  region for targets of interest; with missing targets in the conformal rows,
+  `region(X).contains(y)` is calibrated on the complete conformal rows (guarantee for complete
+  test rows) and `contains(y, mask=m)` on the masked score (same missingness mechanism).
+  `fit` leaves the caller's torch RNG state untouched. Inputs to `log_prob`, `to_latent`,
+  `from_latent`, `hpd_level` (which also takes `[n, S, d]` candidates), `JointConformal.calibrate`
+  and `JointRegion.contains` may be NumPy arrays or tensors of any floating dtype and device; every
+  predictive declares `dtype` and `device`. `score="auto"` uses `LatentScore` only for Gaussian
+  predictives and `HPDScore` for other densities. `JointRegressor.calibrate(X, Y)` replaces the
+  conformal rows; `n_train_`, `n_val_`, `n_recal_`, `n_conformal_` report the split and
+  `validation_log_score_` is in data units. `viz.plot_joint_diagnostics(seed=...)` is reproducible
+  without touching the global RNG, and corner plots of one or two targets keep the legend outside
+  the grid. Tests (289 in `tests/joint/`) check: coverage of every score
+  within 4 standard errors of 0.9 (4,000 calibration and 8,000 test rows, well-specified and
+  misspecified predictives) and of `JointRegressor` regions at two levels, with missing targets
+  and for targets of interest; the ladder choosing the simulated rung, with held-out NLL within
+  0.01 (constant copula) and 0.03 nats (x-dependent copula) of the truth and the flow rung
+  0.22 nats better than the Gaussian copula on non-Gaussian dependence (`d = 3`, 4,000
+  training rows); latent recalibration taking L-ECE from above 0.15 to below 0.03 on
+  mis-scaled Gaussians. New guide page "Joint Multi-Target Regression" and API page "Joint";
+  the multi-target guide no longer claims a joint guarantee for `MultiTargetConformal`, and its
+  worked example now runs.
 - `torchregress.losses.KnownCovarianceGaussianNLL` and `known_covariance_gaussian_nll`:
   Gaussian NLL of `[B, D]` residuals under a per-row **known** covariance (dense
   `[B, D, D]` / shared `[D, D]`, or diagonal `known_variance`) plus a **model**
@@ -46,7 +116,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lowest quantile + softplus increments so levels never cross, initialised at the marginal
   quantiles, held-out early stopping with reduce-on-plateau, seeded and deterministic; a
   non-negative statistic is fitted on the log scale, exact by quantile equivariance) or a
-  chunked k-nearest-neighbour finite-sample quantile. `NeymanConfidenceSet` gives
+  chunked k-nearest-neighbour finite-sample quantile. The k-NN estimator takes
+  `statistic_fn` (with `fit(..., x=...)`): the neighbours' observations are re-scored at the
+  query parameter, which keeps coverage for count data, where the exact critical value is a
+  saw-tooth that a smooth or pooled estimate cannot follow (Poisson with background, 20 000
+  pairs: minimum coverage 0.67 / 0.89 at 68.27% / 90% against 0.55 / 0.81 for the MLP); and
+  `confidence`, the binomial upper confidence bound for the quantile in place of the
+  finite-sample order statistic. `NeymanConfidenceSet` gives
   `contains(statistic, theta)` and candidate-bank masks `region(statistic_fn, theta_bank, x)`;
   `binned_conditional_coverage` (Wilson intervals, Bonferroni over bins) and
   `smooth_conditional_coverage` (ridge-penalised logistic regression with a Scheffé
@@ -183,6 +259,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   at 8 targets and a quarter at 16; on multimodal targets and for 2-4 targets NSF/MAF
   remain better and sample much faster (see the flow docs).
 ### Changed
+
+- `plot_corner_plot` draws the 68% and 95% mass contours by default (it drew the 39.3% and
+  86.5% "sigma" levels before; pass `level_convention="sigma"` for those). Default colours
+  and target names changed; every existing argument keeps its meaning.
 
 - `MixtureDensityLoss` evaluates its log density, moments and samples through
   `StudentTMixture`. The diagonal and full log densities no longer add `eps` to the

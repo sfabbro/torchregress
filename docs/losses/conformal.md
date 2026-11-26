@@ -61,7 +61,10 @@ Two newer calibration layers are available for conditional density models:
   level sets using `-log p(y|x)` as the nonconformity score.  Scalar targets get
   intervals through `CTI`; multi-target targets get exact level-set membership
   through `contains`.  `ContrastiveFlowConformal` wraps a fitted
-  `ContrastiveFlowLoss`'s positive-context density.
+  `ContrastiveFlowLoss`'s positive-context density.  For multi-target regions
+  with HPD or latent scores, missing or nuisance targets, volumes and sampling,
+  use `JointConformal` with the same score (`DensityScore`) on a
+  `JointPredictive` (→ See [Joint Multi-Target Regression](../guide/joint-regression.md#12-relation-to-existing-tools)).
 - `WaldoConformal` / `WaldoPosteriorCalibrator` / `WaldoDensityConformal` — WALDO's Wald statistic
   `(mean - y)^T Cov^{-1}(mean - y)` with Neyman inversion and optionally binned
   critical values.  The posterior calibrator estimates moments from predictive
@@ -93,6 +96,12 @@ inside = waldo.contains(samples_test, y_test)
     exception is a random sampler split over several chunks: draws then come
     from the generator in a different order, so a WALDO threshold changes by
     Monte Carlo error.
+
+`MultivariateScoreConformal` (Mahalanobis or Gaussian-NLL score on raw
+`(mu, Sigma, y)` tensors) and `ConformalizedDensity` share their threshold rule
+with `torchregress.joint.JointConformal` (`MahalanobisScore`, `DensityScore`);
+the [joint regression guide](../guide/joint-regression.md#12-relation-to-existing-tools) says when to
+use which.
 
 These are **marginal** split-conformal guarantees.  WALDO's original
 conditional guarantee uses simulator draws at each parameter and quantile

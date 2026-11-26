@@ -72,7 +72,7 @@ on a skewed population), it over-covers some regions and under-covers others.
 
 | Object | Role |
 |:-------|:-----|
-| `CriticalValueRegressor(alpha, method="mlp" \| "knn", ...)` | Fits $\hat C_\alpha(\theta)$ for one or several levels. `fit(theta [N, P], statistic [N])`, `predict(theta [M, P]) -> [M]` or `[M, L]`. |
+| `CriticalValueRegressor(alpha, method="mlp" \| "knn", ...)` | Fits $\hat C_\alpha(\theta)$ for one or several levels. `fit(theta [N, P], statistic [N], x=None)`, `predict(theta [M, P]) -> [M]` or `[M, L]`. k-NN options: `statistic_fn` (re-scored neighbours) and `confidence`. |
 | `NeymanConfidenceSet(critical_value)` | Holds a fitted regressor (or any callable $\theta \mapsto C$). `contains(statistic, theta)`, `region(statistic_fn, theta_bank, x)`, `critical_value(theta)`, and `NeymanConfidenceSet.calibrate(theta, statistic, alpha, **regressor_kwargs)`. |
 | `binned_conditional_coverage(theta, covered, nominal=...)` | Coverage per bin of each parameter with Wilson intervals (Bonferroni over bins). |
 | `smooth_conditional_coverage(theta, covered, nominal=...)` | Logistic-regression estimate of $P(\text{covered} \mid \theta)$ with a Scheffé simultaneous band. |
@@ -94,6 +94,68 @@ All live in `torchregress.inference` (see the
 
 Both estimators are tensor-native (CPU, CUDA, MPS; float32 and float64).  The
 k-NN distances are computed in chunks with `torch.cdist`.
+
+### Discrete statistics and noisy critical values
+
+Two things can make an estimated critical value under-cover even with plenty of
+calibration data.
+
+**Counts and other discrete data.** For a discrete observation the exact
+critical value $C_\alpha(\theta)$ is a saw-tooth in $\theta$: the statistic takes
+the values $\lambda(\theta; x)$ for $x$ in a countable set, and $C_\alpha$ jumps
+each time one of those atoms enters or leaves the acceptance set.  A smooth
+network cannot follow the teeth, and neither can a quantile pooled over
+neighbours with different $\theta_i$.  Wherever $\hat C$ falls just below a
+tooth, a whole atom of probability is dropped.  For
+$n \sim \mathrm{Poisson}(\mu + 3)$ with the likelihood-ratio statistic and
+20 000 calibration pairs, both estimators above fall to a coverage of 0.55 at
+the 68.27% level and 0.81–0.85 at 90%.
+
+The fix is to re-score the neighbours' *observations* at the candidate
+parameter.  With `statistic_fn` and the calibration observations,
+
+$$
+\hat C_\alpha(\theta) = \text{order statistic } \lceil (k+1)(1-\alpha) \rceil
+\text{ of } \{\lambda(\theta; x_i) : i \in N_k(\theta)\},
+$$
+
+so the atoms are those of the candidate $\theta$ itself and the only
+approximation left is $p(x \mid \theta_i) \approx p(x \mid \theta)$ for the
+neighbours.  On the same problem the minimum coverage becomes 0.67 and 0.89.
+
+**Sampling noise.** The order statistic $\lceil (k+1)(1-\alpha) \rceil$ has
+coverage at least $1-\alpha$ *on average over calibration sets*.  For one
+calibration set, the coverage at a given $\theta$ fluctuates around nominal by
+about $\sqrt{\alpha(1-\alpha)/k}$.  `confidence=0.95` replaces it by the binomial
+upper confidence bound for the quantile: the smallest order statistic
+$\lambda_{(m+1)}$ with $P(\mathrm{Bin}(k, 1-\alpha) \le m) \ge 0.95$.  At each
+$\theta$, with probability at least 0.95 over the calibration draw, the critical
+value is then no smaller than the $1-\alpha$ quantile of the neighbours'
+reference distribution.  The price is over-coverage of about
+$1.64\sqrt{\alpha(1-\alpha)/k}$ (2 points for $k = 1380$ at 68.27%).
+
+```python
+cs = NeymanConfidenceSet.calibrate(
+    theta_cal, stat_cal, alpha=[0.3173, 0.1],
+    x=x_cal, method="knn", statistic_fn=statistic_fn, confidence=0.95,
+)
+```
+
+`statistic_fn(theta, x)` follows the convention of `NeymanConfidenceSet.region`.
+Exact coverage (probability-mass sums, no toys) on the Poisson problem above,
+minimum over $\mu \in [0, 15]$:
+
+| Estimator | 68.27% | 90% |
+|:----------|:------:|:---:|
+| `method="mlp"` | 0.546 | 0.811 |
+| `method="knn"` | 0.547 | 0.851 |
+| `method="knn", statistic_fn=...` | 0.672 | 0.892 |
+| `method="knn", statistic_fn=..., confidence=0.95` | 0.697 | 0.912 |
+| Exact Feldman–Cousins | $\ge 0.683$ | $\ge 0.900$ |
+
+Neighbours are found in the full parameter space, so the re-scored estimator
+shares the k-NN weakness in many dimensions: with several nuisance parameters
+the neighbours' $p(x \mid \theta_i)$ drift away from $p(x \mid \theta)$.
 
 ---
 
@@ -236,8 +298,9 @@ from the indicators $\mathbb{1}[\lambda(\theta_i; x_i) \le \hat C(\theta_i)]$:
     dense and grows where they are sparse; outside the calibration support
     $\hat C$ is an extrapolation.  The statistic must also be computed the same
     way on calibration and test data, and the calibration pairs must follow the
-    test-time $p(x \mid \theta)$ (selection on $x$ breaks this).  Always run the
-    diagnostics.
+    test-time $p(x \mid \theta)$ (selection on $x$ breaks this).  A smooth or
+    pooled $\hat C$ under-covers discrete statistics by up to one atom of
+    probability; use re-scored neighbours there.  Always run the diagnostics.
 
 ---
 
@@ -248,8 +311,16 @@ from the indicators $\mathbb{1}[\lambda(\theta_i; x_i) \le \hat C(\theta_i)]$:
 | Exchangeable calibration and test sets, average coverage is enough | Constant threshold ([split conformal](conformal/index.md), `WaldoConformal` without critical-value model) |
 | Coverage must hold for every parameter value, population skewed or shifted | `NeymanConfidenceSet` with the MLP critical-value regressor |
 | Quick cross-check of the MLP, $P \le 2$ | `CriticalValueRegressor(method="knn")` |
+| Count data or any discrete statistic | `method="knn"` with `statistic_fn` and `x` (re-scored neighbours) |
+| Under-coverage at any $\theta$ must be rare, not just absent on average | `method="knn", confidence=0.95` |
 | Only a predictive mean/covariance available | WALDO statistic ([WALDO](waldo.md)) + `NeymanConfidenceSet` |
 | Likelihood-ratio estimator available | $\lambda = -\log \hat r(x, \theta)$ ([NRE](../losses/nre.md)) + `NeymanConfidenceSet` |
+
+For prediction regions of several *targets* given features (rather than
+confidence sets for parameters), see
+[Joint Multi-Target Regression](../guide/joint-regression.md); its
+coverage-over-feature-space diagnostics complement `binned_conditional_coverage`
+and `smooth_conditional_coverage` here.
 
 ## References
 

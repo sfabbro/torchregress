@@ -17,3 +17,12 @@ def normal_cdf(z: Tensor) -> Tensor:
     erf(z / sqrt(2)))`` cancels to 0 for ``z < -8`` in float64).
     """
     return 0.5 * torch.erfc(-z * _INV_SQRT2)
+
+
+def inverse_softplus(x: Tensor) -> Tensor:
+    """Inverse of ``softplus`` for ``x > 0``: ``log(expm1(x)) = x + log(-expm1(-x))``.
+
+    The second form never overflows (``expm1(x)`` is ``inf`` for ``x > ~88`` in
+    float32).
+    """
+    return x + torch.log(-torch.expm1(-x))

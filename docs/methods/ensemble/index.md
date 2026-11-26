@@ -154,6 +154,7 @@ Train the softmax weights with your usual regression loss on a validation set (t
 Continue with the ensemble journey:
 
 - [Ensemble Methods Detail](methods.md) — per-class API reference and parameter tables for every ensemble variant
+- [Joint Multi-Target Regression](../../guide/joint-regression.md) — `ConditionalModelJoint(DensityEnsemble, x)` gives a `DensityEnsemble` joint regions, recalibration and diagnostics; `JointRegressor` stacks heads with the same weight EM as `DensityEnsemble.fit_weights`
 - [Calibration Metrics](../../metrics/calibration.md) — validate that your epistemic uncertainty estimates are honest
 - [Uncertainty Decomposition](../../guide/uncertainty-decomposition.md) — contracts and taxonomy for aleatoric vs. epistemic
 - [Ensemble Tutorial](../../examples/ensemble_methods.md) — runnable comparison of BaseEnsembleModel, BNN, SWAG, and BatchEnsemble

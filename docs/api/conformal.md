@@ -23,7 +23,7 @@ unified coverage theorem, see [Conformal prediction](../methods/conformal/index.
 | `DistributionalConformal` | Distributional coverage | When full predictive CDF is available |
 | `LevelSetConformalPredictor` | Level-set predictor | Construct smallest intervals from CDF |
 | `MultiTargetConformal` | Multi-target coverage | Joint coverage on `[B, D]` targets |
-| `MultivariateScoreConformal` | Scalar multivariate score (Mahalanobis or Gaussian NLL) | Joint ellipsoidal region for `[B, D]` targets from a predictive `(mu, Sigma)`; weighted under shift |
+| `MultivariateScoreConformal` | Scalar multivariate score (Mahalanobis or Gaussian NLL) | Joint ellipsoidal region for `[B, D]` targets from a predictive `(mu, Sigma)`; weighted under shift Raw-tensor counterpart of `joint.JointConformal` + `MahalanobisScore` (same threshold rule; see [joint regression](../guide/joint-regression.md#12-relation-to-existing-tools)). |
 | `NonExchangeableConformalRegressor` | Weighted split conformal (NexCP, Barber et al. 2023) | Covariate shift or drift with importance weights `w(x)`; reports two-sided coverage bounds |
 | `PrevalenceAdjustedCP` | Group-prevalence-adjusted | Subgroup prior shift |
 | `R2CConformal` | Regression-as-classification | Multimodal / binned targets |
@@ -75,6 +75,7 @@ lower, upper = cp.predict_interval(y_pred_test)
 
 ## Next steps
 
+- [Joint Multi-Target Regression](../guide/joint-regression.md) — joint conformal regions for any joint predictive (`torchregress.joint`)
 - [Conformal overview](../methods/conformal/index.md) — unified coverage theorem, full method details
 - [Conformal predictors](../methods/conformal/predictors.md) — score formulas, parameter tables, best practices
 - [Distributional conformal](../methods/conformal/distributional.md) — CDF/density-based methods

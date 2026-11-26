@@ -481,3 +481,107 @@ def test_module_exports() -> None:
         "binned_conditional_coverage",
         "smooth_conditional_coverage",
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# re-scored neighbours and confidence-adjusted ranks (k-NN)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_BACKGROUND = 3.0
+
+
+def _poisson_statistic(theta_bank: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+    """-2 log LR for n ~ Poisson(mu + b), mu >= 0: [K, 1] or [n, K, 1] bank -> [n, K]."""
+    bank = theta_bank if theta_bank.dim() == 3 else theta_bank.unsqueeze(0)
+    rate = bank[..., 0] + _BACKGROUND
+    n = x.reshape(-1, 1)
+    best = n.clamp_min(_BACKGROUND)
+    return (2 * ((rate - best) + torch.xlogy(n, best / rate))).clamp_min(0)
+
+
+def _poisson_exact_coverage(reg: CriticalValueRegressor, grid: torch.Tensor) -> torch.Tensor:
+    counts = torch.arange(0, 121, dtype=torch.float64)
+    rate = grid + _BACKGROUND
+    pmf = torch.exp(counts * torch.log(rate) - rate - torch.lgamma(counts + 1))  # [G, C]
+    accepted = _poisson_statistic(grid, counts).T.unsqueeze(-1) <= reg.predict(grid).unsqueeze(1)
+    return (pmf.unsqueeze(-1) * accepted).sum(1)
+
+
+def _poisson_calibration(n: int, seed: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    gen = torch.Generator().manual_seed(seed)
+    mu = torch.rand(n, 1, generator=gen, dtype=torch.float64) * 16
+    x = torch.poisson(mu + _BACKGROUND, generator=gen)
+    stat = _poisson_statistic(mu.unsqueeze(1), x)[:, 0]
+    return mu, x, stat
+
+
+def test_confidence_index_is_the_binomial_upper_bound() -> None:
+    from scipy.stats import binom
+
+    from torchregress.inference.neyman import _confidence_index
+
+    alphas = torch.tensor([0.3173, 0.1, 0.05], dtype=torch.float64)
+    for k in (40, 345, 1380):
+        for conf in (0.5, 0.9, 0.95):
+            got = _confidence_index(k, alphas, conf).tolist()
+            want = [int(binom.ppf(conf, k, 1 - a)) for a in alphas.tolist()]
+            assert got == want
+    # Too few neighbours to certify a 99.9% quantile: no order statistic qualifies.
+    assert int(_confidence_index(20, torch.tensor([0.001], dtype=torch.float64), 0.95)) == 20
+
+
+def test_rescored_neighbours_use_the_statistic_at_the_query() -> None:
+    mu, x, stat = _poisson_calibration(600, seed=3)
+    reg = CriticalValueRegressor(
+        [0.1, 0.32], method="knn", n_neighbors=41, statistic_fn=_poisson_statistic
+    ).fit(mu, stat, x)
+    query = torch.tensor([[0.0], [2.5], [9.0]], dtype=torch.float64)
+    got = reg.predict(query)
+    for row, q in enumerate(query):
+        idx = torch.topk((mu[:, 0] - q[0]).abs(), 41, largest=False).indices
+        values = torch.sort(_poisson_statistic(q.reshape(1, 1), x[idx])[:, 0]).values
+        for col, alpha in enumerate([0.1, 0.32]):
+            assert got[row, col] == values[math.ceil(42 * (1 - alpha)) - 1]
+
+
+def test_rescored_knn_covers_count_data_where_pooled_estimates_do_not() -> None:
+    """Exact coverage by pmf sums: the saw-tooth critical value of a count statistic."""
+    mu, x, stat = _poisson_calibration(20_000, seed=0)
+    grid = torch.linspace(0, 15, 601, dtype=torch.float64).unsqueeze(-1)
+    nominal = torch.tensor([1 - 0.3173, 0.9], dtype=torch.float64)
+
+    pooled = CriticalValueRegressor([0.3173, 0.1], method="knn").fit(mu, stat)
+    pooled_cov = _poisson_exact_coverage(pooled, grid)
+    assert float((nominal - pooled_cov).max()) > 0.04  # drops whole atoms
+
+    rescored = CriticalValueRegressor(
+        [0.3173, 0.1], method="knn", statistic_fn=_poisson_statistic
+    ).fit(mu, stat, x)
+    rescored_cov = _poisson_exact_coverage(rescored, grid)
+    assert float((nominal - rescored_cov).max()) < 0.02
+
+    certified = CriticalValueRegressor(
+        [0.3173, 0.1], method="knn", statistic_fn=_poisson_statistic, confidence=0.95
+    ).fit(mu, stat, x)
+    certified_cov = _poisson_exact_coverage(certified, grid)
+    assert float((nominal - certified_cov).max()) < 0.005
+    assert bool((certified.predict(grid) >= rescored.predict(grid)).all())
+
+
+def test_calibrate_forwards_observations_and_validates() -> None:
+    mu, x, stat = _poisson_calibration(500, seed=5)
+    cs = NeymanConfidenceSet.calibrate(
+        mu, stat, alpha=0.1, x=x, method="knn", statistic_fn=_poisson_statistic, confidence=0.9
+    )
+    bank = torch.linspace(0, 15, 31, dtype=torch.float64).unsqueeze(-1)
+    assert cs.region(_poisson_statistic, bank, x[:7]).shape == (7, 31)
+    with pytest.raises(ValueError, match="knn"):
+        CriticalValueRegressor(0.1, confidence=0.9)
+    with pytest.raises(ValueError, match="knn"):
+        CriticalValueRegressor(0.1, statistic_fn=_poisson_statistic)
+    with pytest.raises(ValueError, match="confidence"):
+        CriticalValueRegressor(0.1, method="knn", confidence=1.0)
+    with pytest.raises(ValueError, match="required with statistic_fn"):
+        CriticalValueRegressor(0.1, method="knn", statistic_fn=_poisson_statistic).fit(mu, stat)
+    with pytest.raises(ValueError, match="required with statistic_fn"):
+        CriticalValueRegressor(0.1, method="knn").fit(mu, stat, x)

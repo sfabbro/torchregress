@@ -84,6 +84,14 @@ from torchregress.metrics import energy_score
 score = energy_score(y_samples, y_true)
 ```
 
+!!! warning "Sample-first layout"
+    `energy_score`, `variogram_score` and `crps_from_samples` take draws as
+    `[S, N, D]`. A `torchregress.joint.JointPredictive` returns `[N, S, D]` from
+    `sample(S)`: pass `samples.movedim(1, 0)`. With `S == N` a wrong layout is not
+    caught by the shape checks. For joint calibration diagnostics beyond scores
+    (pre-rank histograms, NEES, HPD calibration) see
+    [Joint Multi-Target Regression](../guide/joint-regression.md).
+
 API Reference: [energy_score](../api/metrics.md).
 
 ---

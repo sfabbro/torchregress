@@ -44,6 +44,55 @@ from torch import Tensor, nn
 __all__ = ["DensityEnsemble"]
 
 
+def _em_mixture_weights(
+    member_log_density: Tensor,
+    *,
+    max_iter: int,
+    loglik_tol: Optional[float] = None,
+    weight_tol: Optional[float] = None,
+    floor: float = 0.0,
+) -> Tensor:
+    r"""Mixture weights maximising :math:`\frac1N \sum_j \log \sum_m \pi_m p_m(y_j)` by EM.
+
+    ``member_log_density`` is ``[M, N]`` (``-inf`` allowed: a member with zero
+    density on a row).  Starting from equal weights, each step sets
+    :math:`\pi_m` to the mean responsibility of member :math:`m`, which never
+    decreases the (concave) objective.  Stops after ``max_iter`` steps, when
+    the mean log-likelihood improves by less than ``loglik_tol``, or when no
+    log-weight moves by more than ``weight_tol``.  ``floor > 0`` keeps every
+    weight at least ``floor`` before renormalisation.  Shared by
+    :meth:`DensityEnsemble.fit_weights` and the stacking step of
+    :class:`~torchregress.joint.JointRegressor`.
+
+    Returns:
+        Weights ``[M]`` on the simplex, in the input dtype.
+    """
+    n_members, n_rows = member_log_density.shape
+    log_pi = torch.full(
+        (n_members,),
+        -math.log(n_members),
+        dtype=member_log_density.dtype,
+        device=member_log_density.device,
+    )
+    log_floor = math.log(floor) if floor > 0 else None
+    previous = -math.inf
+    for _ in range(max_iter):
+        joint = member_log_density + log_pi.unsqueeze(1)
+        log_mix = torch.logsumexp(joint, dim=0)
+        current = float(log_mix.mean())
+        new = torch.logsumexp(joint - log_mix, dim=1) - math.log(n_rows)
+        if log_floor is not None:
+            new = new.clamp_min(log_floor)
+        done = (loglik_tol is not None and current - previous < loglik_tol) or (
+            weight_tol is not None and float((new - log_pi).abs().max()) < weight_tol
+        )
+        log_pi, previous = new, current
+        if done:
+            break
+    weights = log_pi.exp()
+    return weights / weights.sum()
+
+
 class _DensityHead(Protocol):
     """Flow-head API: ``log_prob(context, y) -> [N]``, ``sample(context, n) -> [N, S, D]``."""
 
@@ -184,20 +233,7 @@ class DensityEnsemble(nn.Module):
             if not torch.isfinite(member).all():
                 raise ValueError("member log-densities must be finite on the fitting data")
             n_members, n_rows = member.shape
-            log_pi = torch.full(
-                (n_members,), -math.log(n_members), dtype=torch.float64, device=member.device
-            )
-            previous = -math.inf
-            for _ in range(max_iter):
-                joint = member + log_pi.unsqueeze(1)
-                log_mix = torch.logsumexp(joint, dim=0)
-                current = float(log_mix.mean())
-                log_pi = torch.logsumexp(joint - log_mix, dim=1) - math.log(n_rows)
-                if current - previous < tol:
-                    break
-                previous = current
-            weights = log_pi.exp()
-            weights = weights / weights.sum()
+            weights = _em_mixture_weights(member, max_iter=max_iter, loglik_tol=tol)
 
             log_mix = torch.logsumexp(member + weights.log().unsqueeze(1), dim=0)
             ratio = torch.exp(member - log_mix)  # p_m / p, [M, N]

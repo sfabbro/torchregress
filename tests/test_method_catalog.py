@@ -305,6 +305,7 @@ _PUBLIC_SUBMODULES: dict[str, object] = {
     "torchregress.constraints": tr.constraints,
     "torchregress.test_time": tr.test_time,
     "torchregress.inference": tr.inference,
+    "torchregress.joint": tr.joint,
     "torchregress.metrics": tr.metrics,
     "torchregress.semi_supervised": tr.semi_supervised,
     "torchregress.prediction": tr.prediction,
@@ -580,3 +581,20 @@ def test_method_catalog_includes_neural_ratio_estimation() -> None:
 
     tasks = {row["task"] for row in method_catalog.list_task_recommendations()}
     assert "Likelihood-ratio / simulation-based parameter estimation" in tasks
+
+
+def test_method_catalog_includes_joint_package() -> None:
+    expected = {
+        "JointRegressor": "joint_distribution",
+        "SklarJoint": "joint_distribution",
+        "JointConformal": "conformal",
+        "ScaleRecalibrator": "calibration_transform",
+        "LatentRecalibrator": "calibration_transform",
+        "MarginalRecalibrator": "calibration_transform",
+    }
+    for name, family in expected.items():
+        meta = method_catalog.get_method_metadata(name)
+        assert meta["family"] == family, name
+        assert meta["maturity"] == "Available", name
+        assert meta["public_path"] == f"torchregress.joint.{name}", name
+        assert meta["multi_target"] == "yes", name

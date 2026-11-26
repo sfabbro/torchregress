@@ -180,4 +180,5 @@ pred = hetro_ens.predict(x_test)
 ## Next steps
 
 - [Ensemble methods](../methods/ensemble/index.md) — peer-method matrix, decision guidance
+- [Joint Multi-Target Regression](../guide/joint-regression.md) — wrap a `DensityEnsemble` with `joint.ConditionalModelJoint` for joint conformal regions and diagnostics
 - [Uncertainty decomposition](../guide/uncertainty-decomposition.md) — what each ensemble contract returns

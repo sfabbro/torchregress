@@ -14,6 +14,13 @@ wavelengths in spectroscopy, joint angles in biomechanics). Modelling
 the targets independently discards that structure and produces
 invalid joint confidence regions.
 
+!!! tip "Joint predictives, joint regions and diagnostics: `torchregress.joint`"
+    This page covers the multi-target **losses**. For an estimator that fits and
+    stacks joint heads (`JointRegressor`), joins any per-target marginals with a
+    validated dependence model (Sklar's theorem), builds conformal regions with a
+    **joint** coverage guarantee, recalibrates and checks calibration in more
+    than one dimension, read [Joint Multi-Target Regression](joint-regression.md).
+
 ---
 
 ## 1. Why joint multi-target regression?
@@ -224,12 +231,19 @@ $$
 \hat{C}(\mathbf{x}) = [\hat y_1 \pm q_1, \hat y_2 \pm q_2, \dots, \hat y_K \pm q_K],
 $$
 
-with marginal coverage $P(\hat y_k - q_k \le Y_k \le \hat y_k + q_k) \ge 1 - \alpha_k$
-per dimension. The **joint** coverage is *at least*
-$1 - \sum_k \alpha_k$ (Bonferroni) but typically much higher.
+where each $q_k$ is calibrated separately at level $1 - \alpha$, so that
+$P(\hat y_k - q_k \le Y_k \le \hat y_k + q_k) \ge 1 - \alpha$ for each
+dimension on its own. There is **no joint guarantee**: the probability that all
+$K$ targets are covered at once is only bounded below by $1 - K\alpha$ (the
+union bound), and it is $(1 - \alpha)^K$ for independent errors. In the
+example of §6, three targets calibrated at 90% each are covered together for
+only 78% of the test rows.
 
-**Use when:** you need marginal per-dimension intervals and the
-correlation structure is not critical to the deployment.
+**Use when:** you need per-dimension intervals and each target is reported
+separately. For a box that contains **all** targets with probability
+$1 - \alpha$, calibrate one maximum of the standardised residuals instead:
+`JointConformal(MaxResidualScore(), alpha)` in
+[`torchregress.joint`](joint-regression.md#56-box-with-a-joint-guarantee-maxresidualscore).
 
 ### 4.2 Joint conformal regions: `SLSConformal`
 
@@ -241,6 +255,15 @@ joint coverage $P(\mathbf{Y} \in \hat C(\mathbf{X})) \ge 1 - \alpha$.
 **Use when:** joint coverage is required (e.g. safety constraints
 spanning multiple targets) and the head provides a density or
 covariance.
+
+### 4.3 Joint regions from any predictive: `JointConformal`
+
+[`torchregress.joint`](joint-regression.md#5-conformal-regions) calibrates one
+scalar score of a joint predictive: density level sets, highest-density sets,
+latent balls (flows), ellipsoids (Gaussian heads, with missing targets), boxes
+and unions of balls (draws only). Each region $R(\mathbf x)$ has
+$P(\mathbf Y \in R(\mathbf X)) \ge 1 - \alpha$ under exchangeability, with
+closed-form or importance-sampled volumes.
 
 ---
 
@@ -270,13 +293,17 @@ contributes to the aleatoric component.
 ## 6. Worked example
 
 The end-to-end example below trains a multi-target network with a
-full covariance head and wraps it in a coordinate-wise conformal
-calibrator.
+full covariance head on synthetic data with correlated noise, wraps it
+in a coordinate-wise conformal calibrator, and compares the result with
+a box calibrated jointly.
 
 ```python
 import torch
 import torch.nn as nn
-from torchregress.losses import MultivariateGaussianLoss, MultiTargetConformal
+
+from torchregress.joint import GaussianJoint, JointConformal, MaxResidualScore
+from torchregress.losses import MultiTargetConformal, MultivariateGaussianLoss
+
 
 class MultivariateModel(nn.Module):
     def __init__(self, in_features, out_features):
@@ -300,29 +327,66 @@ class MultivariateModel(nn.Module):
         cov = L @ L.transpose(-2, -1)
         return mean, cov
 
+
+# Synthetic data: 3 correlated targets driven by 10 features
+torch.manual_seed(0)
 in_features, out_features = 10, 3
+W = torch.randn(in_features, out_features)
+mix = torch.tensor([[1.0, 0.0, 0.0], [0.8, 0.6, 0.0], [0.0, 0.5, 0.9]])
+
+
+def simulate(n):
+    x = torch.randn(n, in_features)
+    y = torch.tanh(x @ W) + 0.3 * torch.randn(n, out_features) @ mix.T
+    return x, y
+
+
+x_train, y_train = simulate(2000)
+x_cal, y_cal = simulate(1000)
+x_test, y_test = simulate(2000)
+
 model = MultivariateModel(in_features, out_features)
 loss_fn = MultivariateGaussianLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
 # Training
-x, y = torch.randn(32, in_features), torch.randn(32, out_features)
-mean, cov = model(x)
-loss = loss_fn(mean, y, covariance_matrices=cov)
-loss.backward()
-optimizer.step(); optimizer.zero_grad()
+for epoch in range(200):
+    mean, cov = model(x_train)
+    loss = loss_fn(mean, y_train, covariance_matrices=cov)
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
 
-# Conformal calibration
+with torch.no_grad():
+    mean_cal, cov_cal = model(x_cal)
+    mean_test, cov_test = model(x_test)
+
+# Coordinate-wise conformal: each target at 1 - alpha separately
 cp = MultiTargetConformal(alpha=0.1)
-with torch.no_grad():
-    y_pred_cal, _ = model(x_cal)
-cp.calibrate(y_pred_cal, y_cal)
+cp.calibrate(mean_cal, y_cal)
+lower, upper = cp.predict_interval(mean_test)
+inside = (y_test >= lower) & (y_test <= upper)
+print("per-target coverage:", inside.float().mean(0))
+print("all targets covered:", inside.all(1).float().mean())
 
-# Inference
-with torch.no_grad():
-    y_pred_test, _ = model(x_test)
-lower, upper = cp.predict_interval(y_pred_test)
+# Joint box: one calibrated maximum over the standardised residuals
+joint = JointConformal(MaxResidualScore(), alpha=0.1)
+joint.calibrate(GaussianJoint.from_covariance(mean_cal, cov_cal), y_cal)
+box = joint.region(GaussianJoint.from_covariance(mean_test, cov_test))
+print("joint box coverage:", box.contains(y_test).float().mean())
 ```
+
+Output (CPU, torch 2.14.1):
+
+```text
+per-target coverage: tensor([0.9125, 0.9100, 0.8930])
+all targets covered: tensor(0.7765)
+joint box coverage: tensor(0.8980)
+```
+
+Each target is covered at close to 90%, but all three together for only
+78% of the rows. The jointly calibrated box covers all three targets
+together for 90% of the rows.
 
 ---
 
@@ -342,9 +406,10 @@ The choice is governed by:
   $K \in \[10, 1000\]$, use `LowRankGaussianLoss` with $R \approx 5$–$10$.
 - **Multimodality:** for disjoint modes, use `MixtureDensityLoss`. For arbitrary
   shapes, use `NormalizingFlowLoss`.
-- **Joint coverage requirements:** for hyper-rectangular regions,
-  use `MultiTargetConformal`. For ellipsoidal or density-level-set
-  regions, use `SLSConformal`.
+- **Joint coverage requirements:** `MultiTargetConformal` gives per-target
+  intervals only. For a box with joint coverage use `MaxResidualScore`, and
+  for ellipsoids, density level sets or flow regions the other scores of
+  [`torchregress.joint`](joint-regression.md#511-which-score-when).
 
 ---
 
@@ -362,6 +427,7 @@ The choice is governed by:
 
 ## Next steps
 
+- [Joint Multi-Target Regression](joint-regression.md) — joint predictives, the dependence ladder, joint conformal regions, recalibration and diagnostics.
 - [Uncertainty Decomposition](uncertainty-decomposition.md) — full taxonomy of aleatoric vs. epistemic contracts.
 - [Choosing by Constraint](choosing-by-constraint.md) — latency / coverage / decomposition tradeoffs.
 - [Practical Usage](practical-usage.md) — concrete loss recipes.
