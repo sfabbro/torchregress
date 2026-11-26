@@ -299,6 +299,9 @@ class HeteroscedasticBNN(nn.Module):
     """
     Heteroscedastic BNN that predicts both mean and variance.
 
+    Joint API: ``torchregress.joint.as_joint(bnn, x)`` gives the
+    :class:`~torchregress.joint.MixtureJoint` over weight draws.
+
     Combines epistemic uncertainty (from weight uncertainty) with
     aleatoric uncertainty (predicted variance).
 

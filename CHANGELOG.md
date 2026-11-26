@@ -9,6 +9,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Dependence ladder rung 4, `torchregress.joint.MixtureDependence(n_components=3, ...)`: a
+  Gaussian mixture on the normal scores whose weights, means and covariances depend on `x`
+  (a mixture density network; constant without `x`), for dependence with a few regimes such
+  as targets that move together between modes. Its predictive keeps exact marginals and exact
+  densities under missing targets, which the flow rung does not. On the ladder test with a
+  hidden-sign mixture (4,000 training, 2,000 held-out rows, 3 targets) it reaches 3.434 nats
+  against 3.420 for the truth and 3.479 for the flow rung, and fits four times faster;
+  on Gaussian dependence it is within 0.01 nats of the well-specified rung.
+  `JointRegressor(method="sklar")` fits it between the conditional Gaussian copula and the
+  flow (name `conditional_mixture`); on `examples/joint_regression_comparison.py` the Sklar
+  route's gap to the oracle went from 0.56 to 0.42 nats.
+- Mixture marginals for the Sklar route of `torchregress.joint`: `MixtureMarginals(weights,
+  means, stds)` holds a univariate Gaussian mixture per row and target (`[n, d, K]`), with a
+  closed-form CDF (float64, from the log CDF below the median and the log survival above it)
+  and density, quantiles by the safeguarded Newton-bisection solver of
+  `StudentTMixture.marginal_quantile` (now shared), and normal scores taken on the side of the
+  median where the tail probability is small (in float32 the default path moved upper-tail
+  scores by up to 3e-3). `MixtureNetworkEngine(n_components=5, ...)` is a marginal engine that
+  predicts one mixture per target in the parametrisation of a one-feature `MixtureDensityLoss`
+  and trains it by the sum of marginal negative log densities (missing targets left out), with
+  the training scaffolding of `QuantileNetworkEngine`. `as_joint` of a one-feature
+  `MixtureDensityLoss` applied per target (output `[n, d, 3K]`) gives the `SklarJoint` of its
+  `MixtureMarginals` (`dependence=`, `x=`). On the problem of the joint comparison example
+  (2,400 training rows) the gap to the true marginal log density is +0.09 nats against +0.32
+  for the quantile engine.
+- `examples/joint_regression_comparison.py` (docs page "Joint Regression Comparison"): every
+  `JointRegressor` head and the stacked default against the true conditional density of a
+  three-target problem, next to the oracle and to independent targets: NLL gap, energy and
+  variogram scores, coverage and volume of the joint 90% region, runtime, and a summary JSON.
+- Energy-score (engression) head for `torchregress.joint.JointRegressor`: `method="energy"`
+  fits a generator `g(x, eps)` (Gaussian noise of dimension `noise_dim`, default `d`,
+  concatenated to the features; Shen and Meinshausen 2024) by the energy score of
+  `energy_draws=2` draws per row with the unbiased cross term (Gneiting and Raftery 2007),
+  early-stopped on the validation energy score with the same noise every epoch. Its
+  predictive is draws only (no log score, no HPD region, not in `"auto"`): regions use the
+  sample-ball score, recalibration the variance objective (kept only if it lowers the
+  validation energy score), and `validation_energy_score_` reports the validation score
+  (`validation_log_score_` has no entry for it). Missing targets enter through the energy
+  score of the observed sub-vector. One forward pass per draw block: 1,000 rows x 200 draws
+  take 0.09 s at `d = 16` against 15 s for the flow head (4-core laptop CPU), 0.2 s at
+  `d = 64`. `ConditionalModelJoint` now also wraps a model with `sample(context, n)` and no
+  `log_prob` (a draws-only predictive, `has_density` per instance), and `as_joint` accepts
+  such a generator.
+
+- Marginal neural ratio estimation: `torchregress.inference.MarginalRatioEstimator(n_params,
+  marginals, observation_dim=None, *, embedding=None, ...)` learns the posterior of chosen
+  subsets of the parameters directly (the marginal estimation of TMNRE, Miller et al. 2021; no
+  truncation, no rounds), one `build_ratio_classifier` head per marginal on one shared embedding
+  of `x`, each trained by its own `NeuralRatioLoss` (CNRE, `gamma=1` by default) with negatives
+  drawn inside the batch (`K` = half the batch). Nuisance parameters are integrated out by the
+  simulator, so a head's size and step time do not depend on their number (tested for 2, 14 and
+  62 nuisances). `fit` uses the early-stopping trainer of `torchregress.joint`; `univariate`,
+  `pairs` and `jointly` build marginal lists. `torchregress.inference.RatioPosterior(log_ratio,
+  x, prior_samples, *, prior_log_prob=None, ...)` is the `JointPredictive` of
+  `p(theta) r(theta, x)` for any learned log ratio: importance resampling of prior draws with
+  its effective sample size and a low-ESS warning, a Monte-Carlo-normalised `log_prob`, and
+  `normalisation()` (the CNRE check `E_p[r] = 1`). `MarginalRatioEstimator.posterior(...)` and
+  `torchregress.joint.as_joint(estimator, x, prior_samples=..., marginal=...)` return it, so
+  joint regions, diagnostics and corner plots apply. On a linear-Gaussian simulator with exact
+  answers the learned marginal posteriors match the exact means to 0.1 posterior sd and pass
+  SBC and HPD expected-coverage tests. New helper `torchregress.losses.in_batch_negative_index`.
+- Every multi-target tool of the library reaches `torchregress.joint` in one call:
+  `torchregress.joint.as_joint(obj, inputs, **kwargs)` dispatches on the head, loss (with the
+  network output it was trained on), ensemble or distribution and returns its
+  `JointPredictive` (Gaussian, low-rank and known-covariance Gaussian losses, MDN and
+  Student-t mixtures, input-noise MDN, evidential, every `create_flow_model` flow type,
+  contrastive flows, noise-aware and joint-binned densities, multi-quantile heads and
+  `Marginals` with a dependence rung, the copula spline head, MCD, flow maps, flow matching,
+  density / heteroscedastic / MDN ensembles, `HeteroscedasticBNN`), or the `JointRegion` of a
+  calibrated `SLSConformal`; it raises a `TypeError` naming the supported types otherwise.
+  New adapters: `CopulaSplineJoint` (density and exact masked densities of
+  `GaussianCopulaSplineHead`, batch-first draws, latent map) and `SLSRegion` (super-level-set
+  regions as a `JointRegion`: the membership of `SLSConformal`, exact volume of a
+  volume-preserving frontier and Monte Carlo volume of a union frontier, uniform draws,
+  bounding box, corner plots and diagnostics). `GaussianJoint.from_known_covariance` is the
+  predictive of `KnownCovarianceGaussianNLL` (total covariance, learned terms included).
+  `SLSConformal.contains(x, y, *, groups=None, test_weights=None)` gives the membership of the
+  set `predict_interval_from_grid` bounds. The joint guide has a table of every multi-target
+  tool and its one-line call; `tests/joint/test_all_heads.py` checks each row (densities equal
+  the head's own, masked densities where it has them, conformal coverage on a well-specified
+  case, corner plots).
 - `torchregress.viz.plot_joint_diagnostics(predictive, y, *, x=None, region=None, ...)`: a
   one-call figure of joint HPD calibration, pre-rank histograms, per-target PITs with
   simultaneous bands, correlation error, and region coverage, size and conditional coverage,
@@ -258,8 +339,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (default) or affine maps. On a synthetic skewed copula its KL gap is about half of NSF's
   at 8 targets and a quarter at 16; on multimodal targets and for 2-4 targets NSF/MAF
   remain better and sample much faster (see the flow docs).
+- Affine rungs of the dependence ladder: `IndependenceDependence(affine=True)` and
+  `GaussianCopula(affine=True)` fit a per-target location and scale of the normal scores,
+  `q(z) = N(m, D R D)` (names `affine_independence`, `affine_gaussian_copula`). The
+  conditional and flow rungs can move and rescale the score marginals, so with globally
+  biased or mis-scaled marginals they gained log score without modelling any dependence; a
+  cheap affine rung now absorbs that miscalibration and the richer rungs are kept by
+  `select_dependence` only for what they add beyond it. `JointRegressor(method="sklar")` fits
+  independence, affine independence, Gaussian copula, affine Gaussian copula, conditional
+  Gaussian copula and flow, and passes its batch size to the conditional and flow rungs.
+- `JointPredictive.center(n_samples=512)`: a location summary that avoids sampling (the image
+  of the latent origin when the predictive has a latent map, otherwise the mean, closed form
+  for mixtures; wrappers combine the centers of what they wrap).
+  `ScaleRecalibrator(..., about="mean" | "center")` takes its per-target scaling about either.
 ### Changed
 
+- `JointRegressor(method="sklar")` and the Sklar member of `method="auto"` with
+  `marginals=None` now fit both built-in marginal engines (`QuantileNetworkEngine`,
+  `MixtureNetworkEngine` with `n_components` components) once on the training rows and keep
+  the one with the larger mean held-out sum of marginal log densities on the complete
+  validation rows (`marginal_scores_`, `marginal_engine_`); only that engine is cross-fitted
+  for the normal scores. Fitted numbers move: on the joint comparison example the mixture
+  engine is chosen, the Sklar test NLL gap to the oracle goes from 0.569 to 0.560 nats and the
+  stacked default's from 0.146 to 0.143. A user-supplied `marginals=` engine is used as before.
+- The diagnostics of `torchregress.joint` (`prerank_histograms`, `nees_consistency`,
+  `hpd_calibration`, `coverage_by_mask`, `worst_slab_coverage`, `conditional_coverage_gap`,
+  `dependence_error`) accept NumPy arrays and lists as well as tensors, like the rest of the
+  joint API.
+- `JointRegressor` recalibrates its per-target scale about `center()` instead of the
+  Monte Carlo mean, so `predict(X).log_prob(Y)` on a flow or stacked predictive no longer
+  draws samples. Measured on one laptop CPU run (4 threads, d = 4, 2,000 test rows, flow
+  head): scoring 5.9 s to 0.03 s, `region(...).contains(...)` 17.7 s to 5.9 s, fit of a
+  5-epoch flow 5.7 s to 0.9 s.
+- `JointRegressor(batch_size="auto", max_holdout=20_000)` (new defaults; attribute
+  `batch_size_`): each held-out split is capped at `max_holdout` rows, so with a million
+  rows 94% train the heads instead of 60%, and the batch size grows from 256 up to 4096 so
+  that an epoch stays under about 400 steps. Behaviour is unchanged below about 100,000
+  training rows.
 - `plot_corner_plot` draws the 68% and 95% mass contours by default (it drew the 39.3% and
   86.5% "sigma" levels before; pass `level_convention="sigma"` for those). Default colours
   and target names changed; every existing argument keeps its meaning.
@@ -296,6 +412,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `metrics.energy_score`: the distance to the observation is `torch.linalg.vector_norm`, whose
+  gradient is zero where a draw equals the observation; the square root of a sum of squares
+  gave a NaN gradient there, which a float32 generator trained by the score hits within a few
+  hundred steps. Values are unchanged.
 - `maximize_score` / `profile_interval`: the projected-Newton step diagonalised every active
   row-start's Hessian in one `torch.linalg.eigh` call; on CUDA the batched solver's workspace
   grows with the batch (6M row-starts asked for 253 GiB). Batches are now split into chunks of

@@ -875,6 +875,9 @@ class NoisyInputPredictor(torch.nn.Module):
 class InputNoiseMDNLoss(InputNoiseAugmentationLoss):
     """Input-noise marginalization specifically for MDN heads.
 
+    Joint API: ``torchregress.joint.as_joint(loss, x_obs)`` gives the mixture over
+    input-noise draws.
+
     Args:
         model: Underlying model predicting MDN parameters.
         n_components: Number of mixture components.

@@ -10,6 +10,7 @@ from .likelihood import (
     ratio_classifier_score,
     wilks_threshold,
 )
+from .marginal_ratio import MarginalRatioEstimator, RatioPosterior
 from .neyman import (
     BinnedCoverage,
     CriticalValueRegressor,
@@ -59,6 +60,8 @@ __all__ = [
     "effective_sample_size",
     "grid_log_posterior",
     "maximum_likelihood_estimate",
+    "MarginalRatioEstimator",
+    "RatioPosterior",
     "MixtureFractionEstimate",
     "WifiRatioEnsemble",
     "ProfileInterval",

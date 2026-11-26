@@ -159,9 +159,6 @@ nav = [
     { "Uncertainty Decomposition" = "guide/uncertainty-decomposition.md" },
     { "Multi-Target Regression" = "guide/multi-target-regression.md" },
     { "Joint Multi-Target Regression" = "guide/joint-regression.md" },
-    { "New to Joint Prediction" = "guide/joint-quickstart.md" },
-    { "Joint: Coming from MCMC" = "guide/joint-for-mcmc-users.md" },
-    { "Joint: Coming from SBI" = "guide/joint-for-sbi-users.md" },
     { "Mathematical Foundations" = "guide/math/index.md" },
     { "Best Practices" = "guide/best-practices.md" },
     { "Debugging" = "guide/debugging.md" },
@@ -305,6 +302,7 @@ nav = [
       { "Normalizing Flows (Multi-Target)" = "examples/normalizing_flows_multitarget.md" },
       { "Contrastive Flow Estimation" = "examples/contrastive_flow_parameter_estimation.md" },
       { "Multimodal Methods" = "examples/multimodal_method_comparison.md" },
+      { "Joint Regression Heads" = "examples/joint_regression_comparison.md" },
     ] },
     { "Robustness & Data Quality" = [
       { "Imbalanced Regression" = "examples/imbalanced_regression.md" },

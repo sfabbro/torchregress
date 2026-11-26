@@ -61,6 +61,9 @@ class GaussianNLLLoss(DistributionLoss):
     """
     Gaussian Negative Log-Likelihood loss for diagonal covariance models.
 
+    Joint API: ``torchregress.joint.as_joint(loss, y_pred)`` gives the diagonal
+    :class:`~torchregress.joint.GaussianJoint` of several targets.
+
     Supports tuple outputs (mean, log_variance), concatenated tensors
     [mean, log_variance], or mean-only predictions when fixed_variance is set.
     """
@@ -186,6 +189,9 @@ class GaussianCRPSLoss(GaussianNLLLoss):
 class MultivariateGaussianLoss(DistributionLoss):
     """
     Negative Log-Likelihood loss for multivariate Gaussian with full covariance.
+
+    Joint API: ``torchregress.joint.as_joint(loss, (mean, covariance))`` gives its
+    :class:`~torchregress.joint.GaussianJoint`.
     """
 
     def __init__(
@@ -317,6 +323,9 @@ class MultivariateGaussianLoss(DistributionLoss):
 class LowRankGaussianLoss(DistributionLoss):
     """
     Negative Log-Likelihood loss for low-rank Gaussian with diagonal correction.
+
+    Joint API: ``torchregress.joint.as_joint(loss, (mean, cov_factor, cov_diag))`` gives its
+    :class:`~torchregress.joint.GaussianJoint`.
 
     Covariance is parameterized as: cov = cov_factor @ cov_factor.T + diag(cov_diag).
     """

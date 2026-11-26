@@ -6,12 +6,15 @@ import math
 
 import pytest
 import torch
-from torch.distributions import Normal
+from scipy.stats import kstest
+from torch.distributions import Categorical, MixtureSameFamily, Normal, StudentT
 
+from torchregress.joint import GaussianJoint, MixtureJoint, SklarJoint
 from torchregress.joint.marginals import (
     BinnedMarginals,
     GaussianMarginals,
     Marginals,
+    MixtureMarginals,
     QuantileMarginals,
     SampleMarginals,
 )
@@ -65,8 +68,32 @@ def _samples() -> SampleMarginals:
     return SampleMarginals(torch.round(draws * 4) / 4)  # rounding creates many ties
 
 
+def _mixture(
+    n: int = N, d: int = D, dtype: torch.dtype = F64, separated: bool = False
+) -> MixtureMarginals:
+    """Three components of unequal widths, one with a small weight.
+
+    Bimodal with overlapping components by default (the density between them stays
+    well above float64 rounding, so ``y`` is identifiable from ``F(y)`` everywhere);
+    ``separated`` puts them 5 to 6 units apart with widths down to 0.05, leaving gaps
+    where the CDF is flat to rounding.
+    """
+    gen = torch.Generator().manual_seed(4)
+    weights = torch.rand(n, d, 3, generator=gen, dtype=F64) + 0.05
+    weights[..., 0] = 0.02
+    if separated:
+        centres = torch.tensor([-6.0, 0.0, 5.0], dtype=F64)
+        stds = torch.rand(n, d, 3, generator=gen, dtype=F64) * 0.8 + 0.05
+    else:
+        centres = torch.tensor([-3.0, 0.0, 2.5], dtype=F64)
+        stds = torch.rand(n, d, 3, generator=gen, dtype=F64) * 0.8 + 0.4
+    means = centres + 0.3 * torch.randn(n, d, 3, generator=gen, dtype=F64)
+    return MixtureMarginals(weights.to(dtype), means.to(dtype), stds.to(dtype))
+
+
 ADAPTERS = {
     "gaussian": _gaussian,
+    "mixture": _mixture,
     "quantile": _quantile,
     "quantile_crossing": lambda: _quantile(crossing=True),
     "quantile_ties": lambda: _quantile(ties=True),
@@ -280,3 +307,133 @@ class TestSampleMarginals:
         torch.testing.assert_close(
             marg.cdf(draws), (torch.arange(1, 11, dtype=F64) / 11).view(1, 10, 1)
         )
+
+
+class TestMixtureMarginals:
+    def _reference(self, marg: MixtureMarginals) -> MixtureSameFamily:
+        return MixtureSameFamily(Categorical(logits=marg.log_weights), Normal(marg.loc, marg.scale))
+
+    def test_log_prob_and_cdf_match_mixture_same_family(self) -> None:
+        marg = _mixture()
+        ref = self._reference(marg)
+        y = marg.icdf(_u_grid(51))  # [N, S, D]
+        sample_first = y.movedim(1, 0)  # torch.distributions layout [S, N, D]
+        torch.testing.assert_close(marg.log_prob(y), ref.log_prob(sample_first).movedim(0, 1))
+        torch.testing.assert_close(marg.log_prob(y[:, 7]), ref.log_prob(y[:, 7]))
+        torch.testing.assert_close(
+            marg.cdf(y), ref.cdf(sample_first).movedim(0, 1), rtol=0, atol=1e-12
+        )
+
+    def test_upper_tail_cdf_is_accurate_relative_to_the_survival(self) -> None:
+        marg = _mixture()
+        u = torch.tensor([1 - 1e-6, 1 - 1e-9, 1 - 1e-12], dtype=F64).view(1, -1, 1)
+        y = marg.icdf(u.expand(N, -1, D).contiguous())
+        _, log_sf = marg._log_cdf_and_sf(y)
+        torch.testing.assert_close(log_sf.exp(), (1 - u).expand_as(y), rtol=1e-6, atol=0)
+
+    @pytest.mark.parametrize("separated", [False, True])
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+    def test_round_trips_to_the_clipping_levels(self, dtype: torch.dtype, separated: bool) -> None:
+        # SklarJoint clips the PIT values at 1e-6 and 1 - 1e-6.
+        marg = _mixture(dtype=dtype, separated=separated)
+        levels = torch.tensor([1e-6, 1e-5, 1e-3, 0.3, 0.5, 0.7, 1 - 1e-3, 1 - 1e-5, 1 - 1e-6])
+        u = levels.to(dtype).view(1, -1, 1).expand(N, -1, D).contiguous()
+        y = marg.icdf(u)
+        assert y.dtype == dtype and bool(torch.isfinite(y).all())
+        assert (y.diff(dim=1) > 0).all()
+        back = marg.cdf(y)
+        # float32: the rounding of y (relative 6e-8) times the density, relative to the tail
+        tol = 1e-9 if dtype == F64 else 1e-4
+        tail = torch.minimum(u, 1 - u)
+        assert ((back - u).abs() <= tol * tail).all(), (back - u).abs().max()
+        z = torch.special.ndtri(levels.double()).to(dtype).view(1, -1, 1).expand_as(u)
+        torch.testing.assert_close(marg.from_normal_scores(z), y)
+        torch.testing.assert_close(
+            marg.normal_scores(y), z, rtol=0, atol=1e-6 if dtype == F64 else 1e-4
+        )
+        assert marg.median().dtype == dtype
+
+    def test_icdf_of_cdf_on_well_separated_components(self) -> None:
+        # Points across the near-empty gaps between components, where the CDF is flat
+        # to float64 rounding: there any root is a quantile, so the check is in u; where
+        # the density is resolved, the root is the point itself.
+        marg = _mixture(separated=True)
+        y = torch.linspace(-9.0, 8.0, 341, dtype=F64).view(1, -1, 1).expand(N, -1, D)
+        u = marg.cdf(y).clamp(1e-12, 1 - 1e-12)
+        back = marg.icdf(u)
+        torch.testing.assert_close(marg.cdf(back), u, rtol=1e-9, atol=1e-12)
+        resolved = marg.log_prob(y).exp() > 1e-3
+        assert resolved.float().mean() > 0.3  # the check below has points
+        torch.testing.assert_close(back[resolved], y[resolved], rtol=1e-7, atol=1e-7)
+
+    def test_normal_scores_of_exact_draws_are_standard_normal(self) -> None:
+        marg = _mixture(n=2, d=2)
+        ref = self._reference(marg)
+        torch.manual_seed(3)
+        y = ref.sample((5000,)).movedim(0, 1)  # [n, S, d]
+        z = marg.normal_scores(y)
+        assert bool(torch.isfinite(z).all())
+        p_values = [kstest(z[i, :, j].numpy(), "norm").pvalue for i in range(2) for j in range(2)]
+        assert min(p_values) > 1e-3 / len(p_values), p_values
+
+    def test_float32_upper_tail_scores_need_the_survival_function(self) -> None:
+        # The decision for overriding normal_scores: the default forms F in float32,
+        # where 1 - F near 1e-6 is a multiple of 6e-8, and moves the score by ~1e-3.
+        marg64 = _mixture()
+        marg32 = _mixture(dtype=torch.float32)
+        u = 1 - torch.logspace(-6, -3, 31, dtype=F64).view(1, -1, 1).expand(N, -1, D)
+        y = marg64.icdf(u.contiguous()).float()
+        exact = marg64.normal_scores(y.double())
+        own = (marg32.normal_scores(y).double() - exact).abs().max()
+        default = (Marginals.normal_scores(marg32, y).double() - exact).abs().max()
+        assert own < 1e-5, own
+        assert default > 1e-4, default
+
+    def test_sklar_joint_integrates_to_one_by_importance_sampling(self) -> None:
+        n, d, m = 3, 2, 200_000
+        marg = _mixture(n=n, d=d)
+        joint = SklarJoint(marg, _x_mixture_scores(n, d, rho=0.6))
+        lo = marg.icdf(torch.full((n, d), 1e-4, dtype=F64))
+        hi = marg.icdf(torch.full((n, d), 1 - 1e-4, dtype=F64))
+        proposal = StudentT(3.0, 0.5 * (lo + hi), 0.25 * (hi - lo))
+        torch.manual_seed(6)
+        y = proposal.sample((m,)).movedim(0, 1)  # [n, m, d]
+        log_g = proposal.log_prob(y.movedim(1, 0)).sum(-1).movedim(0, 1)
+        w = (joint.log_prob(y) - log_g).exp()
+        est = w.mean(1)
+        se = w.std(1) / math.sqrt(m)
+        assert ((est - 1).abs() < 4 * se).all(), (est, se)
+        assert (se < 0.02).all()  # the check has power
+
+    def test_masked_sklar_density_is_the_observed_marginal(self) -> None:
+        n, d = 3, 2
+        marg = _mixture(n=n, d=d)
+        joint = SklarJoint(marg, _x_mixture_scores(n, d, rho=0.6))
+        torch.manual_seed(8)
+        y = joint.sample(5)
+        mask = torch.tensor([[False, True]] * n)
+        torch.testing.assert_close(joint.log_prob(y, mask), marg.log_prob(y)[..., 1])
+        pit = marg.cdf(joint.sample(4000))
+        p_values = [
+            kstest(pit[i, :, j].numpy(), "uniform").pvalue for i in range(n) for j in range(d)
+        ]
+        assert min(p_values) > 1e-3 / len(p_values), p_values
+
+    def test_rejects_bad_parameters(self) -> None:
+        ones = torch.ones(2, 1, 3)
+        with pytest.raises(ValueError):
+            MixtureMarginals(ones, ones, -ones)
+        with pytest.raises(ValueError):
+            MixtureMarginals(-ones, ones, ones)
+        with pytest.raises(ValueError):
+            MixtureMarginals(ones[..., :2], ones, ones)
+
+
+def _x_mixture_scores(n: int, d: int, rho: float) -> MixtureJoint:
+    """Equal mixture of N(0, R(+rho)) and N(0, R(-rho)): standard-normal score marginals."""
+    members = []
+    for sign in (1.0, -1.0):
+        corr = torch.eye(d, dtype=F64)
+        corr[0, 1] = corr[1, 0] = sign * rho
+        members.append(GaussianJoint(torch.zeros(n, d, dtype=F64), torch.linalg.cholesky(corr)))
+    return MixtureJoint(members)

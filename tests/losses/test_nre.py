@@ -899,6 +899,7 @@ def test_forward_signature_contract() -> None:
     assert sorted(nre_module.__all__) == [
         "NeuralRatioLoss",
         "build_ratio_classifier",
+        "in_batch_negative_index",
         "neural_ratio_logits",
         "neural_ratio_loss",
     ]

@@ -64,7 +64,7 @@ Two newer calibration layers are available for conditional density models:
   `ContrastiveFlowLoss`'s positive-context density.  For multi-target regions
   with HPD or latent scores, missing or nuisance targets, volumes and sampling,
   use `JointConformal` with the same score (`DensityScore`) on a
-  `JointPredictive` (→ See [Joint Multi-Target Regression](../guide/joint-regression.md#12-relation-to-existing-tools)).
+  `JointPredictive` (→ See [Joint Multi-Target Regression](../guide/joint-regression.md#2-i-have-x-call-y)).
 - `WaldoConformal` / `WaldoPosteriorCalibrator` / `WaldoDensityConformal` — WALDO's Wald statistic
   `(mean - y)^T Cov^{-1}(mean - y)` with Neyman inversion and optionally binned
   critical values.  The posterior calibrator estimates moments from predictive
@@ -100,7 +100,7 @@ inside = waldo.contains(samples_test, y_test)
 `MultivariateScoreConformal` (Mahalanobis or Gaussian-NLL score on raw
 `(mu, Sigma, y)` tensors) and `ConformalizedDensity` share their threshold rule
 with `torchregress.joint.JointConformal` (`MahalanobisScore`, `DensityScore`);
-the [joint regression guide](../guide/joint-regression.md#12-relation-to-existing-tools) says when to
+the [joint regression guide](../guide/joint-regression.md#2-i-have-x-call-y) says when to
 use which.
 
 These are **marginal** split-conformal guarantees.  WALDO's original

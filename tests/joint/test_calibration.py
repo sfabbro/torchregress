@@ -24,6 +24,7 @@ from torchregress.joint.predictive import (
     FlowJoint,
     GaussianJoint,
     JointPredictive,
+    MixtureJoint,
     SampleJoint,
 )
 from torchregress.losses.nflows import NormalizingFlowLoss, create_flow_model
@@ -364,3 +365,46 @@ class TestMarginalRecalibrator:
         assert auto.calibrators_ is not None
         expected = [min(m, max(10, round(0.5 * math.sqrt(m)))) for m in mask.sum(0).tolist()]
         assert [c.xk.shape[0] for c in auto.calibrators_] == expected
+
+
+class TestCenter:
+    """``JointPredictive.center`` and ``ScaleRecalibrator(about="center")``."""
+
+    def test_center_of_gaussian_and_wrappers_is_the_mean(self) -> None:
+        gen = torch.Generator().manual_seed(0)
+        loc = torch.randn(6, 3, generator=gen, dtype=torch.float64)
+        raw = torch.randn(6, 3, 3, generator=gen, dtype=torch.float64)
+        base = GaussianJoint.from_covariance(
+            loc, raw @ raw.mT + torch.eye(3).to(device=raw.device, dtype=raw.dtype)
+        )
+        torch.testing.assert_close(base.center(), loc)
+        shift = torch.tensor([1.0, -2.0, 0.5], dtype=torch.float64)
+        scale = torch.tensor([2.0, 0.5, 3.0], dtype=torch.float64)
+        wrapped = AffineJoint(base, shift, scale)
+        torch.testing.assert_close(wrapped.center(), wrapped.mean())
+        torch.testing.assert_close(wrapped.marginal([2, 0]).center(), wrapped.mean()[:, [2, 0]])
+        other = GaussianJoint(loc + 1.0, base.scale_tril)
+        mix = MixtureJoint([base, other], torch.tensor([0.25, 0.75], dtype=torch.float64))
+        torch.testing.assert_close(mix.center(), mix.mean())
+
+    def test_about_center_equals_about_mean_for_a_gaussian(self) -> None:
+        gen = torch.Generator().manual_seed(1)
+        n, d = 800, 3
+        loc = torch.randn(n, d, generator=gen, dtype=torch.float64)
+        eye = torch.eye(d).to(device=loc.device, dtype=loc.dtype)
+        base = GaussianJoint(loc, eye.expand(n, d, d))
+        true = torch.tensor([0.6, 1.0, 1.7], dtype=torch.float64)
+        y = loc + true * torch.randn(n, d, generator=gen, dtype=torch.float64)
+        by_mean = ScaleRecalibrator("nll").fit(base, y)
+        by_center = ScaleRecalibrator("nll", about="center").fit(base, y)
+        assert by_mean.scale_ is not None and by_center.scale_ is not None
+        # the Gaussian maximum-likelihood factor is the root mean squared residual
+        exact = (y - loc).square().mean(0).sqrt()
+        torch.testing.assert_close(by_mean.scale_, exact, rtol=2e-2, atol=0)
+        torch.testing.assert_close(by_center.scale_, exact, rtol=2e-2, atol=0)
+        out = by_center.transform(base)
+        torch.testing.assert_close(out.mean(), loc)
+
+    def test_rejects_unknown_about(self) -> None:
+        with pytest.raises(ValueError, match="about"):
+            ScaleRecalibrator(about="median")

@@ -962,6 +962,12 @@ class JointRegion:
             ses.append(((1.0 - frac) / (n_samples * frac)).sqrt())
         return torch.stack(ests, dim=-1), torch.stack(ses, dim=-1)
 
+    def _propose(self, n_draws: int, level: int) -> tuple[Tensor, Tensor]:
+        """One rejection round: candidate draws ``[n, B, d]`` and which are kept ``[n, B]``."""
+        with torch.no_grad():
+            draws = self.predictive.sample(n_draws)
+        return draws, self._inside(draws)[..., level]
+
     def sample(
         self, n_samples: int, *, level: Optional[int] = None, max_rounds: int = 50
     ) -> Tensor:
@@ -984,14 +990,12 @@ class JointRegion:
         out: Optional[Tensor] = None
         count: Optional[Tensor] = None
         for _ in range(max_rounds):
-            with torch.no_grad():
-                draws = self.predictive.sample(2 * n_samples)
+            draws, inside = self._propose(2 * n_samples, lvl)  # [n, B, d], [n, B]
             if out is None or count is None:
                 out = torch.full(
                     (n, n_samples, d), math.nan, dtype=draws.dtype, device=draws.device
                 )
                 count = torch.zeros(n, dtype=torch.long, device=draws.device)
-            inside = self._inside(draws)[..., lvl]  # [n, B]
             rank = inside.long().cumsum(dim=1) - 1 + count.unsqueeze(1)
             keep = inside & (rank < n_samples)
             rows, cols = keep.nonzero(as_tuple=True)

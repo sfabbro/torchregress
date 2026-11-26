@@ -179,6 +179,7 @@ from .noise_aware_density import BinnedDensityLoss, JointBinnedDensityLoss, Nois
 from .nre import (
     NeuralRatioLoss,
     build_ratio_classifier,
+    in_batch_negative_index,
     neural_ratio_logits,
     neural_ratio_loss,
 )
@@ -446,6 +447,7 @@ __all__ = [
     "split_measurement_loss",
     "uniform_proxy_targets",
     "build_ratio_classifier",
+    "in_batch_negative_index",
     "neural_ratio_logits",
     "neural_ratio_loss",
 ]

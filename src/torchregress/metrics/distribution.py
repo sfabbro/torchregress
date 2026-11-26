@@ -920,7 +920,12 @@ def energy_score(
 
     # TR-MET-10: both terms must use the same geometry —
     # term1 = E||X - y||^beta (Euclidean norm to the beta), term2 = ||X - X'||^beta.
-    norms = (diff.abs().pow(2).sum(-1)).pow(beta / 2.0)
+    # vector_norm has a zero (sub)gradient where a draw equals the observation; the
+    # square root of a sum of squares has a NaN gradient there, which happens in
+    # float32 when the score is a training loss (a generator puts a draw on y).
+    norms = torch.linalg.vector_norm(diff, dim=-1)
+    if beta != 1.0:
+        norms = norms.pow(beta)
 
     term1 = torch.mean(norms, dim=0)
 

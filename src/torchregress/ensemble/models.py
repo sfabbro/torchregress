@@ -140,6 +140,9 @@ class HeteroscedasticEnsembleModel(BaseEnsembleModel):
     """
     Ensemble model with heteroscedastic uncertainty estimation.
 
+    Joint API: ``torchregress.joint.as_joint(ensemble, x)`` gives the
+    :class:`~torchregress.joint.MixtureJoint` of the members' Gaussians.
+
     This model assumes each ensemble member predicts both mean and variance.
 
     Args:
@@ -529,6 +532,9 @@ class CumulativeLinkEnsembleModel(BaseEnsembleModel):
 class MDNEnsembleModel(BaseEnsembleModel):
     """Deep-ensemble averaging for MDN heads via mixture-of-mixtures aggregation.
 
+    Joint API: ``torchregress.joint.as_joint(ensemble, x)`` gives the
+    :class:`~torchregress.joint.MixtureJoint` of the members' mixtures.
+
     Member-specific components are *not* aligned before averaging. Instead the
     ensemble predictive density is represented as a mixture whose components are the
     concatenation of each member's mixture components with a ``1 / ensemble_size``
@@ -627,6 +633,9 @@ class MDNEnsembleModel(BaseEnsembleModel):
 class HeteroscedasticBatchEnsembleModel(nn.Module):
     """
     Batch ensemble model with heteroscedastic uncertainty estimation.
+
+    Joint API: ``torchregress.joint.as_joint(ensemble, x)`` gives the
+    :class:`~torchregress.joint.MixtureJoint` of the members' Gaussians.
 
     This combines batch ensembling (efficient parameter sharing) with
     heteroscedastic uncertainty estimation.

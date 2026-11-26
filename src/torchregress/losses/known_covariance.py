@@ -147,6 +147,37 @@ def _rows(name: str, value: Tensor, batch: int, tail: tuple[Optional[int], ...])
     return value
 
 
+def _total_covariance(
+    like: Tensor,
+    known_covariance: Optional[Tensor],
+    known_variance: Optional[Tensor],
+    model_variance: Optional[Tensor],
+    model_factor: Optional[Tensor],
+) -> Tensor:
+    """Dense :math:`C = C_{\\text{known}} + \\operatorname{diag}(v) + UU^\\top`, ``[B, D, D]``.
+
+    The covariance whose principal submatrices :func:`known_covariance_gaussian_nll`
+    factorises (symmetric part of the known covariance), in the dtype of ``like``.
+    """
+    if known_covariance is not None and known_variance is not None:
+        raise ValueError("pass known_covariance or known_variance, not both")
+    batch, dims = like.shape
+    cov = like.new_zeros(batch, dims, dims)
+    if known_covariance is not None:
+        k = _rows("known_covariance", known_covariance, batch, (dims, dims)).to(like)
+        cov = cov + 0.5 * (k + k.mT)
+    diag = like.new_zeros(batch, dims)
+    if known_variance is not None:
+        diag = diag + _rows("known_variance", known_variance, batch, (dims,)).to(like)
+    if model_variance is not None:
+        diag = diag + model_variance.to(like)
+    cov = cov + torch.diag_embed(diag).to(device=like.device, dtype=like.dtype)
+    if model_factor is not None:
+        u = model_factor.to(like)
+        cov = cov + u @ u.mT
+    return cov
+
+
 def _evaluate(
     residual: Tensor,
     *,
@@ -447,6 +478,9 @@ def _square(scale: Tensor, residual: Tensor) -> Tensor:
 class KnownCovarianceGaussianNLL(DistributionLoss):
     r"""Gaussian NLL with a per-sample known covariance plus a learned model covariance.
 
+    Joint API: :meth:`torchregress.joint.GaussianJoint.from_known_covariance` gives the predictive
+    with the total covariance.
+
     One NLL per row of :math:`r = y - \hat y \sim \mathcal N(0, C_{\text{known}} +
     C_{\text{model}})` (see :func:`known_covariance_gaussian_nll`), reduced over
     rows: ``"mean"`` averages the per-row joint NLL over rows with at least one
@@ -585,6 +619,29 @@ class KnownCovarianceGaussianNLL(DistributionLoss):
             factor = y_pred.unsqueeze(-1) * v if self.factor == "fractional" else v.unsqueeze(0)
         return variance, factor
 
+    def _model_terms(
+        self, y_pred: Tensor, model_scale: Optional[Tensor], model_factor: Optional[Tensor]
+    ) -> tuple[Optional[Tensor], Optional[Tensor]]:
+        """Model variance ``[B, D]`` and factor ``[B or 1, D, k]``: learned plus given terms."""
+        variance, factor = self.model_covariance_terms(y_pred)
+        if model_scale is not None:
+            given = _square(model_scale, y_pred)
+            variance = given if variance is None else variance + given
+        if model_factor is not None:
+            given_f = _rows("model_factor", model_factor, y_pred.shape[0], (y_pred.shape[1], None))
+            if factor is None:
+                factor = given_f
+            else:
+                batch = max(factor.shape[0], given_f.shape[0])
+                factor = torch.cat(
+                    [
+                        factor.expand(batch, -1, -1),
+                        given_f.to(factor.dtype).expand(batch, -1, -1),
+                    ],
+                    dim=-1,
+                )
+        return variance, factor
+
     def evaluate(
         self,
         y_pred: Tensor,
@@ -604,27 +661,7 @@ class KnownCovarianceGaussianNLL(DistributionLoss):
                 f"y_pred {tuple(y_pred.shape)} and target {tuple(target.shape)} must both be [B, D]"
             )
         with torch.autocast(device_type=y_pred.device.type, enabled=False):
-            learned_var, learned_factor = self.model_covariance_terms(y_pred)
-            variance = learned_var
-            if model_scale is not None:
-                given = _square(model_scale, y_pred)
-                variance = given if variance is None else variance + given
-            factor = learned_factor
-            if model_factor is not None:
-                given_f = _rows(
-                    "model_factor", model_factor, y_pred.shape[0], (y_pred.shape[1], None)
-                )
-                if factor is None:
-                    factor = given_f
-                else:
-                    batch = max(factor.shape[0], given_f.shape[0])
-                    factor = torch.cat(
-                        [
-                            factor.expand(batch, -1, -1),
-                            given_f.to(factor.dtype).expand(batch, -1, -1),
-                        ],
-                        dim=-1,
-                    )
+            variance, factor = self._model_terms(y_pred, model_scale, model_factor)
             return _evaluate(
                 target - y_pred,
                 known_covariance=known_covariance,

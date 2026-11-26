@@ -122,6 +122,9 @@ class TimeConditionedAffineLayer(nn.Module):
 class NormalizingFlowMap(nn.Module):
     """Time-conditioned invertible flow map for conditional tabular targets.
 
+    Joint API: ``torchregress.joint.as_joint(model, context)`` gives its
+    :class:`~torchregress.joint.ConditionalModelJoint`.
+
     Args:
         n_features: Target dimensionality.
         context_dim: Context/conditioning width.

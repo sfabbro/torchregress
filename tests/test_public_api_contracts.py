@@ -171,6 +171,7 @@ EXPECTED_EXPORTS = {
         "ConditionalGaussianCopula",
         "ConditionalModelJoint",
         "ConformalScore",
+        "CopulaSplineJoint",
         "CoverageByMask",
         "CoverageGap",
         "DensityScore",
@@ -199,12 +200,16 @@ EXPECTED_EXPORTS = {
         "MarginalRecalibrator",
         "Marginals",
         "MaxResidualScore",
+        "MixtureDependence",
         "MixtureJoint",
+        "MixtureMarginals",
+        "MixtureNetworkEngine",
         "NEESConsistency",
         "PreRankHistograms",
         "ProjectedJoint",
         "QuantileMarginals",
         "QuantileNetworkEngine",
+        "SLSRegion",
         "SampleBallScore",
         "SampleJoint",
         "SampleMarginals",
@@ -213,6 +218,7 @@ EXPECTED_EXPORTS = {
         "SklarJoint",
         "TemplateJoint",
         "WorstSlabCoverage",
+        "as_joint",
         "conditional_coverage_gap",
         "coverage_by_mask",
         "dependence_error",
@@ -316,6 +322,8 @@ EXPECTED_EXPORTS = {
         "effective_sample_size",
         "grid_log_posterior",
         "maximum_likelihood_estimate",
+        "MarginalRatioEstimator",
+        "RatioPosterior",
         "MixtureFractionEstimate",
         "WifiRatioEnsemble",
         "ProfileInterval",
@@ -556,10 +564,13 @@ EXPECTED_SIGNATURES = {
         "(method: 'Method' = 'auto', *, marginals: 'Optional[MarginalEngine]' = None, "
         "hidden: 'Sequence[int]' = (128, 128), n_components: 'int' = 5, "
         "rank: 'Optional[int]' = None, max_epochs: 'int' = 300, patience: 'int' = 30, "
-        "batch_size: 'int' = 256, lr: 'float' = 0.002, weight_decay: 'float' = 1e-05, "
+        "batch_size: 'Union[int, str]' = 'auto', lr: 'float' = 0.002, "
+        "weight_decay: 'float' = 1e-05, "
         "val_fraction: 'float' = 0.15, recal_fraction: 'float' = 0.1, "
-        "conformal_fraction: 'float' = 0.15, recalibrate: 'bool' = True, "
+        "conformal_fraction: 'float' = 0.15, max_holdout: 'int' = 20000, "
+        "recalibrate: 'bool' = True, "
         "score: 'Union[str, ConformalScore]' = 'auto', n_folds: 'int' = 3, "
+        "noise_dim: 'Optional[int]' = None, energy_draws: 'int' = 2, "
         "device: 'Optional[Union[str, torch.device]]' = None, seed: 'int' = 0) -> 'None'"
     ),
     "joint.JointRegressor.fit": "(self, X: 'ArrayLike', Y: 'ArrayLike') -> \"'JointRegressor'\"",
@@ -585,6 +596,34 @@ EXPECTED_SIGNATURES = {
     ),
     "joint.ConditionalModelJoint": (
         "(model: 'Any', context: 'Tensor', event_dim: 'Optional[int]' = None) -> 'None'"
+    ),
+    "joint.as_joint": (
+        "(obj: 'Any', inputs: 'Any' = None, /, **kwargs: 'Any') "
+        "-> 'Union[JointPredictive, JointRegion]'"
+    ),
+    "joint.CopulaSplineJoint": ("(head: 'GaussianCopulaSplineHead', context: 'Tensor') -> 'None'"),
+    "joint.SLSRegion": (
+        "(conformal: 'SLSConformal', x: 'Tensor', *, groups: 'Optional[Tensor]' = None, "
+        "test_weights: 'Optional[Tensor]' = None) -> 'None'"
+    ),
+    "joint.GaussianJoint.from_known_covariance": (
+        "(y_pred: 'Tensor', *, loss: 'Any' = None, "
+        "known_covariance: 'Optional[Tensor]' = None, "
+        "known_variance: 'Optional[Tensor]' = None, "
+        "model_scale: 'Optional[Tensor]' = None, "
+        "model_factor: 'Optional[Tensor]' = None) -> \"'GaussianJoint'\""
+    ),
+    "inference.MarginalRatioEstimator": (
+        "(n_params: 'int', marginals: 'Sequence[Union[int, Sequence[int]]]', "
+        "observation_dim: 'Optional[int]' = None, *, embedding: 'Optional[nn.Module]' = None, "
+        "embedding_dim: 'int' = 32, embedding_hidden: 'Sequence[int]' = (64, 64), "
+        "head_hidden: 'Sequence[int]' = (64, 64), criterion: 'str' = 'cnre', "
+        "gamma: 'float' = 1.0, n_negatives: 'Optional[int]' = None) -> 'None'"
+    ),
+    "inference.RatioPosterior": (
+        "(log_ratio: 'LogRatioFn', x: 'Tensor', prior_samples: 'PriorSource', *, "
+        "prior_log_prob: 'Optional[Callable[[Tensor], Tensor]]' = None, "
+        "n_proposals: 'int' = 4096, min_ess: 'float' = 100.0) -> 'None'"
     ),
     "joint.select_dependence": (
         "(candidates: 'Sequence[Dependence]', z_val: 'Tensor', "
@@ -624,6 +663,28 @@ EXPECTED_PARAM_ORDERS = {
         "config",
     ],
     "inference.ppi_diagnostics": ["y_labeled", "pred_labeled", "pred_unlabeled"],
+    "inference.MarginalRatioEstimator.fit": [
+        "self",
+        "theta",
+        "x",
+        "max_epochs",
+        "patience",
+        "batch_size",
+        "lr",
+        "weight_decay",
+        "val_fraction",
+        "standardize",
+        "seed",
+    ],
+    "inference.MarginalRatioEstimator.posterior": [
+        "self",
+        "x",
+        "prior_samples",
+        "marginal",
+        "prior_log_prob",
+        "n_proposals",
+        "min_ess",
+    ],
     "causal.dr_ate": [
         "x",
         "t",

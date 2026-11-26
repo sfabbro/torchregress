@@ -8,7 +8,7 @@ It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 
 ## Summary
 
-- Total methods: `175`
+- Total methods: `177`
 - Peer methods present: `SWAG`, `BayesianNeuralNetwork`, `MixtureDensityLoss`
 
 ### By Family
@@ -33,7 +33,7 @@ It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 | `imbalanced_loss` | 11 |
 | `inference` | 1 |
 | `joint_distribution` | 2 |
-| `likelihood_ratio` | 3 |
+| `likelihood_ratio` | 5 |
 | `mc_dropout` | 1 |
 | `mdn` | 2 |
 | `multivariate` | 1 |
@@ -63,7 +63,7 @@ It is a code-backed snapshot used to reduce docs drift in the task-first matrix.
 |---|---:|
 | `Core` | 7 |
 | `Strong` | 20 |
-| `Available` | 148 |
+| `Available` | 150 |
 
 ## Method Rows
 
@@ -170,7 +170,9 @@ Legend: `*` suffix means partial support. This snapshot is for discovery and com
 | `PredictionPoweredInference` | `inference` | `Available` | `inference`, `limited_labels`, `population_estimation` | `calibration*`, `ood*` | `torchregress.inference.ppi_mean_ci` |
 | `JointRegressor` | `joint_distribution` | `Available` | `multi_target`, `correlated_targets`, `conditional_density`, `coverage_guarantees`, `missing_targets` | `aleatoric`, `calibration`, `ood*` | `torchregress.joint.JointRegressor` |
 | `SklarJoint` | `joint_distribution` | `Available` | `multi_target`, `correlated_targets`, `conditional_density`, `copula` | `aleatoric`, `calibration*`, `ood*` | `torchregress.joint.SklarJoint` |
+| `MarginalRatioEstimator` | `likelihood_ratio` | `Available` | `parameter_estimation`, `simulation_based_inference`, `likelihood_ratio`, `multi_target` | `calibration*`, `ood*` | `torchregress.inference.MarginalRatioEstimator` |
 | `NeuralRatioLoss` | `likelihood_ratio` | `Available` | `parameter_estimation`, `simulation_based_inference`, `domain_shift`, `likelihood_ratio` | `calibration*`, `ood*` | `torchregress.losses.NeuralRatioLoss` |
+| `RatioPosterior` | `likelihood_ratio` | `Available` | `parameter_estimation`, `simulation_based_inference`, `likelihood_ratio`, `multi_target` | `calibration*`, `ood*` | `torchregress.inference.RatioPosterior` |
 | `WifiRatioEnsemble` | `likelihood_ratio` | `Available` | `parameter_estimation`, `simulation_based_inference`, `likelihood_ratio`, `confidence_intervals` | `epistemic*`, `calibration`, `ood*` | `torchregress.inference.WifiRatioEnsemble` |
 | `maximize_score` | `likelihood_ratio` | `Available` | `parameter_estimation`, `simulation_based_inference`, `likelihood_ratio`, `confidence_intervals` | `calibration*`, `ood*` | `torchregress.inference.maximize_score` |
 | `MCDropoutWrapper` | `mc_dropout` | `Strong` | `epistemic_uq`, `low_compute` | `epistemic`, `aleatoric*`, `decomposition*`, `calibration*`, `ood*` | `torchregress.ensemble.MCDropoutWrapper` |

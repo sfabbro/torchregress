@@ -161,15 +161,15 @@ from torchregress.joint import JointRegressor
 model = JointRegressor().fit(X, Y)        # X [N, p], Y [N, d]; NaN marks a missing target
 dist = model.predict(X_new)               # one joint distribution per row
 draws = dist.sample(1000)                 # [n, 1000, d] plausible target vectors
-region = model.region(X_new, alpha=0.1)   # 90% prediction region per row
+region = model.region(X_new, alpha=0.1)   # 90% region per row
 inside = region.contains(Y_new)           # [n] booleans: is the whole vector inside?
 ```
 
 <p align="center">
-<img src="docs/assets/images/joint/guide/quickstart_corner.png" alt="Corner plot of one joint prediction with its 90% prediction region and the true value" width="520">
+<img src="docs/assets/images/joint/guide/example_corner.png" alt="Corner plot of one joint prediction with its 90% prediction region and the true value" width="520">
 </p>
 
-Where to start: [New to joint prediction](https://astroai.github.io/torchregress/guide/joint-quickstart/) (no background needed) · [Coming from MCMC and HMC](https://astroai.github.io/torchregress/guide/joint-for-mcmc-users/) · [Coming from simulation-based inference](https://astroai.github.io/torchregress/guide/joint-for-sbi-users/).
+Read the [joint guide](https://astroai.github.io/torchregress/guide/joint-regression/): heads (NSF, MDN, Gaussian, copula spline, ...) model p(y | x), `as_joint` turns any of them into one joint predictive, and regions, recalibration, diagnostics and corner plots work on it; with a worked example, a section for MCMC and simulation-based-inference users, and recipes.
 
 ---
 

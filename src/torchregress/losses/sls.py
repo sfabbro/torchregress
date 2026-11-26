@@ -511,6 +511,10 @@ def sigmoidal_schedule(
 class SLSLoss(RegressionLoss):
     """Super-Level-Set (SLS) Regression loss.
 
+    Joint API: calibrate with :class:`~torchregress.losses.SLSConformal`, then
+    ``torchregress.joint.as_joint(conformal, x)`` gives the
+    :class:`~torchregress.joint.SLSRegion`.
+
     Directly estimates minimum-volume prediction regions with conditional coverage
     by optimizing the level-set boundary under a volume penalty.
 

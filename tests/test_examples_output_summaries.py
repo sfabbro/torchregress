@@ -382,6 +382,38 @@ def test_multimodal_comparison_writes_summary_json(tmp_path: Path) -> None:
         _assert_non_negative(rows[method]["MCE"])
 
 
+def test_joint_regression_comparison_writes_summary_json(tmp_path: Path) -> None:
+    mod = _load_example_module("joint_regression_comparison")
+    out = tmp_path / "joint_summary.json"
+    cfg = mod.JointComparisonConfig(
+        n_train=240,
+        n_test=40,
+        max_epochs=1,
+        patience=1,
+        eval_samples=16,
+        methods=("gaussian", "mixture", "energy"),
+    )
+    mod.main(cfg, summary_json_path=str(out))
+    heads = {f"JointRegressor({m!r})" for m in cfg.methods}
+    _assert_summary_schema(
+        out,
+        task_substring="joint",
+        required_methods={"oracle", "independent targets", *heads},
+    )
+    rows = _rows_by_method(_load_payload(out))
+    assert rows["oracle"]["NLLGap"] == 0.0
+    for name in ("oracle", "independent targets", *heads):
+        _assert_non_negative(rows[name]["Energy"])
+        _assert_non_negative(rows[name]["Variogram"])
+        assert 0.0 <= rows[name]["BoxCov90"] <= 1.0
+    for name in heads:
+        _assert_row_has_keys(rows[name], ["Cov90", "train_s", "eval_s", "Notes"])
+        assert 0.0 <= rows[name]["Cov90"] <= 1.0
+    # the energy head has no density, so no NLL is reported for it
+    assert "NLL" not in rows["JointRegressor('energy')"]
+    assert "NLL" in rows["JointRegressor('mixture')"]
+
+
 def test_multimodal_comparison_diabetes_writes_summary_json(tmp_path: Path) -> None:
     mod = _load_example_module("multimodal_method_comparison")
     out = tmp_path / "multimodal_realdata_summary.json"

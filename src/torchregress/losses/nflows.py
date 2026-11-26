@@ -579,6 +579,9 @@ class NormalizingFlowLoss(DistributionLoss):
     """
     Negative Log-Likelihood loss for conditional normalizing flow models using zuko.
 
+    Joint API: ``torchregress.joint.as_joint(loss, context)`` gives its
+    :class:`~torchregress.joint.FlowJoint`.
+
     This loss allows modeling complex multi-dimensional target distributions
     for regression tasks using various normalizing flow architectures. The flow
     is conditioned on the model's output, allowing it to learn target distributions

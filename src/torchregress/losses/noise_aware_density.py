@@ -149,6 +149,9 @@ def _gauss_hermite(order: int, device: torch.device, dtype: torch.dtype) -> tupl
 class NoiseAwareDensityLoss(BaseLoss):
     """Marginal likelihood for a density head with noisy target labels.
 
+    Joint API: ``torchregress.joint.as_joint(loss, y_pred)`` gives the clean predictive of the
+    base head.
+
     Given a density head ``p_base(y | x)`` and per-label standard deviations
     ``sigma``, this loss maximizes ``log E_{y ~ p_base(.|x)}[N(y; y_obs, sigma^2)]``.
     The clean density is never fitted to the noisy label directly; the
@@ -495,6 +498,9 @@ class BinnedDensityLoss(BaseLoss):
 
 class JointBinnedDensityLoss(BaseLoss):
     """Joint binned density / CDF head for low-dimensional multi-target data.
+
+    Joint API: ``torchregress.joint.as_joint(loss, logits)`` gives its
+    :class:`~torchregress.joint.ConditionalModelJoint`.
 
     The model emits one logit per joint histogram cell.  With ``D`` targets and
     ``K_d`` bins on target ``d`` the output has ``prod_d K_d`` entries, flattened

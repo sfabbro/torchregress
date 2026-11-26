@@ -14,12 +14,13 @@ wavelengths in spectroscopy, joint angles in biomechanics). Modelling
 the targets independently discards that structure and produces
 invalid joint confidence regions.
 
-!!! tip "Joint predictives, joint regions and diagnostics: `torchregress.joint`"
-    This page covers the multi-target **losses**. For an estimator that fits and
-    stacks joint heads (`JointRegressor`), joins any per-target marginals with a
-    validated dependence model (Sklar's theorem), builds conformal regions with a
-    **joint** coverage guarantee, recalibrates and checks calibration in more
-    than one dimension, read [Joint Multi-Target Regression](joint-regression.md).
+!!! tip "Heads here, tools in `torchregress.joint`"
+    This page covers the **heads**: the multi-target losses that model
+    $p(\mathbf y \mid \mathbf x)$. After training, `as_joint(loss, output)` turns
+    any of them into a joint predictive, and the joint tools (regions with a
+    joint coverage guarantee, recalibration, diagnostics, corner plots) work on
+    it; `JointRegressor` trains and combines heads for you. See
+    [Joint Multi-Target Regression](joint-regression.md).
 
 ---
 
@@ -243,7 +244,7 @@ only 78% of the test rows.
 separately. For a box that contains **all** targets with probability
 $1 - \alpha$, calibrate one maximum of the standardised residuals instead:
 `JointConformal(MaxResidualScore(), alpha)` in
-[`torchregress.joint`](joint-regression.md#56-box-with-a-joint-guarantee-maxresidualscore).
+[`torchregress.joint`](joint-regression.md#41-region-scores).
 
 ### 4.2 Joint conformal regions: `SLSConformal`
 
@@ -258,7 +259,7 @@ covariance.
 
 ### 4.3 Joint regions from any predictive: `JointConformal`
 
-[`torchregress.joint`](joint-regression.md#5-conformal-regions) calibrates one
+[`torchregress.joint`](joint-regression.md#41-region-scores) calibrates one
 scalar score of a joint predictive: density level sets, highest-density sets,
 latent balls (flows), ellipsoids (Gaussian heads, with missing targets), boxes
 and unions of balls (draws only). Each region $R(\mathbf x)$ has
@@ -409,7 +410,7 @@ The choice is governed by:
 - **Joint coverage requirements:** `MultiTargetConformal` gives per-target
   intervals only. For a box with joint coverage use `MaxResidualScore`, and
   for ellipsoids, density level sets or flow regions the other scores of
-  [`torchregress.joint`](joint-regression.md#511-which-score-when).
+  [`torchregress.joint`](joint-regression.md#41-region-scores).
 
 ---
 

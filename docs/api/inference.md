@@ -5,7 +5,8 @@ Complete reference for `torchregress.inference`. This package implements
 combine a small trusted-labeled set with a large model-predicted unlabeled set
 to improve statistical efficiency while preserving frequentist coverage —,
 **likelihood-ratio posterior reweighting** utilities for neural ratio
-estimation (NRE), contrastive ratio models and grid likelihood scans, and
+estimation (NRE), contrastive ratio models and grid likelihood scans,
+**marginal ratio estimation** with posteriors from learned ratios, and
 **maximum-likelihood estimates with profile-likelihood intervals** for any
 score function, and **Neyman confidence sets** with learned,
 parameter-dependent critical values (LF2I).
@@ -211,6 +212,40 @@ mle, index = maximum_likelihood_estimate(log_ratio[None, :], theta)
     These utilities summarize a *finite supplied bank*. They do not correct for a truncated or
     poorly covering proposal; check the ESS and widen the bank/proposal if it is small. `-inf`
     log-ratios are rejected — encode hard exclusions with a large finite penalty.
+
+## Marginal ratio estimation
+
+→ **Guide:** [NRE: marginal ratio estimation](../losses/nre.md#marginal-ratio-estimation)
+
+The posterior of chosen subsets ("marginals") $\vartheta = \theta_M$ of the parameters, one ratio
+$r_M(\vartheta, x) = p(\vartheta \mid x)/p(\vartheta)$ per marginal, without learning the joint
+(the marginal estimation of TMNRE, Miller et al. 2021; no truncation, no rounds). The nuisance
+parameters are integrated out by the simulator, so a head's cost does not depend on their number.
+
+| Symbol | Description |
+|:-------|:------------|
+| `MarginalRatioEstimator(n_params, marginals, observation_dim=None, *, embedding=None, embedding_dim=32, embedding_hidden=(64, 64), head_hidden=(64, 64), criterion="cnre", gamma=1.0, n_negatives=None)` | `nn.Module`: one embedding of `x` shared by every marginal and one `build_ratio_classifier` head per marginal, each trained by its own `NeuralRatioLoss` (CNRE, $\gamma = 1$ by default). Negatives are drawn inside the batch (`in_batch_negative_index`), $K$ = half the batch by default; every marginal is scored on the same pairs. Static helpers `univariate(dims)`, `pairs(dims)`, `jointly(dims)` build marginal lists. |
+| `.fit(theta, x, *, max_epochs=200, patience=20, batch_size=256, lr=1e-3, weight_decay=0.0, val_fraction=0.1, standardize=True, seed=0)` | AdamW with early stopping on held-out rows (best checkpoint restored, eval mode); `theta` and `x` are standardised by default (the ratio is invariant). Returns `self`; the record is `training_result_`. |
+| `.loss(theta, x, *, generator=None)` | Sum over marginals of the ratio losses on one batch, for custom training loops. |
+| `.log_ratio(theta, x, marginal=None)` / `.candidate_log_ratio(theta, x, marginal=None)` | $\log r_M$ on matched rows `[N]`, or for `S` candidates per row (`[n, S, d]` or a shared `[S, d]` bank) `[n, S]`, embedding each `x` once. |
+| `.posterior(x, prior_samples, marginal=None, prior_log_prob=None, *, n_proposals=4096, min_ess=100.0)` | `RatioPosterior` of one marginal. `prior_samples`: draws of the training prior, `[M, d]` for the marginal or `[M, P]` (its columns are taken), or a sampler `m -> [m, d]`. Also `torchregress.joint.as_joint(estimator, x, prior_samples=..., marginal=...)`. |
+| `RatioPosterior(log_ratio, x, prior_samples, *, prior_log_prob=None, n_proposals=4096, min_ess=100.0)` | `JointPredictive` $p(\vartheta \mid x) = p(\vartheta)\,r(\vartheta, x)$ from any `log_ratio(theta [n, S, d], x [n, ...]) -> [n, S]` and prior draws. `sample(S)` `[n, S, d]` by importance resampling of the prior draws (warns when an ESS is below `min_ess`); `log_prob` (with `prior_log_prob`) $\log r + \log p - \log \hat Z$; `normalisation()` $\hat Z = \frac1M\sum_k r(\vartheta_k, x)$, 1 for an exact ratio (relative Monte Carlo error $\approx\sqrt{1/\mathrm{ESS} - 1/M}$); `effective_sample_size()`, `log_weights()` (from `posterior_log_weights`); `mean()` and `covariance()` are the weighted moments of the prior draws. `marginal(dims)` is draws-only. |
+
+```python
+import torch
+from torchregress.inference import MarginalRatioEstimator
+
+estimator = MarginalRatioEstimator(
+    n_params=20,
+    marginals=MarginalRatioEstimator.univariate([0, 1]) + MarginalRatioEstimator.pairs([0, 1]),
+    observation_dim=4,
+)
+estimator.fit(theta, x)                       # theta [N, 20] prior draws, x [N, 4] simulations
+with torch.no_grad():
+    post = estimator.posterior(x_obs, torch.randn(16_384, 2), (0, 1))
+    draws = post.sample(1000)                 # [n_obs, 1000, 2]
+    z = post.normalisation()                  # ~1 per row for a well-trained ratio
+```
 
 ## Maximum likelihood and profile intervals (`inference.likelihood`)
 

@@ -1,5 +1,6 @@
 """Joint multi-target predictive distributions, regions, calibration and diagnostics."""
 
+from .adapters import CopulaSplineJoint, SLSRegion, as_joint
 from .calibration import (
     LatentRecalibratedJoint,
     LatentRecalibrator,
@@ -14,6 +15,7 @@ from .dependence import (
     FlowDependence,
     GaussianCopula,
     IndependenceDependence,
+    MixtureDependence,
     SchaakeShuffle,
     SklarJoint,
     TemplateJoint,
@@ -35,11 +37,12 @@ from .diagnostics import (
     prerank_histograms,
     worst_slab_coverage,
 )
-from .estimator import JointRegressor, MarginalEngine, QuantileNetworkEngine
+from .estimator import JointRegressor, MarginalEngine, MixtureNetworkEngine, QuantileNetworkEngine
 from .marginals import (
     BinnedMarginals,
     GaussianMarginals,
     Marginals,
+    MixtureMarginals,
     QuantileMarginals,
     SampleMarginals,
 )
@@ -73,6 +76,7 @@ __all__ = [
     "ConditionalGaussianCopula",
     "ConditionalModelJoint",
     "ConformalScore",
+    "CopulaSplineJoint",
     "CoverageByMask",
     "CoverageGap",
     "DensityScore",
@@ -101,12 +105,16 @@ __all__ = [
     "MarginalRecalibrator",
     "Marginals",
     "MaxResidualScore",
+    "MixtureDependence",
     "MixtureJoint",
+    "MixtureMarginals",
+    "MixtureNetworkEngine",
     "NEESConsistency",
     "PreRankHistograms",
     "ProjectedJoint",
     "QuantileMarginals",
     "QuantileNetworkEngine",
+    "SLSRegion",
     "SampleBallScore",
     "SampleJoint",
     "SampleMarginals",
@@ -115,6 +123,7 @@ __all__ = [
     "SklarJoint",
     "TemplateJoint",
     "WorstSlabCoverage",
+    "as_joint",
     "conditional_coverage_gap",
     "coverage_by_mask",
     "dependence_error",

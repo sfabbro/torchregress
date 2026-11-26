@@ -2717,6 +2717,10 @@ class ConformalLoss(RegressionLoss):
 class SLSConformal(LevelSetConformalPredictor):
     """Super-Level-Set (SLS) Conformal Predictor.
 
+    Joint API: ``torchregress.joint.as_joint(self, x)`` gives the
+    :class:`~torchregress.joint.SLSRegion` (volumes, uniform draws, corner plots,
+    diagnostics).
+
     Uses the ratio of the learned frontier function G(X, Y) to the predicted
     conditional quantile q_tau(X) as the nonconformity score:
     S = G(X, Y) / q_tau(X)
@@ -2794,6 +2798,61 @@ class SLSConformal(LevelSetConformalPredictor):
             "Use predict_interval_from_grid() instead."
         )
 
+    def _frontier_level(
+        self,
+        x: Tensor,
+        *,
+        groups: Optional[Tensor] = None,
+        test_weights: Optional[Tensor] = None,
+    ) -> Tensor:
+        """Calibrated frontier level ``r(x) q_tau(x)`` of each test point, ``[n]``.
+
+        ``+inf`` where the calibrated factor ``r`` is ``+inf``.
+        """
+        if not self._is_calibrated or self.q_hat is None:
+            raise RuntimeError("Call calibrate() first.")
+        r = self._per_sample_q(
+            x.shape[0], groups=groups, device=x.device, dtype=x.dtype, test_weights=test_weights
+        )
+        with torch.no_grad():
+            q_tau = self.sls_loss.quantile_net(x)[..., 1].reshape(-1)
+        # inf * q_tau stays +inf for q_tau > 0 (clamped like the scores).
+        return r * q_tau.clamp(min=1e-8)
+
+    def _frontier_values(self, x: Tensor, y: Tensor) -> Tensor:
+        """Frontier ``G(x_i, y)``: ``y [n, d] -> [n]``, ``y [n, S, d] -> [n, S]``."""
+        with torch.no_grad():
+            if y.dim() == 2:
+                return self._eval_frontier(y, x)[0].reshape(-1)
+            n, s, d = y.shape
+            context = x.unsqueeze(1).expand(n, s, x.shape[-1]).reshape(n * s, x.shape[-1])
+            return self._eval_frontier(y.reshape(n * s, d), context)[0].reshape(n, s)
+
+    def contains(
+        self,
+        x: Tensor,
+        y: Tensor,
+        *,
+        groups: Optional[Tensor] = None,
+        test_weights: Optional[Tensor] = None,
+    ) -> Tensor:
+        """Membership ``G(x, y) <= r(x) q_tau(x)``: ``y [n, d] -> [n]``, ``[n, S, d] -> [n, S]``.
+
+        The set that :meth:`predict_interval_from_grid` bounds.  For volumes,
+        uniform draws, bounding boxes and corner plots wrap it as a
+        :class:`~torchregress.joint.SLSRegion` (``torchregress.joint.as_joint(self, x)``).
+
+        Args:
+            x: Test features ``[n, context_dim]``.
+            y: Candidate targets ``[n, d]`` or ``[n, S, d]``.
+            groups: Mondrian group ids (required when calibrated with ``groups``).
+            test_weights: Optional ``[n]`` test-point weights (per-point weighted
+                thresholds, as in :meth:`predict_interval`).
+        """
+        level = self._frontier_level(x, groups=groups, test_weights=test_weights)
+        values = self._frontier_values(x, y)
+        return values <= (level if y.dim() == 2 else level.unsqueeze(1))
+
     def predict_interval_from_grid(
         self,
         x: Tensor,
@@ -2819,16 +2878,9 @@ class SLSConformal(LevelSetConformalPredictor):
             (lower, upper) tensors of shape (n_test, 1); ``(-inf, +inf)`` for
             points whose calibrated factor ``r`` is ``+inf``.
         """
-        if not self._is_calibrated or self.q_hat is None:
-            raise RuntimeError("Call calibrate() first.")
-
-        r = self._per_sample_q(x.shape[0], groups=groups, device=x.device, dtype=x.dtype)
+        threshold = self._frontier_level(x, groups=groups)
 
         with torch.no_grad():
-            quantiles = self.sls_loss.quantile_net(x)
-            q_tau = quantiles[..., 1].reshape(-1)
-            # inf * q_tau stays +inf for q_tau > 0 (clamped like the scores).
-            threshold = r * q_tau.clamp(min=1e-8)
 
             def eval_fn(y_grid: Tensor, x_batch: Tensor) -> Tensor:
                 # Explicitly reshape to matching batch dims for the frontier

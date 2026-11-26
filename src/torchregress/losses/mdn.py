@@ -29,6 +29,9 @@ class MixtureDensityLoss(DistributionLoss):
     """
     Negative Log-Likelihood loss for Mixture Density Networks.
 
+    Joint API: ``torchregress.joint.as_joint(loss, y_pred)`` gives its
+    :class:`~torchregress.joint.DistributionJoint`.
+
     Models the output as a mixture of Gaussian (default) or multivariate
     Student-t distributions with either diagonal or full scale matrices.
 

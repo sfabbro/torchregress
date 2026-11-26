@@ -20,7 +20,11 @@ from torch import Tensor, nn
 
 
 class FlowMatchingMLP(nn.Module):
-    """Time-conditioned MLP velocity field ``v(x, t, context)``."""
+    """Time-conditioned MLP velocity field ``v(x, t, context)``.
+
+    Joint API: ``torchregress.joint.as_joint(model, context)`` gives a draws-only
+    :class:`~torchregress.joint.SampleJoint`.
+    """
 
     time_frequencies: Tensor
 

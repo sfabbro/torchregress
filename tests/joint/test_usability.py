@@ -274,3 +274,55 @@ def test_recalibrators_accept_numpy_targets() -> None:
     assert after < before
     mask = (torch.rand(400, 2) > 0.2).numpy()
     assert ScaleRecalibrator().fit(narrow, y, mask=mask).scale_ is not None
+
+
+def test_diagnostics_accept_numpy_arrays() -> None:
+    """Every public diagnostic takes NumPy arrays and gives the tensor answer."""
+
+    from torchregress.joint import (
+        conditional_coverage_gap,
+        coverage_by_mask,
+        dependence_error,
+        hpd_calibration,
+        nees_consistency,
+        prerank_histograms,
+        worst_slab_coverage,
+    )
+
+    gen = torch.Generator().manual_seed(3)
+    n, s, d = 240, 60, 3
+    x = torch.randn(n, 4, generator=gen)
+    mean = torch.randn(n, d, generator=gen, dtype=torch.float64)
+    eye = torch.eye(d).to(device=mean.device, dtype=mean.dtype)
+    cov = eye.expand(n, d, d).clone()
+    y = mean + torch.randn(n, d, generator=gen, dtype=torch.float64)
+    draws = mean.unsqueeze(1) + torch.randn(n, s, d, generator=gen, dtype=torch.float64)
+    covered = torch.rand(n, generator=gen) < 0.9
+    mask = torch.rand(n, d, generator=gen) < 0.8
+    levels = torch.rand(n, generator=gen, dtype=torch.float64)
+
+    a = prerank_histograms(draws.numpy(), y.numpy())
+    b = prerank_histograms(draws, y)
+    assert a.names == b.names
+    torch.testing.assert_close(a.p_values, b.p_values)
+    torch.testing.assert_close(
+        nees_consistency(mean.numpy(), cov.numpy(), y.numpy(), mask=mask.numpy()).nees,
+        nees_consistency(mean, cov, y, mask=mask).nees,
+    )
+    assert hpd_calibration(levels.numpy()).ks_statistic == hpd_calibration(levels).ks_statistic
+    torch.testing.assert_close(
+        coverage_by_mask(covered.numpy(), mask.numpy()).coverage,
+        coverage_by_mask(covered, mask).coverage,
+    )
+    assert (
+        worst_slab_coverage(x.numpy(), covered.numpy()).coverage
+        == worst_slab_coverage(x, covered).coverage
+    )
+    assert (
+        conditional_coverage_gap(x.numpy(), covered.numpy(), alpha=0.1).brier
+        == conditional_coverage_gap(x, covered, alpha=0.1).brier
+    )
+    torch.testing.assert_close(
+        dependence_error(draws.numpy(), y.numpy()).predicted,
+        dependence_error(draws, y).predicted,
+    )

@@ -512,7 +512,11 @@ _METHODS: tuple[MethodMetadata, ...] = (
         multimodal="yes",
         non_gaussian="yes",
         calibration="yes",
-        notes="Conformal prediction regions using Super-Level-Set regression frontiers.",
+        notes=(
+            "Conformal prediction regions using Super-Level-Set regression frontiers; "
+            "torchregress.joint.SLSRegion exposes them as a JointRegion (exact volume, "
+            "uniform draws, corner plots, diagnostics)."
+        ),
     ),
     MethodMetadata(
         name="SplitConformal",
@@ -1121,7 +1125,9 @@ _METHODS: tuple[MethodMetadata, ...] = (
         calibration="partial",
         notes=(
             "Joint conditional spline flow with a Gaussian copula; intrinsic arbitrary-mask "
-            "marginals are exact, while Gaussian-error convolution uses finite quadrature."
+            "marginals are exact, while Gaussian-error convolution uses finite quadrature. "
+            "torchregress.joint.CopulaSplineJoint wraps it for the joint API (latent map, "
+            "exact masks)."
         ),
     ),
     MethodMetadata(
@@ -1290,14 +1296,18 @@ _METHODS: tuple[MethodMetadata, ...] = (
         calibration="yes",
         notes=(
             "Joint predictive p(y | x) for y in R^d from arrays: Gaussian (full or low-rank), "
-            "mixture, conditional-flow and Sklar heads on standardised targets, stacked by "
+            "mixture, conditional-flow and Sklar heads on standardised targets (Sklar: "
+            "quantile- or mixture-network marginals, whichever has the better held-out "
+            "marginal log score), stacked by "
             "held-out log score, per-target scale recalibration, and conformal regions with "
             "finite-sample marginal (not per-x) coverage under exchangeability. NaN targets "
-            "are integrated out exactly by the Gaussian and mixture heads. Stacking weights are "
+            "are integrated out exactly by the Gaussian and mixture heads. method='energy' is "
+            "an engression generator trained by the energy score (draws only, no log score, "
+            "not stacked; sample-ball regions). Stacking weights are "
             "not a posterior (same EM as DensityEnsemble.fit_weights). Related shipped classes: "
             "MultivariateGaussianLoss / LowRankGaussianLoss / MixtureDensityLoss / "
-            "NormalizingFlowLoss (the head losses), DensityEnsemble (wrap with "
-            "ConditionalModelJoint)."
+            "NormalizingFlowLoss (the head losses), DensityEnsemble; every multi-target head, "
+            "loss and ensemble enters the joint API through torchregress.joint.as_joint."
         ),
     ),
     MethodMetadata(
@@ -1311,10 +1321,12 @@ _METHODS: tuple[MethodMetadata, ...] = (
         aleatoric="yes",
         calibration="partial",
         notes=(
-            "Any per-target marginals (Gaussian, quantile grid, histogram, draws) joined by a "
+            "Any per-target marginals (Gaussian, Gaussian mixture, quantile grid, histogram, "
+            "draws) joined by a "
             "density on normal scores: a valid joint density for any score model. Dependence "
             "ladder IndependenceDependence / SchaakeShuffle / GaussianCopula / "
-            "ConditionalGaussianCopula / FlowDependence, chosen by select_dependence on "
+            "ConditionalGaussianCopula / MixtureDependence / FlowDependence, chosen by "
+            "select_dependence on "
             "held-out out-of-fold scores (lowest rung within 2 paired standard errors of the "
             "best, never below independence). Score models with drifting marginals also "
             "reshape the marginals (Dependence.marginal_drift). Related shipped class: "
@@ -1472,6 +1484,51 @@ _METHODS: tuple[MethodMetadata, ...] = (
             "ratio estimators, convex weight fit on held-out data, sandwich covariance; "
             "frequentist error bars on log r(x) and mixture fractions (Gong-Samaniego). Valid "
             "when the member span contains the true log ratio."
+        ),
+    ),
+    MethodMetadata(
+        name="MarginalRatioEstimator",
+        family="likelihood_ratio",
+        public_path="torchregress.inference.MarginalRatioEstimator",
+        task_tags=(
+            "parameter_estimation",
+            "simulation_based_inference",
+            "likelihood_ratio",
+            "multi_target",
+        ),
+        maturity="Available",
+        multi_target="yes",
+        non_gaussian="yes",
+        calibration="partial",
+        notes=(
+            "Marginal neural ratio estimation (the marginal half of TMNRE, Miller et al. 2021): "
+            "one shared embedding of x and one CNRE ratio head per requested marginal of the "
+            "parameters, in-batch negatives (K = half the batch), all marginals on the same "
+            "pairs. Nuisance parameters are integrated out by the simulator, so head cost does "
+            "not grow with their number. No truncation or sequential rounds; amortised over "
+            "the training prior. posterior() returns a RatioPosterior."
+        ),
+    ),
+    MethodMetadata(
+        name="RatioPosterior",
+        family="likelihood_ratio",
+        public_path="torchregress.inference.RatioPosterior",
+        task_tags=(
+            "parameter_estimation",
+            "simulation_based_inference",
+            "likelihood_ratio",
+            "multi_target",
+        ),
+        maturity="Available",
+        multi_target="yes",
+        non_gaussian="yes",
+        calibration="partial",
+        notes=(
+            "JointPredictive p(theta|x) = p(theta) r(theta, x) from any learned log ratio and "
+            "prior draws: sampling-importance-resampling with Kish ESS and a low-ESS warning, "
+            "Monte-Carlo-normalised log_prob, and normalisation() = E_p[r] (1 for an exact "
+            "ratio, the CNRE diagnostic). Works with joint regions, diagnostics and corner "
+            "plots; validate with SBC/TARP/HPD calibration."
         ),
     ),
     MethodMetadata(
@@ -2517,6 +2574,7 @@ _TASK_RECOMMENDATIONS: tuple[TaskRecommendation, ...] = (
         strong_alternatives=(
             "ContrastiveFlowLoss",
             "NormalizingFlowLoss",
+            "MarginalRatioEstimator (posterior of a few parameters among many nuisances)",
             "NeymanConfidenceSet (prior-free confidence sets from any statistic)",
         ),
         notes=(
@@ -2526,7 +2584,10 @@ _TASK_RECOMMENDATIONS: tuple[TaskRecommendation, ...] = (
             "posterior weights and intervals with SBC/TARP before trusting them. "
             "ContrastiveFlowLoss is the flow-log-density variant; an NPE-style "
             "p(theta|x) conditional flow is the alternative when amortised posterior "
-            "samples are needed. For confidence sets with nominal coverage at every theta, "
+            "samples are needed. When only a few parameters matter, MarginalRatioEstimator "
+            "learns their posterior directly (nuisances integrated out by the simulator) and "
+            "RatioPosterior samples it from prior draws. For confidence sets with nominal "
+            "coverage at every theta, "
             "whatever the training population, calibrate the statistic with "
             "NeymanConfidenceSet on labelled (theta, x) pairs."
         ),
@@ -3031,6 +3092,7 @@ _COMPARATIVE_EVIDENCE_ROWS: tuple[ComparativeEvidenceRow, ...] = (
             "examples/multimodal_method_comparison.py",
             "examples/multimodal_method_comparison.py --dataset diabetes",
             "examples/normalizing_flows_multitarget.py",
+            "examples/joint_regression_comparison.py",
         ),
         comparison_grade="Strong",
         fairness_controls=(
@@ -3045,14 +3107,22 @@ _COMPARATIVE_EVIDENCE_ROWS: tuple[ComparativeEvidenceRow, ...] = (
             "marginal calibration error",
             "runtime",
         ),
-        peer_methods_visible=("GaussianNLLLoss", "MixtureDensityLoss", "NormalizingFlowLoss"),
+        peer_methods_visible=(
+            "GaussianNLLLoss",
+            "MixtureDensityLoss",
+            "NormalizingFlowLoss",
+            "JointRegressor",
+        ),
         gaps=(
             "Needs domain-specific real-data multimodal benchmark(s) (beyond synthetic multimodal "
             "targets on real covariates) and optional-dependency CI coverage for zuko flow runs."
         ),
         notes=(
             "Dedicated comparisons now include synthetic and real-covariate tracks; flow path is "
-            "optional and may be skipped in minimal environments without zuko."
+            "optional and may be skipped in minimal environments without zuko. "
+            "joint_regression_comparison.py scores every JointRegressor head against the true "
+            "conditional density of one synthetic problem (NLL gap, energy and variogram scores, "
+            "joint region coverage and volume)."
         ),
     ),
     ComparativeEvidenceRow(

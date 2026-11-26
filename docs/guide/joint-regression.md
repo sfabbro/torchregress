@@ -1,976 +1,970 @@
 # Joint Multi-Target Regression
 
-`torchregress.joint` predicts the **joint** conditional distribution
-$p(\mathbf y \mid \mathbf x)$ of a vector of targets
-$\mathbf y \in \mathbb R^d$, turns it into prediction regions with a
-finite-sample coverage guarantee, recalibrates it, and checks it. This page
-explains what each piece computes, the assumption behind each guarantee, and
-how to choose between the options. For the per-head losses (full and low-rank
-Gaussian, MDN, flows) see [Multi-Target Regression](multi-target-regression.md);
-every symbol used here is listed in the [Joint API reference](../api/joint.md).
+Some problems have several targets per row, $\mathbf y \in \mathbb R^d$. Then you
+want one probability distribution over the whole vector, and regions that
+contain the whole vector. This guide is read top to bottom: the picture, one
+worked example, how it works, a section for readers who know MCMC or
+simulation-based inference, and short recipes. Experts can skip the plain
+explanations; the details are in collapsed blocks.
 
-!!! tip "Where to start"
-    This page is the reference. Three shorter pages lead into it, each with a
-    worked example and real output:
+## 1. The picture: heads, joint predictives, tools
 
-    - [New to Joint Prediction](joint-quickstart.md): no background beyond
-      regression; one example, corner plots, what "90%" promises, the
-      diagnostics panel, missing targets, and a glossary.
-    - [Coming from MCMC and HMC](joint-for-mcmc-users.md): chains, credible
-      regions, SBC and corner plots mapped onto this package, checked against an
-      exact posterior and a sampler.
-    - [Coming from Simulation-Based Inference](joint-for-sbi-users.md): NPE,
-      NRE, SBC, TARP and LF2I mapped onto this package, on the two-moons task.
+The library has three layers.
 
-    The plots are described in
-    [Joint predictive plots](../methods/visualization.md#4-joint-predictive-plots-corner-plots-and-diagnostics).
+1. **Heads** model $p(\mathbf y \mid \mathbf x)$. A *head* is a network output
+   plus the loss that trains it: Gaussian heads (`GaussianNLLLoss`,
+   `MultivariateGaussianLoss`, `LowRankGaussianLoss`), mixture density networks
+   (`MixtureDensityLoss`), normalizing flows (`NormalizingFlowLoss`: NSF, MAF,
+   RealNVP and the other `create_flow_model` types), the copula spline head
+   (`GaussianCopulaSplineHead`), quantile heads, and ensembles of these. They
+   are described in [Multi-Target Regression](multi-target-regression.md).
+2. **A joint predictive** is what a trained head predicts for $n$ rows, behind
+   one interface: `sample` (draws `[n, S, d]`), `log_prob` (density), `marginal`
+   (a subset of targets), `mean`, `covariance`. `as_joint(head, output)` turns
+   any head into one.
+3. **Tools** work on any joint predictive: *regions*, recalibration,
+   diagnostics and corner plots. A *region* is a set of target vectors for one
+   row, calibrated so that a stated share of new rows have their true vector
+   inside.
 
----
+`JointRegressor` is the shortcut: give it arrays, and it trains heads, combines
+them, recalibrates, and calibrates regions for you.
 
-## 1. Five lines
-
-```python
-from torchregress.joint import JointRegressor
-
-model = JointRegressor().fit(X, Y)            # X [N, p], Y [N, d]; NaN marks a missing target
-dist = model.predict(X_new)                   # JointPredictive: one distribution per row
-dist.sample(256); dist.log_prob(Y_new)        # draws [n, 256, d]; log densities [n]
-region = model.region(X_new, alpha=0.1)       # JointRegion, P(Y in region) >= 0.9
-region.contains(Y_new); region.log_volume()   # membership [n]; (log-volume, s.e.) [n]
+```mermaid
+flowchart LR
+    subgraph H["1. Heads (losses, models, ensembles)"]
+        G["Gaussian heads"]
+        M["Mixture density networks"]
+        F["Flows: NSF, MAF, ..."]
+        C["Copula spline, quantile heads"]
+    end
+    A["Arrays X, Y"] --> R["JointRegressor"]
+    H -->|"as_joint(head, output)"| P["2. Joint predictive<br/>sample, log_prob, marginal"]
+    R -->|"predict"| P
+    P --> T["3. Tools<br/>regions, recalibration,<br/>diagnostics, corner plots"]
+    R -->|"region"| T
+    S["SLS region model"] -->|"as_joint(conformal, x)"| T
 ```
 
-The objects:
+!!! info "What the joint API is not"
+    It does not replace the heads. NSF and the other flows, the mixture density
+    network, the copula spline head, the Gaussian losses and SLS stay where
+    they are and are trained as before; the joint API sits on top of them. It is
+    not a training loop and not a sampler: a joint predictive is what a trained
+    model predicts, not a posterior over its weights. SLS learns a region
+    without a density, so `as_joint` turns it into a region directly.
 
-- **`JointRegressor`** ([API](../api/joint.md#estimator)) fits one or several
-  *heads* on standardised targets, stacks them, recalibrates the stack and keeps
-  a held-out split for conformal calibration. `fit` splits the rows into
-  training (60% by default), validation for early stopping and stacking (15%),
-  recalibration (10%) and conformal calibration (15%).
-- **`JointPredictive`** ([API](../api/joint.md#predictive-distributions)) is a
-  batch of $n$ distributions over $\mathbb R^d$. Every head returns one, with
-  the same layouts: `sample(S)` gives `[n, S, d]` (batch first, always),
-  `log_prob(y)` maps `[n, d]` to `[n]` and `[n, S, d]` to `[n, S]`,
-  `marginal(dims)` returns the predictive of a subset of targets. What a
-  predictive can do is declared by three flags: `has_density`, `has_latent`
-  (a map `to_latent` to a space where the predictive is standard normal) and
-  `exact_marginals` (whether `marginal` and `log_prob(y, mask)` are exact).
-- **`JointRegion`** ([API](../api/joint.md#conformal-regions)) is the set
-  $\{\mathbf y : s(\mathbf x, \mathbf y) \le \hat t\}$ of one row, for a
-  conformity score $s$ and a threshold $\hat t$ calibrated on held-out rows.
-  `contains` tests membership, `log_volume` returns the log Lebesgue volume and
-  its Monte Carlo standard error, `sample` draws from the predictive restricted
-  to the region and `bounding_box` gives its coordinate-wise extent.
+### Five lines
 
-!!! info "Arrays in, tensors out"
-    `fit`, `predict`, `calibrate` and `region` accept tensors or NumPy arrays.
-    Predictives and regions live on the estimator's `device` (CUDA when
-    available, unless `device="cpu"`) in float32; `log_prob`, `to_latent`,
-    `from_latent`, `hpd_level` and `contains` accept tensors of any floating
-    dtype on any device, or arrays, cast them to the predictive's `dtype` and
-    `device`, and return results there.
+```text
+from torchregress.joint import JointRegressor
 
----
+model = JointRegressor().fit(X, Y)        # X [N, p], Y [N, d]; NaN marks a missing target
+dist = model.predict(X_new)               # joint predictive: one distribution per row
+draws = dist.sample(1000)                 # [n, 1000, d] plausible target vectors
+region = model.region(X_new, alpha=0.1)   # a 90% region per row
+inside = region.contains(Y_new)           # [n] booleans: is the whole vector inside?
+```
 
-## 2. Joint versus marginal prediction
+![Corner plot of one joint prediction with its 90% region and the true value](../assets/images/joint/guide/example_corner.png)
 
-### 2.1 Per-target intervals do not make a joint statement
+One row of the example of section 3: each target alone on the diagonal, each
+pair below it, the true values in red, the 90% region dash-dotted.
 
-Calibrate one interval $C_j(\mathbf x)$ per target at level $1-\alpha$. Each
-interval covers its own target, $P(Y_j \in C_j(\mathbf X)) \ge 1 - \alpha$, but
-the probability that **all** $d$ targets are covered at once is not
-controlled. Only the union bound holds,
+## 2. I have X, call Y
+
+`as_joint(obj, inputs)` is the default answer. It reads the type of `obj`,
+returns the matching joint predictive (or region), and raises a `TypeError`
+listing the supported types otherwise. Flags: **D** density, **M** exact masks
+and marginals (missing targets integrated out), **L** latent map. Every row is
+tested in `tests/joint/test_all_heads.py`: the density equals the head's own,
+and a calibrated region covers fresh draws at the nominal level.
+
+| I have | Call | I get |
+|:--|:--|:--|
+| Arrays `X`, `Y`, no model yet | `JointRegressor().fit(X, Y)` | `predict`, `region`, `calibrate` |
+| A Gaussian head: `GaussianNLLLoss` (diagonal), `MultivariateGaussianLoss`, `LowRankGaussianLoss`, `KnownCovarianceGaussianNLL` | `as_joint(loss, (mean, log_var))`, `as_joint(loss, (mean, cov))`, `as_joint(loss, output, rank=r)`, `as_joint(loss, y_pred, known_covariance=C)` | `GaussianJoint`: D M L |
+| A mixture density network: `MixtureDensityLoss`, `InputNoiseMDNLoss` | `as_joint(loss, output)`, `as_joint(loss, x_obs)` | D M |
+| A normalizing flow (any `create_flow_model` type), `ContrastiveFlowLoss` | `as_joint(loss, context)` | `FlowJoint`: D L |
+| `GaussianCopulaSplineHead` | `as_joint(head, context)` | `CopulaSplineJoint`: D M L |
+| A quantile head (`MultiQuantileLoss`, `q` of shape `[n, Q, d]`), a one-feature `MixtureDensityLoss` applied per target (output `[n, d, 3K]`), or any `Marginals` | `as_joint(loss, q, dependence=copula)`, `as_joint(mdn, output, dependence=copula)` | `SklarJoint`; independent targets without `dependence` |
+| `EvidentialRegressionLoss`, `JointBinnedDensityLoss`, `NoiseAwareDensityLoss` | `as_joint(loss, output)` | D (independent Student-t targets for the evidential loss; the clean predictive for the noise-aware loss) |
+| A model with `log_prob(context, y)` and `sample(context, n)` (`MarginalContrastiveDensity`, `NormalizingFlowMap`) | `as_joint(model, context)` | `ConditionalModelJoint`: D |
+| A generator with `sample(context, n)` and no `log_prob` (your own engression network) | `as_joint(model, context)` | `ConditionalModelJoint`, draws only (drawn on demand) |
+| `FlowMatchingMLP` | `as_joint(model, context, n_samples=256, steps=32)` | draws only |
+| Stored draws `[n, S, d]` (a sampler, a forest, a posterior on a candidate bank) | `SampleJoint(draws)` | draws only |
+| An ensemble of density heads: `DensityEnsemble`, `MDNEnsembleModel`, `HeteroscedasticEnsembleModel`, `HeteroscedasticBatchEnsembleModel`, `HeteroscedasticBNN` | `as_joint(ensemble, x)` | `MixtureJoint` of the members |
+| A `torch.distributions` object with batch `[n]`, event `[d]` | `as_joint(dist)` | `DistributionJoint` |
+| `MarginalRatioEstimator` (`torchregress.inference`) | `as_joint(estimator, x, prior_samples=prior_draws, marginal=(0, 1), prior_log_prob=log_p)` | `RatioPosterior`: importance-resampled prior draws, a Monte-Carlo-normalised density, `effective_sample_size()` and `normalisation()` |
+| A calibrated `SLSConformal` | `as_joint(conformal, x)` | `SLSRegion`: a region, no density |
+| Means and covariances as tensors | `GaussianJoint.from_covariance(mu, cov)`, then `JointConformal(MahalanobisScore())` | the regions of `MultivariateScoreConformal` (same thresholds) |
+| `ConformalizedDensity`, `ContrastiveFlowConformal` | `JointConformal(DensityScore())` on the head's joint predictive | the same score, plus masks, volumes and draws |
+| Per-target intervals (`MultiTargetConformal`, `MonteCarloConformal`) | `JointConformal(MaxResidualScore())` | a box with a joint guarantee |
+| Point ensembles, SWAG, Laplace, MC dropout, `BayesianNeuralNetwork` | not supported: they give the spread of $f(\mathbf x)$, not a predictive of $\mathbf y$ | `as_joint` raises |
+
+| Route | Use it when | You give up |
+|:--|:--|:--|
+| `JointRegressor` | You have arrays and want a calibrated joint predictive and regions with few decisions | Control of the architecture and training loop |
+| Your own head, `as_joint`, then `JointConformal` | You already train a head, or need one `JointRegressor` does not fit | You choose the calibration rows yourself |
+| Single-target tools (`SplitConformal`, `MultiTargetConformal`) | Each target is reported on its own | Any statement about the whole vector |
+
+## 3. A worked example
+
+Two features $x_1, x_2$ and three targets $y_1, y_2, y_3$, like three
+measurements of one object. $y_1$ and $y_2$ share most of their noise: when $y_1$
+comes out high, $y_2$ usually does too. The noise grows near the edges of $x_1$.
+Run the blocks of sections 3 to 6 in order in one session; outputs are real
+(torch 2.14.1, Python 3.13, CPU; section 3 takes about 10 s). `pip install
+"torchregress[viz]"` for the plots.
+
+```python
+import torch
+
+from torchregress.joint import JointRegressor
+
+
+def simulate(n: int, seed: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Two features, three targets; y1 and y2 share most of their noise."""
+    g = torch.Generator().manual_seed(seed)
+    x = torch.rand(n, 2, generator=g) * 4 - 2  # uniform on [-2, 2]^2
+    noise = 0.3 + 0.2 * x[:, 0].abs()  # noisier at the edges of x1
+    e = torch.randn(n, 3, generator=g)
+    y = torch.empty(n, 3)
+    y[:, 0] = torch.sin(x[:, 0]) + noise * e[:, 0]
+    y[:, 1] = 0.5 * x[:, 1] + noise * (0.9 * e[:, 0] + 0.44 * e[:, 1])
+    y[:, 2] = x[:, 0] * x[:, 1] + 0.3 * e[:, 2]
+    return x, y
+
+
+torch.manual_seed(0)  # draws use torch's global generator
+x, y = simulate(8000, seed=0)  # training rows
+x_new, y_new = simulate(2000, seed=1)  # new rows, never seen by fit
+
+model = JointRegressor("gaussian", device="cpu").fit(x, y)
+dist = model.predict(x_new)  # joint predictive of the new rows
+draws = dist.sample(1000)  # [2000, 1000, 3]
+region = model.region(x_new, alpha=0.1)  # a 90% region per row
+inside = region.contains(y_new)  # [2000] booleans
+
+print(f"rows: {model.n_train_} train, {model.n_val_ + model.n_recal_ + model.n_conformal_} held out")
+print(f"corr(y1, y2) in row 0: {torch.corrcoef(draws[0].T)[0, 1]:.2f}")
+print(f"joint region covers:   {inside.float().mean():.3f} of the new rows")
+```
+
+```text
+rows: 4800 train, 3200 held out
+corr(y1, y2) in row 0: 0.89
+joint region covers:   0.892 of the new rows
+```
+
+`fit` trains on 60% of the rows and keeps the rest to stop training (15%),
+recalibrate (10%) and calibrate regions (15%); for large data see the recipes. `"gaussian"` asks for one
+multivariate normal per row, fast and right for this example; `JointRegressor()`
+fits and combines more flexible heads (section 4.2). The draws of row 0 have
+$\operatorname{corr}(y_1, y_2) = 0.89$: the model learned that the two move
+together.
+
+### 3.1 Per-target intervals are not a joint statement
+
+```python
+per_target = [model.region(x_new, alpha=0.1, interest=[j]) for j in range(3)]
+each = torch.stack([r.contains(y_new[:, [j]]) for j, r in enumerate(per_target)], dim=1)
+print(f"each 90% interval covers its own target: {each.float().mean(0).numpy().round(3)}")
+print(f"all three intervals cover at once:       {each.all(1).float().mean():.3f}")
+```
+
+```text
+each 90% interval covers its own target: [0.896 0.899 0.894]
+all three intervals cover at once:       0.766
+```
+
+Each interval covers its own target, but all three hold together for only 77%
+of the rows. With per-target intervals $C_j$ at level $1 - \alpha$, only the
+union bound holds,
 
 $$
 P\Big(\bigcap_{j=1}^d \{Y_j \in C_j(\mathbf X)\}\Big) \;\ge\; 1 - d\alpha ,
 $$
 
-and for independent errors the joint coverage is $(1-\alpha)^d$: 0.59 for
-$d = 5$ and $\alpha = 0.1$. Shrinking each level to $\alpha/d$ (Bonferroni)
-restores $1 - \alpha$ but gives a box that ignores the dependence between
-targets, so it is larger than needed when the targets are correlated. A joint
-statement needs a joint object: a joint predictive, and a region calibrated as
-one set.
+and for independent errors the joint rate is $(1 - \alpha)^d$, 0.73 here (a
+little more is observed because $y_1$ and $y_2$ miss together). Bonferroni
+($\alpha/d$ per target) restores $1 - \alpha$ with a box that ignores the
+dependence. The joint region makes the statement about the whole vector.
 
-### 2.2 Sklar's theorem
+!!! warning "Common mistake: reporting per-target intervals as a joint guarantee"
+    Use a joint region, or `JointConformal(MaxResidualScore())` for a box with a
+    joint guarantee (section 4.1).
 
-For a joint conditional CDF $F(\mathbf y \mid \mathbf x)$ with continuous
-marginal CDFs $F_j(y_j \mid \mathbf x)$, Sklar's theorem gives a unique copula
-$C(\cdot \mid \mathbf x)$ on $[0, 1]^d$ such that
+### 3.2 Reading a corner plot
 
-$$
-F(\mathbf y \mid \mathbf x) = C\big(F_1(y_1 \mid \mathbf x), \dots, F_d(y_d \mid \mathbf x) \;\big|\; \mathbf x\big),
-$$
+```python
+from torchregress.viz import plot_corner_plot
 
-and, when the densities exist,
+fig = plot_corner_plot(
+    dist, row=0, n_samples=20_000, true_vals=y_new[0], region=region,
+    param_names=["$y_1$", "$y_2$", "$y_3$"], return_figure=True,
+)
+```
 
-$$
-p(\mathbf y \mid \mathbf x) = c\big(F_1(y_1 \mid \mathbf x), \dots, F_d(y_d \mid \mathbf x) \;\big|\; \mathbf x\big) \prod_{j=1}^d f_j(y_j \mid \mathbf x),
-$$
+This draws the figure of section 1.
 
-with $c$ the copula density and $f_j$ the marginal densities. The marginals
-and the dependence can therefore be modelled separately: any per-target
-engine supplies the $F_j$, and a model of $c$ joins them.
+- **Diagonal: one target at a time** (its *marginal*). The shaded band holds the
+  central 68%, the line is the median; the title reads $y_1 = 0.84^{+0.47}_{-0.48}$.
+- **Below the diagonal: pairs.** The contours hold 68% and 95% of the draws. The
+  $(y_1, y_2)$ panel is a narrow tilted ellipse: "$y_1$ high and $y_2$ low" is
+  implausible although each value alone is plausible. Panels with $y_3$ are round.
+- **Red lines:** the true values. **Dash-dot line:** the outline of the 90%
+  region seen from each pair of axes. It is not a contour: its level comes from
+  calibration on held-out rows, not from the model's own probabilities.
 
-### 2.3 The normal-score construction
+Contour conventions differ between packages (`corner` draws "sigma" levels
+holding 39% and 86%); the legend states them, and
+[corner plots](../methods/visualization.md#corner-plots) lists the options.
 
-The package works with **normal scores** rather than with the copula on the
-unit cube:
+### 3.3 What "90%" promises
 
-$$
-z_j = \Phi^{-1}\big(F_j(y_j \mid \mathbf x)\big), \qquad j = 1, \dots, d .
-$$
+```python
+noisy = x_new[:, 0].abs() > 1  # the noisier half of the inputs
+print(f"joint region, |x1| > 1:  {inside[noisy].float().mean():.3f}")
+print(f"joint region, |x1| <= 1: {inside[~noisy].float().mean():.3f}")
+```
 
-The map $\mathbf y \mapsto \mathbf z$ is a coordinate-wise strictly increasing
-bijection (the CDFs are continuous and strictly increasing) with Jacobian
-determinant $\prod_j f_j(y_j \mid \mathbf x) / \varphi(z_j)$. For **any**
-density $q(\mathbf z \mid \mathbf x)$ on $\mathbb R^d$, the change of variables
-gives the density on the targets
+```text
+joint region, |x1| > 1:  0.893
+joint region, |x1| <= 1: 0.891
+```
 
-$$
-\log p(\mathbf y \mid \mathbf x) = \sum_{j=1}^d \log f_j(y_j \mid \mathbf x) + \log q(\mathbf z \mid \mathbf x) - \sum_{j=1}^d \log \varphi(z_j),
-$$
+In plain words: on average over new rows from the same source as the
+calibration rows, at least 90% have their true vector inside their region, even
+for a wrong model (a poor model gives bigger regions, not rarer hits). It does
+not promise 90% for every row or every kind of row: the two halves above match
+because the model is good, not because of the guarantee. And it promises
+nothing when new rows differ from the calibration rows.
 
-and it integrates to one because $q$ does: the change of variables preserves
-mass. Nothing requires $q$ to be a copula. When $q$ has standard-normal
-marginals, $q(\mathbf z)/\prod_j \varphi(z_j)$ is a copula density and the
-marginals of $p$ are exactly the $F_j$. Gaussian $q$ gives the Gaussian copula;
-a conditional flow gives a flexible dependence model with an exact density.
-This is [`SklarJoint`](../api/joint.md#dependence).
-
-Per-target engines enter through [`Marginals`](../api/joint.md#marginals):
-`GaussianMarginals`, `QuantileMarginals` (a quantile grid, linear CDF between
-the knots, exponential tails), `BinnedMarginals` (histogram heads) and
-`SampleMarginals` (draws). The PIT values are clipped to
-$[\varepsilon, 1 - \varepsilon]$ with $\varepsilon = 10^{-6}$ before
-$\Phi^{-1}$, so $|z_j| \le 4.75$; this alters the density only where some
-$F_j$ lies within $\varepsilon$ of 0 or 1 (`GaussianMarginals` need no
-clipping: their normal scores are the standardised residuals).
-
----
-
-## 3. The dependence ladder
-
-The dependence model $q(\mathbf z \mid \mathbf x)$ is chosen from a ladder of
-increasing complexity, and the simplest rung that validation supports is kept.
-
-| Rung | Model of $q(\mathbf z \mid \mathbf x)$ | Training | Density | When it is enough |
-|:-:|:--|:--|:-:|:--|
-| 0 | `IndependenceDependence`: $\mathcal N(0, I)$ | none | yes | Weak residual dependence, or too few rows to estimate it |
-| 1 | `SchaakeShuffle`: draws of the rank-normalised training scores (optionally the $k$ nearest rows in $\mathbf x$) | none | no | Only scenarios (draws) are needed; a strong baseline in weather post-processing |
-| 2 | `GaussianCopula`: $\mathcal N(0, R)$, $R$ the score correlation shrunk towards $I$ (Ledoit–Wolf), optionally low rank | closed form | yes | Dependence that does not change with $\mathbf x$ and is roughly elliptical |
-| 3 | `ConditionalGaussianCopula`: $\mathcal N\big(0, L(\mathbf x) D(\mathbf x)^2 L(\mathbf x)^\top\big)$, unit lower-triangular $L$ (modified Cholesky) | NLL, early stopping | yes | Correlations that vary with the covariates |
-| 4 | Vine copula | — | — | Not implemented |
-| 5 | `FlowDependence`: conditional rational-quadratic spline flow, initialised at the identity | NLL, early stopping | yes | Non-Gaussian dependence (asymmetry, tail dependence, multimodality) with enough rows |
-
-Rungs 3 and 5 start exactly at rung 0: their output layers are zero-initialised,
-so before training $q(\mathbf z \mid \mathbf x) = \mathcal N(0, I)$ for every
-$\mathbf x$, and the early-stopping checkpoint includes the initial weights.
-
-### 3.1 The validation gate
-
-[`select_dependence`](../api/joint.md#dependence) scores every
-fitted density rung on held-out scores by the mean log density
-$\bar\ell_c = \frac1N \sum_i \log q_c(\mathbf z_i \mid \mathbf x_i)$ and walks
-the ladder from the bottom. It keeps the first rung $c$ that
-
-- scores at least as well as independence, $\bar\ell_c \ge \bar\ell_0$, and
-- is within `n_se` (default 2) standard errors of the best rung,
-  $\bar\ell_{\max} - \bar\ell_c \le n_{se}\,\mathrm{SE}$, with SE the standard
-  error of the paired per-row differences.
-
-So the choice is never worse than independence on the validation rows, and a
-more complex rung is kept only when its gain is resolved. Draws-only rungs
-(the Schaake shuffle) have no log density and are skipped.
-
-In the package's tests ($d = 3$, 4,000 training and 2,000 validation rows), the
-held-out negative log score in nats per row, with the rung chosen by the gate:
-
-| Simulated dependence | Independence | Gaussian copula | Conditional copula | Flow | Truth | Chosen |
-|:--|:-:|:-:|:-:|:-:|:-:|:--|
-| none | 4.2588 | 4.2591 | 4.2588 | 4.2588 | 4.2588 | independence |
-| constant Gaussian | 4.3291 | 3.9576 | 3.9606 | 3.9788 | 3.9566 | Gaussian copula |
-| Gaussian, correlation varying with $\mathbf x$ | 4.2233 | 4.1882 | 3.9516 | 3.9991 | 3.9413 | conditional copula |
-| mixture over a hidden sign (non-Gaussian) | 4.2394 | 3.7035 | 3.7079 | 3.4790 | 3.4197 | flow |
-
-### 3.2 Out-of-fold scores
-
-The training scores must be computed **out of fold**: from marginals that were
-not fitted on those rows. In-sample PITs are too uniform and too central, so a
-dependence model fitted on them learns the marginal model's overfit rather
-than the dependence of the targets. `JointRegressor` cross-fits the marginal
-engine (`n_folds=3`) to produce the training scores, then refits it on all
-training rows for prediction. When you call `Dependence.fit` yourself, this is
-your responsibility.
-
-!!! warning "A score model with drifting marginals also reshapes the marginals"
-    $q$ is a copula density only if its marginals stay standard normal. The
-    conditional Gaussian rung (free diagonal of $L D^2 L^\top$) and the flow
-    rung can drift. The joint density is still valid, but its per-target
-    marginals are then the $F_j$ *recalibrated by* $q$, not the $F_j$: the
-    object is a marginally preconditioned model, not "marginals plus copula".
-    `Dependence.marginal_drift(z, x)` reports the mean and standard deviation of
-    each implied score marginal next to those of the held-out scores.
-
----
-
-## 4. Heads and stacking
-
-`JointRegressor(method=...)` fits one head, or, with `method="auto"` (the
-default), several heads whose densities are stacked.
-
-| Head | `method` | Model | Missing targets | In `"auto"` |
-|:--|:--|:--|:--|:--|
-| Gaussian (reference) | `"gaussian"` | $\mathcal N(\boldsymbol\mu(\mathbf x), L(\mathbf x) L(\mathbf x)^\top)$; full Cholesky up to 32 targets, rank-8 plus diagonal beyond (`rank=`) | exact (closed-form marginal) | always |
-| Mixture | `"mixture"` | Mixture density network, `n_components=5`; full covariances up to $d = 8$, diagonal beyond | exact (masked density) | always |
-| Flow | `"flow"` | Conditional neural spline flow on the standardised targets | rows with a missing target are dropped | complete targets and $d \le 16$ |
-| Sklar | `"sklar"` | Quantile-network marginals (`QuantileNetworkEngine`, or your own `MarginalEngine`) joined by the gated ladder of §3 | complete rows only for the dependence | complete targets |
-
-The Gaussian head is the reference: its marginals, conditionals
-(`GaussianJoint.condition`), masked densities and Mahalanobis regions are
-closed form, and its output layer starts at zero, so training starts from the
-unit-variance independent Gaussian of the standardised targets.
-
-**Stacking.** With $p_k$ the $K$ fitted heads and $V$ the validation rows, the
-weights solve
+The rule: for a *score* $s(\mathbf x, \mathbf y)$ (small means typical) and
+calibration scores $s_1, \dots, s_n$,
 
 $$
-\hat{\mathbf w} = \arg\max_{\mathbf w \in \Delta_K} \sum_{i \in V} \log \sum_{k=1}^K w_k\, p_k(\mathbf y_i \mid \mathbf x_i),
+\hat t_\alpha = s_{(k)}, \quad k = \lceil (n + 1)(1 - \alpha) \rceil, \qquad R_\alpha(\mathbf x) = \{\mathbf y : s(\mathbf x, \mathbf y) \le \hat t_\alpha\},
 $$
 
-over the probability simplex $\Delta_K$. The objective is concave in
-$\mathbf w$, so the maximiser is global; it is computed by the EM fixed point
-$w_k \leftarrow \frac{1}{|V|}\sum_i w_k p_{ik} / \sum_l w_l p_{il}$, which
-increases the objective monotonically (Yao et al. 2018). The predictive is the
-mixture $\sum_k \hat w_k p_k$ ([`MixtureJoint`](../api/joint.md#predictive-distributions));
-members with weight below $10^{-4}$ are dropped. `weights_` and
-`validation_log_score_` report the weights and each head's validation log
-score.
-
-**Standardised targets.** Heads are fitted on targets standardised with the
-training rows' mean and standard deviation, so raw units never meet a bounded
-spline or a fixed initial scale. The head's predictive is mapped back by
-[`AffineJoint`](../api/joint.md#predictive-distributions),
-$\mathbf y = \mathrm{loc} + \mathrm{scale} \odot \mathbf u$, whose density picks
-up the Jacobian:
-
-$$
-\log p_Y(\mathbf y \mid \mathbf x) = \log p_U\big((\mathbf y - \mathrm{loc}) \oslash \mathrm{scale} \mid \mathbf x\big) - \sum_{j} \log \mathrm{scale}_j .
-$$
-
-Under a mask the sum runs over the observed targets. Draws, latent maps,
-marginals, means and covariances all come back in the data's units, so a fit
-on `Y` and a fit on `1000 * Y + 5` give the same predictive up to the change of
-units.
-
-!!! tip "Cost of the automatic stack"
-    On the synthetic data of the [example](#11-complete-example) (3,000 rows,
-    $d = 3$, laptop CPU), `method="auto"` took about 18 s to fit its four heads
-    and about 45 s more to predict and build its first region, against about
-    2 s for the whole example with `method="gaussian"`. The HPD score of a stacked predictive draws 256
-    samples per calibration and test row through every member, and the flow
-    member dominates that cost. Start with `"gaussian"` and move to `"auto"`
-    when the diagnostics of §8 reject it.
-
----
-
-## 5. Conformal regions
-
-### 5.1 The coverage statement
-
-A region is built by **split conformal calibration** of one scalar score
-$s(\mathbf x, \mathbf y)$ (small means typical). With calibration scores
-$s_i = s(\mathbf x_i, \mathbf y_i)$, $i = 1, \dots, n$, the threshold is the
-$k$-th smallest score,
-
-$$
-\hat t_\alpha = s_{(k)}, \qquad k = \lceil (n + 1)(1 - \alpha) \rceil ,
-$$
-
-($+\infty$ when $k > n$) and the region is
-$R_\alpha(\mathbf x) = \{\mathbf y : s(\mathbf x, \mathbf y) \le \hat t_\alpha\}$.
-
-**Assumption:** the calibration pairs and the test pair
-$(\mathbf X_{n+1}, \mathbf Y_{n+1})$ are exchangeable (for instance, i.i.d.),
-and the score function was fixed without looking at the calibration rows.
-**Then**
+with $\hat t_\alpha = +\infty$ when $k > n$. **If** the calibration pairs and the
+test pair are exchangeable and the score was fixed without looking at the
+calibration rows, **then**
 
 $$
 1 - \alpha \;\le\; P\big(\mathbf Y_{n+1} \in R_\alpha(\mathbf X_{n+1})\big) \;\le\; 1 - \alpha + \frac{1}{n+1},
 $$
 
-where the upper bound needs almost surely distinct scores. The probability is
-over the calibration set **and** the test pair: this is *marginal* coverage,
-averaged over $\mathbf x$, not coverage at each $\mathbf x$. It holds whatever
-the quality of the predictive; a poor model gives larger regions, not lower
-coverage: the model buys region size, the calibration buys validity (Hoff
-2023). Several levels (`alpha=[0.05, 0.1, 0.32]`) give nested regions.
-`JointRegressor.region` uses its own conformal split, which the recalibration
-never sees: a recalibrator fitted on the conformal rows would break the
-exchangeability the statement rests on.
+the upper bound for almost surely distinct scores. The probability is over the
+calibration set **and** the new pair: an average over $\mathbf x$, not a
+statement at each $\mathbf x$ (Lei et al. 2018; Hoff 2023). With 1,200
+calibration rows, one run moves by about a point: 0.892 above is a 90% result.
 
-The score decides the **shape** and the **size** of the region; calibration
-only decides its level. The low-level API is
-[`JointConformal`](../api/joint.md#conformal-regions):
+!!! warning "Keep calibration rows apart"
+    Train and recalibrate on other rows, or the exchangeability is lost.
+
+### 3.4 Checking calibration
+
+A joint predictive is *calibrated* if the true vector behaves like one more draw
+from it, on average over rows. One call draws every check:
 
 ```python
-from torchregress.joint import JointConformal, MaxResidualScore
+from torchregress.viz import plot_joint_diagnostics
 
-cp = JointConformal(MaxResidualScore(), alpha=0.1).calibrate(pred_cal, y_cal)
-region = cp.region(pred_test)
+fig = plot_joint_diagnostics(dist, y_new, x=x_new, region=region, return_figure=True)
 ```
 
-### 5.2 Density level set: `DensityScore`
+![Diagnostics of the joint model](../assets/images/joint/guide/example_diagnostics.png)
+
+Read top to bottom; red marks a departure at the 5% level. Everything is blue
+here. Now break the model on purpose: keep each target's distribution and drop
+the dependence, as separate per-target models would.
+
+```python
+from torchregress.joint import GaussianJoint, JointConformal, LatentScore
+
+variances = dist.covariance().diagonal(dim1=-2, dim2=-1)
+independent = GaussianJoint.from_covariance(dist.mean(), torch.diag_embed(variances))
+fig = plot_joint_diagnostics(independent, y_new, return_figure=True)
+
+x_cal, y_cal = simulate(2000, seed=3)  # fresh rows to calibrate both regions on
+cal = model.predict(x_cal)
+cal_independent = GaussianJoint.from_covariance(
+    cal.mean(), torch.diag_embed(cal.covariance().diagonal(dim1=-2, dim2=-1))
+)
+for name, p_cal, p_new in (("full", cal, dist), ("independent", cal_independent, independent)):
+    r = JointConformal(LatentScore(), alpha=0.1).calibrate(p_cal, y_cal).region(p_new)
+    print(
+        f"{name:<12} coverage {r.contains(y_new).float().mean():.3f}, "
+        f"median log volume {r.log_volume()[0].median():.2f}"
+    )
+```
+
+```text
+full         coverage 0.892, median log volume 0.70
+independent  coverage 0.890, median log volume 1.54
+```
+
+![Diagnostics of a model that ignores the dependence](../assets/images/joint/guide/example_diagnostics_independent.png)
+
+The per-target PIT curves stay blue: each target alone is right. The joint
+checks are red: predicted correlation 0 against an observed 0.90, a rising
+dependence histogram, an HPD curve above the diagonal. Its calibrated region
+still covers 89% but is $e^{1.54 - 0.70} \approx 2.3$ times larger: calibration
+protected the 90%, the model paid in size.
+
+| Panel (function) | Statistic | If red, it says | Try |
+|:--|:--|:--|:--|
+| Joint HPD calibration (`hpd_calibration`) | $\hat F(a) = \frac1n \sum_i \mathbf 1[h_i \le a]$ of the HPD levels $h_i$, DKW band, KS test | below the diagonal: over-confident; above: too cautious or the wrong shape | a more flexible head, more data, recalibration (section 4.4) |
+| Correlations (`dependence_error`) | predicted against empirical correlation of standardised residuals | wrong dependence (marginal errors also move it) | a joint head instead of per-target models |
+| Pre-rank histograms (`prerank_histograms`) | rank of $\rho(\mathbf y)$ among $\rho(\mathbf Y'_k)$ for `location` $\bar x$, `scale` $\frac1d\sum_j (x_j - \bar x)^2$, `dependence` $\binom d2^{-1}\sum_{j<k} x_j x_k$, `energy`, `average_rank`, `band_depth`; $\chi^2$ tests, Holm adjustment (Allen et al. 2024) | slope: bias; U: too narrow; hump: too wide; rising `dependence`: targets move together more than predicted | fix the mean or the spread first |
+| Per-target PIT | ECDF of the PIT minus uniform | that target's own distribution is off | `"mixture"` or `"flow"` heads |
+| Region coverage and size | coverage per level (`coverage_by_mask` per missingness pattern); log volumes | coverage off the diagonal: calibration rows not exchangeable with new rows | check where the calibration rows come from |
+| Worst slab (`worst_slab_coverage`), ERT (`conditional_coverage_gap`) | lowest coverage over slabs of $\mathbf x$ chosen on half the rows (Cauchois et al. 2021); excess risk of an out-of-fold coverage classifier (Braun et al. 2026) | coverage depends on $\mathbf x$ | a spread that follows $\mathbf x$; Mondrian groups (section 6) |
+
+For Gaussian joint predictives, `nees_consistency` also tests the mean of
+$(\mathbf y_i - \mathbf m_i)^\top \Sigma_i^{-1} (\mathbf y_i - \mathbf m_i)$ against its
+$\chi^2_{Nd}/N$ band. The energy score is strictly proper but barely moves when
+only the correlation is wrong (Pinson and Tastu 2013): read it next to the
+`dependence` pre-rank.
+
+!!! warning "Blue does not prove calibration"
+    All checks are averages over rows, never a check at one $\mathbf x$. Per-target
+    PITs are necessary, not sufficient, and a worst slab near nominal or an ERT
+    near zero does not prove conditional coverage. In our runs, training on 4,000 instead
+    of 8,000 rows turned three of the six rank histograms red. Check on as many
+    held-out rows as you can.
+
+### 3.5 Missing targets
+
+Mark a missing target with `NaN` in `fit`; afterwards pass a boolean *mask*
+(`True` = observed). Missing targets are integrated out, not filled in.
+
+```python
+y_holes = y.clone()
+y_holes[torch.rand(8000, generator=torch.Generator().manual_seed(2)) < 0.3, 2] = float("nan")
+model_h = JointRegressor("gaussian", device="cpu").fit(x, y_holes)  # y3 missing in 30% of rows
+seen = torch.ones_like(y_new, dtype=torch.bool)
+seen[:1000, 2] = False  # y3 missing for the first 1000 new rows
+region_h = model_h.region(x_new, alpha=0.1)
+print(f"rows without y3 covered: {region_h.contains(y_new, mask=seen)[:1000].float().mean():.3f}")
+print(f"complete rows covered:   {region_h.contains(y_new)[1000:].float().mean():.3f}")
+```
+
+```text
+rows without y3 covered: 0.889
+complete rows covered:   0.890
+```
+
+`log_prob(y, mask=seen)` returns the density of the observed targets.
+
+!!! warning "Two meanings of a mask"
+    Here a mask integrates targets out. In `MultivariateGaussianLoss` and
+    `LowRankGaussianLoss` a mask only selects which entries enter the loss
+    average; train with `known_covariance_gaussian_nll` to integrate them out.
+
+??? info "Details: the guarantee with missing targets"
+    With missing calibration targets the score uses the observed sub-vector
+    $O$. `MahalanobisScore` maps its quadratic form through the $\chi^2_{|O|}$
+    CDF so that rows with different numbers of observed targets share one scale
+    (Braun et al. 2025):
+
+    $$
+    s(\mathbf x, \mathbf y) = F_{\chi^2_{|O|}}\big((\mathbf y_O - \mathbf m_O)^\top \Sigma_{OO}^{-1} (\mathbf y_O - \mathbf m_O)\big).
+    $$
+
+    The masked guarantee holds for rows whose missingness comes from the same
+    mechanism as in calibration. It is **not** a guarantee for complete rows: in
+    a $d = 6$ example with half the entries missing and the variance
+    underestimated by a factor 2.56, complete rows were covered 0.81 at nominal
+    0.90. So `JointRegressor.region` keeps two calibrations: `contains(y)` is
+    calibrated on the complete calibration rows
+    ($P(\mathbf Y \in R(\mathbf X) \mid \text{complete}) \ge 1 - \alpha$ when those
+    rows are exchangeable, for example targets missing completely at random; a
+    `ValueError` below $1/\alpha - 1$ complete rows), and `contains(y, mask=m)`
+    uses the masked calibration of all rows. `coverage_by_mask` reports
+    coverage per pattern.
+
+### 3.6 Targets of interest and nuisance targets
+
+Often only some targets $\mathbf y_I$ matter and the others $\mathbf y_N$ are
+*nuisance targets*. `marginal(dims)` integrates them out of the joint
+predictive; `region(..., interest=dims)` calibrates a region for $\mathbf y_I$
+only.
+
+```python
+pair = dist.marginal([0, 1])  # joint predictive of (y1, y2), y3 integrated out
+region_pair = model.region(x_new, alpha=0.1, interest=[0, 1])
+print(f"log p(y1, y2) of row 0: {pair.log_prob(y_new[:, :2])[0]:.4f}")
+print(f"(y1, y2) region covers: {region_pair.contains(y_new[:, :2]).float().mean():.3f}")
+```
+
+```text
+log p(y1, y2) of row 0: 0.2237
+(y1, y2) region covers: 0.897
+```
+
+| Tradition | Operation | Call | Answer |
+|:--|:--|:--|:--|
+| Predictive | $p(\mathbf y_I \mid \mathbf x) = \int p(\mathbf y_I, \mathbf y_N \mid \mathbf x)\, d\mathbf y_N$ | `dist.marginal(dims)` | a joint predictive of $\mathbf y_I$, calibrated only if the model is |
+| Distribution-free | region for $\mathbf y_I$ after marginalising | `region(X, interest=dims)` | coverage for $\mathbf y_I$ whatever the model; usually smaller than the projection of the joint region |
+| Frequentist | $\sup_{\mathbf y_N} p(\mathbf y_I, \mathbf y_N \mid \mathbf x)$, calibrated by Wilks or Neyman | [`profile_interval`](../methods/likelihood_inference.md), [`NeymanConfidenceSet`](../methods/neyman.md) | a confidence set for a parameter |
+
+`marginal` keeps a density for Gaussian heads, mixture density networks, stacks
+of them and Sklar joints with Gaussian rungs; for flows it integrates by
+sampling and returns a draws-only joint predictive.
+
+### 3.7 A head you already trained
+
+Train a head as usual; `as_joint(loss, output)` gives its joint predictive, and
+every tool works on it. Here a mixture density network, calibrated on rows it
+never trained on and compared with the model above.
+
+```python
+from torch import nn
+
+from torchregress.joint import HPDScore, as_joint
+from torchregress.losses import MixtureDensityLoss
+
+loss = MixtureDensityLoss(n_components=3, n_features=3)
+net = nn.Sequential(nn.Linear(2, 64), nn.SiLU(), nn.Linear(64, 64), nn.SiLU(), nn.Linear(64, loss.expected_output_size))
+opt = torch.optim.Adam(net.parameters(), lr=3e-3)
+for step in range(1500):
+    idx = torch.randint(0, len(x), (256,))
+    opt.zero_grad()
+    loss(net(x[idx]), y[idx]).backward()
+    opt.step()
+
+with torch.no_grad():
+    mdn, mdn_cal = as_joint(loss, net(x_new)), as_joint(loss, net(x_cal))
+region_mdn = JointConformal(HPDScore(), alpha=0.1).calibrate(mdn_cal, y_cal).region(mdn)
+for name, d, r in (("gaussian (JointRegressor)", dist, region), ("MDN (as_joint)", mdn, region_mdn)):
+    print(
+        f"{name:<26} log score {d.log_prob(y_new).mean():.3f}, "
+        f"coverage {r.contains(y_new).float().mean():.3f}, "
+        f"median log volume {r.log_volume()[0].median():.2f}"
+    )
+```
+
+```text
+gaussian (JointRegressor)  log score -0.842, coverage 0.892, median log volume 0.71
+MDN (as_joint)             log score -1.185, coverage 0.895, median log volume 1.05
+```
+
+Compare joint predictives by held-out log score and regions by size at equal
+coverage: both cover 90%, and the Gaussian head, which matches how the data
+were simulated, has the higher log score and $e^{1.05 - 0.71} \approx 1.4$ times
+smaller regions. `plot_corner_plot(dist, others={"MDN": mdn})` overlays them.
+Sample-based scores (`energy_score`, `variogram_score`) take draws sample first:
+pass `dist.sample(S).movedim(1, 0)`.
+
+## 4. How it works
+
+### 4.1 Region scores
+
+The score sets the shape and size of a region; calibration only sets its level.
+
+| Score | $s(\mathbf x, \mathbf y)$ | Region | Needs | Masks | Use when |
+|:--|:--|:--|:--|:-:|:--|
+| `HPDScore` | $P_{\mathbf Y' \sim \hat p}\big[\hat p(\mathbf Y') > \hat p(\mathbf y)\big]$, from 256 draws | highest-density set, level adapts per row | density, draws | no | flows, mixtures, stacks, multimodal joint predictives: the `"auto"` choice for every non-Gaussian density |
+| `LatentScore` | $\lVert T(\mathbf y; \mathbf x) \rVert_2$, $T$ the map to a standard-normal latent space | pre-image of a latent ball | latent map | no | Gaussian joint predictives (the `"auto"` choice); fast for flows but covers the space between modes |
+| `DensityScore` | $-\log \hat p(\mathbf y \mid \mathbf x)$ | density level set, one level for all rows | density | with exact marginals | smallest regions when the model is good |
+| `MahalanobisScore` | $\sqrt{(\mathbf y - \mathbf m)^\top \Sigma^{-1} (\mathbf y - \mathbf m)}$ | ellipsoid | mean, covariance | yes | missing calibration targets |
+| `MaxResidualScore` | $\max_j \lvert y_j - m_j \rvert / \sqrt{\Sigma_{jj}}$ | box with a joint guarantee | mean, variances | yes | per-target bounds with one joint guarantee |
+| `SampleBallScore` | $\min_{k \le K} \lVert \mathbf y - \hat{\mathbf Y}_k \rVert_2$, $\hat{\mathbf Y}_k \sim \hat p$ | union of $K$ balls | draws | no | draws-only joint predictives |
+
+Here $\mathbf m$ and $\Sigma$ are the predictive mean and covariance.
+`region.score.name` prints the score used.
+
+??? info "Details: volumes and Monte Carlo"
+    `JointRegion.log_volume()` returns $\log V$ and a standard error. Ellipsoid and
+    box are closed form,
+    $\log V_{\text{ellipsoid}} = \log \frac{\pi^{d/2}}{\Gamma(d/2 + 1)} + d \log \hat t + \tfrac12 \log\det\Sigma$
+    and $\log V_{\text{box}} = \sum_j \log\big(2 \hat t \sqrt{\Sigma_{jj}}\big)$.
+    Otherwise
+    $\hat V = \frac1K \sum_k \mathbf 1[\mathbf Y_k \in R] / \hat p(\mathbf Y_k \mid \mathbf x)$
+    with $\mathbf Y_k \sim \hat p$, unbiased for the volume of $R \cap \operatorname{supp}\hat p$
+    but biased low when the region reaches far into the tails of a too-narrow
+    joint predictive; joint predictives with a latent map therefore use a
+    defensive mixture of latent normals with scales 1, 2 and 4. `HPDScore` is
+    Monte Carlo: calibration and test must use the same `n_samples`, which is
+    stored on the score. The max-rank variant of `MaxResidualScore`
+    (Schlembach et al. 2026) is not implemented. References for the scores:
+    HPD-split (Izbicki et al. 2022), latent and volume estimates (Dheur et al.
+    2025), union of balls (Wang et al. 2023).
+
+### 4.2 Heads inside `JointRegressor`
+
+| `method` | Head | Missing targets | In `"auto"` |
+|:--|:--|:--|:--|
+| `"gaussian"` | $\mathcal N(\boldsymbol\mu(\mathbf x), L(\mathbf x) L(\mathbf x)^\top)$; low rank 8 plus diagonal beyond 32 targets | exact | always |
+| `"mixture"` | mixture density network, 5 components; full covariances up to $d = 8$ | exact | always |
+| `"flow"` | conditional neural spline flow | rows dropped | complete targets, $d \le 16$ |
+| `"sklar"` | quantile- or mixture-network marginals, chosen on validation rows, joined by a dependence model (section 4.3) | complete rows for the dependence | complete targets |
+| `"energy"` | engression generator $g(\mathbf x, \boldsymbol\varepsilon)$ trained by the energy score; draws only | energy score of the observed sub-vector | never |
+
+The `"energy"` head (engression; Shen and Meinshausen 2024 [26]) assumes no
+density family: a network takes the features and Gaussian noise
+$\boldsymbol\varepsilon \sim \mathcal N(0, I_k)$ ($k = d$ by default,
+`noise_dim`) and is trained to minimise the energy score (Gneiting and Raftery
+2007 [27]) of $m = 2$ draws per row (`energy_draws`),
 
 $$
-s(\mathbf x, \mathbf y) = -\log \hat p(\mathbf y \mid \mathbf x) .
+\mathrm{ES}(\mathbf y) = \frac1m \sum_{j} \lVert \mathbf y - g_j \rVert
+- \frac{1}{2m(m-1)} \sum_{j \ne k} \lVert g_j - g_k \rVert,
 $$
 
-The region is a density level set $\{\mathbf y : \hat p(\mathbf y \mid \mathbf x) \ge e^{-\hat t}\}$,
-the smallest-volume region at its coverage when the predictive is correct
-(Lei et al. 2018). The level is shared across rows, so rows with a broad
-predictive get a low density level and rows with a sharp one a high level.
-Requires `has_density`; with a missing-target mask, `exact_marginals`.
+an unbiased estimate of a proper score. It draws in one forward pass (1,000 rows
+by 200 draws: 0.09 s at $d = 16$ against 15 s for the flow head on a 4-core
+laptop CPU, 0.2 s at $d = 64$), so it scales to many targets. What it cannot do:
+it has **no density**, so no log score, no HPD or latent region (`region` uses the
+sample-ball score), no stacking in `"auto"`, and recalibration uses the variance
+objective, kept only when it lowers the validation energy score
+(`validation_energy_score_` reports that score; `validation_log_score_` has no
+entry for this head). A network of Gaussian noise is Lipschitz in the noise, so
+its draws have Gaussian-like tails: heavy-tailed targets are outside what it
+represents. With missing targets the norms run over the observed coordinates,
+which is the energy score of the observed sub-vector's marginal: a proper score
+for that marginal, not for the joint.
 
-### 5.3 Highest-density level: `HPDScore`
-
-$$
-s(\mathbf x, \mathbf y) = P_{\mathbf Y' \sim \hat p(\cdot \mid \mathbf x)}\big[\hat p(\mathbf Y' \mid \mathbf x) > \hat p(\mathbf y \mid \mathbf x)\big] \in [0, 1],
-$$
-
-estimated from `n_samples` (256) reference draws per row, with ties broken by
-the density. The region is the highest-density set of $\hat p(\cdot \mid \mathbf x)$
-of mass $\hat t$, so its density level adapts to each row (HPD-split,
-Izbicki et al. 2022). Requires a density and draws. Calibration and test must
-use the same `n_samples`, which is why it is stored on the score.
-
-### 5.4 Latent ball: `LatentScore`
+`"auto"` combines the fitted heads by *stacking*: with $p_k$ the heads and $V$
+the validation rows, the weights solve the concave problem
 
 $$
-s(\mathbf x, \mathbf y) = \lVert T(\mathbf y; \mathbf x) \rVert_2 ,
+\hat{\mathbf w} = \arg\max_{\mathbf w \in \Delta_K} \sum_{i \in V} \log \sum_{k=1}^K w_k\, p_k(\mathbf y_i \mid \mathbf x_i)
 $$
 
-with $T$ the predictive's map to a standard-normal latent space (`to_latent`).
-The region is the pre-image of a latent ball of radius $\hat t$: the
-Mahalanobis ellipsoid for a Gaussian, a curved set for a flow. Exact (no
-sampling) and much cheaper than the sampling scores (Dheur et al. 2025).
-Requires `has_latent`.
-
-### 5.5 Ellipsoid: `MahalanobisScore`
-
-$$
-s(\mathbf x, \mathbf y) = \sqrt{(\mathbf y - \mathbf m)^\top \Sigma^{-1} (\mathbf y - \mathbf m)}, \qquad \mathbf m = \hat{\mathbb E}[\mathbf Y \mid \mathbf x],\ \Sigma = \widehat{\mathrm{Cov}}[\mathbf Y \mid \mathbf x] .
-$$
-
-The region is an ellipsoid centred at the predictive mean. It needs only
-`mean()` and `covariance()` (closed form for Gaussian heads, Monte Carlo
-otherwise), it accepts missing calibration targets for any predictive with
-moments (§5.10), and its volume and bounding box are closed form.
-
-### 5.6 Box with a joint guarantee: `MaxResidualScore`
-
-$$
-s(\mathbf x, \mathbf y) = \max_{j} \frac{\lvert y_j - m_j \rvert}{\sqrt{\Sigma_{jj}}} .
-$$
-
-The region is the box $\prod_j [m_j - \hat t \sqrt{\Sigma_{jj}},\ m_j + \hat t \sqrt{\Sigma_{jj}}]$.
-$\mathbf Y$ lies in the box if and only if the single scalar
-$s(\mathbf X, \mathbf Y) \le \hat t$, so the conformal argument applies to that
-scalar and $P(\text{all } d \text{ targets inside}) \ge 1 - \alpha$. This is the
-joint counterpart of per-target intervals (§2.1). Accepts masks (maximum over
-observed targets). The *max-rank* variant (ranks of each target's residual)
-needs a corrected order statistic (Schlembach et al. 2026) and is not
-implemented.
-
-### 5.7 Union of balls: `SampleBallScore`
-
-$$
-s(\mathbf x, \mathbf y) = \min_{k \le K} \lVert \mathbf y - \hat{\mathbf Y}_k \rVert_2, \qquad \hat{\mathbf Y}_k \sim \hat p(\cdot \mid \mathbf x),
-$$
-
-so the region is a union of $K$ balls of radius $\hat t$ around predictive
-draws (PCP, Wang et al. 2023). It needs only draws, so it is the score for
-draws-only predictives (Schaake shuffle, the draws-only marginal of a flow, a
-`SampleJoint`). A `JointRegion` draws its $K$ reference samples once, so its
-membership test is deterministic.
-
-### 5.8 Volume
-
-`JointRegion.log_volume()` returns $\log V$ and a standard error. The
-ellipsoid and the box are closed form,
-
-$$
-\log V_{\text{ellipsoid}} = \log \frac{\pi^{d/2}}{\Gamma(d/2 + 1)} + d \log \hat t + \tfrac12 \log\det\Sigma, \qquad \log V_{\text{box}} = \sum_j \log\big(2 \hat t \sqrt{\Sigma_{jj}}\big),
-$$
-
-with zero standard error. For the other scores the volume is estimated by
-importance sampling from the predictive (Dheur et al. 2025),
-
-$$
-\hat V = \frac1K \sum_{k=1}^K \frac{\mathbf 1[\mathbf Y_k \in R]}{\hat p(\mathbf Y_k \mid \mathbf x)}, \qquad \mathbf Y_k \sim \hat p(\cdot \mid \mathbf x),
-$$
-
-which is unbiased for the volume of $R \cap \operatorname{supp}\hat p$. When the
-region reaches far into the tails of a too-narrow predictive the weights are
-heavy-tailed and the estimate is biased low; for predictives with a latent map
-the proposal is therefore a defensive mixture of latent normals with scales 1,
-2 and 4. Draws-only predictives with `SampleBallScore` use uniform sampling in
-the bounding box of the balls, accurate only in low $d$.
-
-### 5.9 Weights and groups
-
-- **Weighted conformal** (Tibshirani et al. 2019). Pass `weights=` to
-  `calibrate` and `test_weights=` to `region`. With
-  $w(\mathbf x) = dP_{\text{test}}/dP_{\text{cal}}(\mathbf x)$ the **true**
-  likelihood ratio, coverage $\ge 1 - \alpha$ holds under covariate shift. An
-  estimated ratio gives approximate coverage only.
-- **Mondrian** (Vovk et al. 2005). Pass integer `groups=` to both calls: one
-  threshold per group, so that $P(\mathbf Y \in R(\mathbf X) \mid G = g) \ge 1 - \alpha$
-  for every group $g$. A group not seen in calibration gets an infinite
-  threshold.
-
-`JointRegressor.region` does not take weights or groups. Use `JointConformal`
-directly with `model.predict` on rows that were **not** passed to `fit`.
-
-### 5.10 Missing targets
-
-With missing calibration targets (`NaN` in the `Y` given to `JointRegressor`,
-or `mask=` with `True` = observed in `JointConformal.calibrate`), the score is
-computed on the observed sub-vector. `DensityScore` (with `exact_marginals`),
-`MahalanobisScore` and `MaxResidualScore` accept masks. `MahalanobisScore`
-maps the quadratic form of the $k = |O|$ observed targets through the
-$\chi^2_k$ CDF,
-
-$$
-s(\mathbf x, \mathbf y) = F_{\chi^2_k}\big((\mathbf y_O - \mathbf m_O)^\top \Sigma_{OO}^{-1} (\mathbf y_O - \mathbf m_O)\big),
-$$
-
-so rows with different numbers of observed targets share one scale (Braun et
-al. 2025). The guarantee then holds for test rows whose missingness pattern is
-generated by the same mechanism as in calibration, and `region.contains(y, mask)`
-takes the test mask. The statement is *not* one about complete rows: a masked
-calibration mixes rows with few observed targets, and a misspecified covariance
-mis-scales their $\chi^2$ quantiles differently from those of complete rows, so
-complete rows can be under-covered (0.81 at nominal 0.90 in a $d = 6$ example
-with half the entries missing and the variance underestimated by a factor
-2.56). `JointRegressor.region` therefore keeps two calibrations when its
-conformal rows have missing targets: `region.contains(y)` (complete test rows)
-is calibrated on the complete conformal rows only, with the score that would be
-used without missing targets, and holds
-$P(\mathbf Y \in R(\mathbf X) \mid \text{row complete}) \ge 1 - \alpha$
-when the complete rows are exchangeable (for example targets missing
-completely at random); `region.contains(y, mask=m)` uses the masked
-`MahalanobisScore` calibration of all rows, with the same-mechanism guarantee
-above. A `ValueError` is raised when fewer than $1/\alpha - 1$ conformal rows
-are complete.
-[`coverage_by_mask`](../api/joint.md#diagnostics) reports coverage per
-missingness pattern, since a correct average can hide under-coverage for one
-pattern.
-
-### 5.11 Which score when
-
-| Score | Region shape | Needs | Masks | Volume | Use when |
-|:--|:--|:--|:-:|:--|:--|
-| `LatentScore` | pre-image of a latent ball | latent map | no | importance sampling | Gaussian heads (the latent ball is then the highest-density region; the `"auto"` default for them in `JointRegressor`); the fast choice for flows |
-| `HPDScore` | highest-density set, adaptive level | density and draws | no | importance sampling | Flows, mixtures, stacks, Sklar joints, multimodal predictives: the `"auto"` default for every non-Gaussian predictive with a density |
-| `DensityScore` | density level set, shared level | density | yes (with `exact_marginals`) | importance sampling | Smallest regions when the model is good; heteroscedasticity is moderate |
-| `MahalanobisScore` | ellipsoid | mean and covariance | yes | closed form | Missing calibration targets; a convex, reportable region |
-| `MaxResidualScore` | box | mean and variances | yes | closed form | Per-target bounds with a joint guarantee |
-| `SampleBallScore` | union of balls | draws | no | box Monte Carlo (low $d$) | Draws-only predictives (Schaake shuffle, draws-only marginals) |
-
----
-
-## 6. Targets of interest and nuisance targets
-
-Often only a few targets $\mathbf y_I$ matter and the rest, $\mathbf y_N$, are
-nuisances. Three traditions remove them in three different ways.
-
-| Tradition | Operation | In the library |
-|:--|:--|:--|
-| Predictive (Bayesian) | Marginalise: $p(\mathbf y_I \mid \mathbf x) = \int p(\mathbf y_I, \mathbf y_N \mid \mathbf x)\, d\mathbf y_N$ | `dist.marginal(dims)` |
-| Frequentist | Profile: $\sup_{\mathbf y_N} p(\mathbf y_I, \mathbf y_N \mid \mathbf x)$, calibrated by Wilks or a Neyman construction | `torchregress.inference` (parameter scores) |
-| Distribution-free | Conformal region for $\mathbf y_I$ only | `model.region(X, interest=dims)` |
-
-**Marginalising.** `dist.marginal(dims)` returns the joint predictive of the
-targets `dims`. It keeps a density for the Gaussian head (closed form), for the
-mixture density network (a [`MaskedMarginalJoint`](../api/joint.md#predictive-distributions),
-which integrates the other targets out exactly), for `AffineJoint` and
-`MixtureJoint` wrappers of such heads (so also for the default stack when no flow
-is in it), for `SklarJoint` with Gaussian rungs, and for
-`MarginalRecalibratedJoint`. For flows and latent-recalibrated predictives it
-falls back to a draws-only [`ProjectedJoint`](../api/joint.md#predictive-distributions):
-the nuisance targets are integrated out by sampling, and `has_density` becomes
-`False`.
-
-**Conformalising a sub-vector.** `model.region(X, alpha, interest=[0, 2])`
-integrates the nuisance targets out of the predictive (`marginal`) **before**
-calibration and calibrates a region for $\mathbf y_I$ only. The coverage
-statement of §5.1 then applies to the sub-vector, and the region is usually
-much smaller than the projection of the joint region onto $\mathbf y_I$, which
-must also accommodate the nuisances. The score is chosen for the marginal
-predictive, so a stack whose marginal is draws-only uses `SampleBallScore`.
-
-**Profiling.** Profiling replaces the integral by a maximum. It is the natural
-operation when the quantities to remove are **parameters** of a likelihood (a
-simulator, a known noise model), and its intervals are calibrated by Wilks'
-theorem or by a Neyman construction rather than by a predictive distribution.
-`torchregress.joint` does not profile a `JointPredictive`; the profile
-machinery is in [Likelihood-Ratio Inference](../methods/likelihood_inference.md)
-(`profile_interval`) and [Neyman Confidence Sets](../methods/neyman.md)
-(`NeymanConfidenceSet`).
-
-The three answer different questions: the marginal is a predictive
-distribution for $\mathbf y_I$ (it is calibrated only if the model is), the
-conformal sub-vector region has finite-sample marginal coverage for
-$\mathbf y_I$ whatever the model, and a profile interval is a confidence set
-for a parameter, valid at each parameter value when it is calibrated by a
-Neyman construction.
-
----
-
-## 7. Recalibration
-
-Each recalibrator is fitted on held-out pairs through the predictive of those
-rows, `fit(predictive_cal, y_cal)`, and then wraps any predictive of the same
-model, `transform(predictive)`. None gives calibration at an individual
-$\mathbf x$: they correct miscalibration on average over the calibration rows,
-under exchangeability of calibration and test rows. Fit them on rows that are
-not used for conformal calibration.
-
-### 7.1 Per-target scale: `ScaleRecalibrator`
-
-The recalibrated predictive is the law of
-
-$$
-\mathbf Y' = \mathbf m(\mathbf x) + \mathbf s \odot \big(\mathbf Y - \mathbf m(\mathbf x)\big), \qquad \mathbf Y \sim \hat p(\cdot \mid \mathbf x),
-$$
-
-with $\mathbf m$ the predictive mean and one factor $s_j > 0$ per target shared
-by all rows. `objective="variance"` sets $s_j^2$ to the mean squared
-standardised residual of target $j$; `objective="nll"` maximises the held-out
-log density (L-BFGS on $\log \mathbf s$). Its covariance is
-$S \Sigma(\mathbf x) S$ with $S = \mathrm{diag}(\mathbf s)$, and the dependence
-structure is unchanged. `JointRegressor` applies it by default
-(`recalibrate=True`, `scale_`).
-
-*Fixes:* a global over- or under-dispersion of each target.
-*Cannot fix:* a wrong mean, a wrong shape (tails, skew, modes), wrong
-dependence, or dispersion errors that vary with $\mathbf x$.
-
-### 7.2 Latent recalibration: `LatentRecalibrator`
-
-For a predictive with a latent map $T$, the latent norm
-$L = \lVert T(\mathbf Y; \mathbf X) \rVert_2$ follows the $\chi_d$ distribution
-when the predictive is calibrated. With $\hat F_L$ a smooth, strictly
-increasing estimate of the CDF of the calibration norms, the radial map
-
-$$
-r(l) = \hat F_L^{-1}\big(F_{\chi_d}(l)\big), \qquad R(\mathbf z) = r(\lVert \mathbf z \rVert)\, \frac{\mathbf z}{\lVert \mathbf z \rVert},
-$$
-
-defines the recalibrated predictive as the law of $T^{-1}(R(\mathbf Z))$,
-$\mathbf Z \sim \mathcal N(0, I_d)$ (Dheur and Ben Taieb 2025). Its latent norm
-has CDF $\hat F_L$. With $\mathbf z' = T(\mathbf y)$, $l' = \lVert \mathbf z' \rVert$
-and $l = r^{-1}(l')$, the radial map has Jacobian determinant
-$(r(l)/l)^{d-1} r'(l)$ and the density is
-
-$$
-\log f'(\mathbf y) = \log f(\mathbf y) - \tfrac12\big(l^2 - l'^2\big) - (d - 1)\log\frac{l'}{l} - \log r'(l) .
-$$
-
-The map $r$ is a monotone rational-quadratic spline in log–log space through
-quantile knots, continued linearly beyond the end knots.
-[`latent_calibration_error`](../api/joint.md#recalibration) measures the
-distance of $F_{\chi_d}(L)$ from uniform (L-ECE; about $0.31/\sqrt n$ for a
-calibrated predictive, not zero).
-
-*Fixes:* the distribution of the norm: over- or under-confidence and tail
-weight, jointly over all targets, while keeping a density and a latent map.
-*Cannot fix:* the direction or shape of the latent residual (dependence
-errors), or miscalibration that varies with $\mathbf x$. Because the new score
-$\lVert R^{-1}(T(\mathbf y)) \rVert = r^{-1}(\lVert T(\mathbf y) \rVert)$ is a
-monotone function of the old one, it does not change a `LatentScore` conformal
-region (§11 shows this).
-
-### 7.3 Marginal conformal calibrators: `MarginalRecalibrator`
-
-For each target $j$, sort the calibration PITs $u_{ij} = F_j(y_{ij} \mid \mathbf x_i)$
-and fit a strictly increasing map $G_j$ of $[0, 1]$ onto itself through the
-points $(u_{(k)}, k/(m+1))$ (split conformal predictive systems, Vovk et al.
-2019, 2020). The recalibrated marginal CDF is $G_j \circ F_j$, and the
-dependence of the base is kept by applying $F_j^{-1} \circ G_j^{-1} \circ F_j$
-coordinate-wise. If calibration and test pairs are exchangeable and the PITs
-are distinct, the recalibrated PIT $V_j = G_j(F_j(Y_j \mid \mathbf X))$
-satisfies $P(V_j \le k/(m+1)) = k/(m+1)$ at every knot rank $k$; with
-`n_knots="all"` each target is probabilistically calibrated to within
-$1/(m+1)$.
-
-For a bare [`GaussianJoint`](../api/joint.md#predictive-distributions), the
-result is a `MarginalRecalibratedJoint` with density, latent map and exact
-marginals. For any other predictive (including the `AffineJoint` returned by
-`JointRegressor.predict`) the result is a draws-only `SampleJoint`.
-
-*Fixes:* each target's marginal calibration, with a finite-sample statement.
-*Cannot fix:* the dependence (copula), which is inherited from the base, or
-calibration at an individual $\mathbf x$. With every rank as a knot the
-recalibrated density is rough (about 0.42 nats per target worse in log score on
-a calibrated predictive); the default uses fewer knots.
-
----
-
-## 8. Diagnostics
-
-### 8.1 Calibration in more than one dimension
-
-A joint predictive $P_{\mathbf x}$ is calibrated if, over the rows, the
-observation behaves like one more draw from the predictive: $\mathbf Y$ is
-exchangeable with draws $\mathbf Y'_1, \dots, \mathbf Y'_S \sim P_{\mathbf X}$.
-Uniform PITs for every target are necessary but not sufficient: a predictive
-with perfect marginals and the wrong correlation passes every per-target
-check. No single scalar check is sufficient either, so the diagnostics below
-each target a different way of being wrong, and all of them check calibration
-on average over rows, never at an individual $\mathbf x$.
-
-`plot_joint_diagnostics` draws all of them in one figure, and
-`plot_corner_plot` shows one row's predictive with its region and true value:
-see [Joint predictive plots](../methods/visualization.md#4-joint-predictive-plots-corner-plots-and-diagnostics),
-and [Checking calibration](joint-quickstart.md#6-checking-calibration) for a
-panel-by-panel reading with a red example.
-
-### 8.2 Pre-rank histograms
-
-[`prerank_histograms(samples, y)`](../api/joint.md#diagnostics) pools the
-observation with $S$ draws, standardises each target by the pool, applies a
-pre-rank function $\rho: \mathbb R^d \to \mathbb R$ and records the rank of
-$\rho(\mathbf y)$ among the $\rho(\mathbf Y'_k)$ (Allen et al. 2024). Under
-calibration the rank is uniform on $\{0, \dots, S\}$ for every pre-rank, and a
-chi-square test with Holm adjustment across pre-ranks reports which fail.
-
-| Pre-rank | $\rho(\mathbf x)$ (standardised pool) | Detects |
-|:--|:--|:--|
-| `location` | $\bar x = \frac1d \sum_j x_j$ | biased means (sloped histogram) |
-| `scale` | $\frac1d \sum_j (x_j - \bar x)^2$ | dispersion errors |
-| `dependence` | $\binom d2^{-1} \sum_{j<k} x_j x_k$ | over- or under-estimated correlation |
-| `energy` | mean distance to the other pool members | outlying observations, overall dispersion |
-| `average_rank` | mean coordinate-wise rank (Thorarinsdottir et al. 2016) | location and dispersion jointly |
-| `band_depth` | mean of $(r_j - 1)(S + 1 - r_j)$ | centrality: dispersion and dependence |
-
-### 8.3 NEES
-
-[`nees_consistency(mean, covariance, y)`](../api/joint.md#diagnostics) computes
-the normalised estimation error squared
-$\varepsilon_i = (\mathbf y_i - \mathbf m_i)^\top \Sigma_i^{-1}(\mathbf y_i - \mathbf m_i)$.
-Under a correct Gaussian predictive $N\bar\varepsilon \sim \chi^2_{Nd}$, so the
-acceptance band at level $1 - a$ is
-
-$$
-\bar\varepsilon \in \big[\chi^2_{Nd}(a/2)/N,\ \chi^2_{Nd}(1 - a/2)/N\big] .
-$$
-
-Above the band the covariances are too small (over-confident), below it too
-large (conservative). `eigen_variances` breaks the error down by eigen-direction
-of the covariance. The test is exact for Gaussian predictives and checks only
-the second moment for others.
-
-### 8.4 HPD calibration
-
-For a calibrated predictive the HPD level $h_i$ (`dist.hpd_level(y)`, §5.3) is
-uniform. [`hpd_calibration(levels)`](../api/joint.md#diagnostics) returns the
-curve $\hat F(a) = \frac1n \sum_i \mathbf 1[h_i \le a]$, the fraction of
-observations inside the HPD region of mass $a$, with a simultaneous
-Dvoretzky–Kiefer–Wolfowitz band and a Kolmogorov–Smirnov test. Above the
-diagonal the HPD regions over-cover, below they under-cover.
-
-### 8.5 Conditional coverage
-
-Conformal coverage is marginal. Two diagnostics look for coverage that depends
-on $\mathbf x$, given coverage indicators $Z_i = \mathbf 1[\mathbf y_i \in R(\mathbf x_i)]$:
-
-- [`worst_slab_coverage`](../api/joint.md#diagnostics) (Cauchois et al. 2021):
-  on half of the rows, search random directions $\mathbf v$ for the slab
-  $\{a \le \mathbf v^\top \mathbf x \le b\}$ of mass at least $\delta$ with the
-  lowest coverage, and report that slab's coverage on the other half (an
-  unbiased estimate for that slab).
-- [`conditional_coverage_gap`](../api/joint.md#diagnostics) (ERT, Braun et al.
-  2026): fit a classifier $h(\mathbf x) \approx P(Z = 1 \mid \mathbf x)$ out of
-  fold and estimate
-  $\frac1n \sum_i [\ell(1-\alpha, Z_i) - \ell(h(\mathbf x_i), Z_i)]$. A value
-  clearly above zero certifies a conditional-coverage violation (or wrong
-  marginal coverage).
-
-A value near the marginal coverage, or an ERT near zero, does not prove
-conditional coverage: the search or the classifier may be too weak.
-
-### 8.6 Why the energy score alone cannot certify dependence
-
-The energy score
-$\mathrm{ES}(P, \mathbf y) = \mathbb E\lVert \mathbf Y - \mathbf y \rVert - \tfrac12 \mathbb E\lVert \mathbf Y - \mathbf Y' \rVert$
-is strictly proper, so the true predictive minimises it in expectation. It is
-dominated by the marginal locations and scales, however, and it changes little
-when only the correlation is wrong (Pinson and Tastu 2013): at realistic $n$
-and sample counts a good energy score is compatible with a badly wrong
-dependence. Read it next to a dependence-sensitive check: the `dependence`
-pre-rank, [`dependence_error`](../api/joint.md#diagnostics) (predicted against
-empirical correlation of standardised residuals), the variogram score
-(`torchregress.metrics.VariogramScore`) or the joint log score.
-
----
-
-## 9. Choosing a head, a rung and a score
+over the simplex $\Delta_K$, by EM (Yao et al. 2018); `weights_` reports them.
+Heads see standardised targets $\mathbf u = (\mathbf y - \mathrm{loc}) \oslash \mathrm{scale}$,
+and the joint predictive is mapped back with the Jacobian,
+$\log p_Y(\mathbf y) = \log p_U(\mathbf u) - \sum_j \log \mathrm{scale}_j$, so
+results are in data units. **Caution:** `"auto"` costs much more than
+`"gaussian"`, mostly through the flow and the draws of the HPD score; start with
+`"gaussian"` and move on when the diagnostics reject it.
 
 ```mermaid
 flowchart TD
     A["Targets y in R^d"] --> B{"Missing targets<br/>in training?"}
-    B -->|"yes"| C["gaussian + mixture<br/>(auto keeps these two)"]
-    B -->|"no"| D{"Few rows<br/>(hundreds)?"}
-    D -->|"yes"| E["gaussian<br/>or sklar (ladder stops low)"]
+    B -->|"yes"| C["gaussian + mixture"]
+    B -->|"no"| D{"Few rows (hundreds)?"}
+    D -->|"yes"| E["gaussian, or sklar"]
     D -->|"no"| F{"d > 16?"}
-    F -->|"yes"| G["gaussian (low rank beyond 32)<br/>+ mixture + sklar"]
-    F -->|"no"| H["auto: gaussian + mixture<br/>+ sklar + flow, stacked"]
+    F -->|"yes"| G["gaussian + mixture + sklar"]
+    F -->|"no"| H["auto: all four, stacked"]
     C --> S{"Missing targets<br/>at calibration?"}
     E --> S
     G --> S
     H --> S
-    S -->|"yes"| M["MahalanobisScore<br/>(or MaxResidualScore for a box)"]
-    S -->|"no"| N{"Need a density?"}
+    S -->|"yes"| M["MahalanobisScore"]
+    S -->|"no"| N{"Density?"}
     N -->|"no, draws only"| P["SampleBallScore"]
-    N -->|"yes"| Q{"Gaussian predictive?"}
+    N -->|"yes"| Q{"Gaussian?"}
     Q -->|"yes"| L["LatentScore"]
     Q -->|"no"| R["HPDScore"]
 ```
 
-!!! tip "HPD or latent ball for a flow"
-    `JointRegressor.region` with `score="auto"` uses `LatentScore` only for a
-    Gaussian predictive, whose latent ball is its highest-density region. For a
-    flow, mixture or stack it uses `HPDScore`: on a bimodal predictive the
-    pulled-back latent ball covers the space between the modes, and was about four
-    times larger in area than the HPD set at the same coverage (two-moons
-    posterior). HPD costs reference draws and densities per row;
-    `JointRegressor(score=LatentScore())` is the fast choice for flows. The score
-    used is printed by `region.score.name`.
+### 4.3 Per-target predictions joined by a dependence model
 
-The rung is chosen by the validation gate (§3.1); force one by fitting the
-`Dependence` objects yourself and passing them to `select_dependence`, or use
-the predictive directly with `SklarJoint`. Use `MaxResidualScore` whenever the
-deliverable is per-target bounds.
+In plain words: any per-target model, plus a model of how the targets depend on
+each other, gives a valid joint density. This is the `"sklar"` head and
+`as_joint` of a quantile head.
 
-!!! warning "What `torchregress.joint` does not claim"
-    - **No coverage at each $\mathbf x$.** Conformal regions have marginal
-      coverage, averaged over $\mathbf x$ and the calibration set. Coverage
-      within a subgroup holds only for Mondrian groups declared in advance.
-    - **No posterior.** The stacked mixture is a weighted predictive chosen by
-      held-out log score; it is not Bayesian model averaging, and the
-      disagreement between heads is not calibrated epistemic uncertainty.
-    - **No guarantee under shift without weights.** Coverage and calibration
-      assume calibration and test rows are exchangeable. Under covariate shift
-      only weighted calibration with the true likelihood ratio restores
-      coverage; nothing restores it under label or concept shift.
-    - **No calibration from a good score.** A good log score, energy score or
-      CRPS does not imply calibration, and a good energy score does not imply
-      correct dependence.
-    - **No "best overall" head.** Stacking weights and the ladder are chosen
-      per data set on held-out rows.
+By Sklar's theorem, continuous marginal CDFs $F_j(y_j \mid \mathbf x)$ and a
+unique copula determine the joint CDF. The library works with *normal scores*
+$z_j = \Phi^{-1}\big(F_j(y_j \mid \mathbf x)\big)$: for **any** density
+$q(\mathbf z \mid \mathbf x)$,
 
----
+$$
+\log p(\mathbf y \mid \mathbf x) = \sum_{j=1}^d \log f_j(y_j \mid \mathbf x) + \log q(\mathbf z \mid \mathbf x) - \sum_{j=1}^d \log \varphi(z_j)
+$$
 
-## 10. References
+is a normalised density ([`SklarJoint`](../api/joint.md#dependence)); when $q$
+has standard-normal marginals the marginals of $p$ are exactly the $F_j$. The
+dependence model $q$ is the lowest rung of a ladder that held-out data supports.
+
+**Marginal engines.** The $F_j$ come from a marginal engine (`marginals=`). Two
+are built in, each one network from $\mathbf x$ to per-target parameters with the
+estimator's training budget and early stopping, missing targets left out of the
+loss:
+
+| Engine | Per target | Trained by | Marginals |
+|:--|:--|:--|:--|
+| [`QuantileNetworkEngine`](../api/joint.md#estimator) | 31 non-crossing quantiles | pinball loss | `QuantileMarginals`: piecewise-linear CDF, exponential tails |
+| [`MixtureNetworkEngine`](../api/joint.md#estimator) | Gaussian mixture, `n_components` (5) components | $-\sum_j \log f_j(y_j \mid \mathbf x)$ | `MixtureMarginals`: closed-form CDF and density |
+
+With `marginals=None` both are fitted once on the training rows and scored on the
+complete validation rows $V$ (those the dependence ladder is chosen on) by
+
+$$
+S = \frac{1}{|V|} \sum_{i \in V} \sum_{j=1}^d \log \hat f_j(y_{ij} \mid \mathbf x_i);
+$$
+
+the larger $S$ wins (`marginal_scores_`, `marginal_engine_`), and only the chosen
+engine is cross-fitted for the normal scores. The two engines are not nested, so
+there is no simpler one to prefer. An engine you pass is used as is.
+
+!!! info "When each engine won in our tests"
+    Gap to the true marginal log density, nats per row on fresh test rows. On the
+    bimodal problem of the [comparison example](../examples/joint_regression_comparison.md)
+    (2,400 training rows) the mixture engine was at +0.09 and the quantile
+    engine at +0.32, and only the mixture's PITs passed KS tests. On skewed,
+    heavy-tailed targets (log-normal and Student-t with 3 degrees of freedom,
+    scales depending on $\mathbf x$) the mixture engine won with 2,400 training
+    rows (+0.12 against +0.19) and the quantile engine with 600 (+0.37 against
+    +0.49). Mixtures tended to win once there were a few thousand rows; the
+    quantile grid held up better on small samples with heavy tails. The
+    validation score makes the choice per data set.
+
+??? info "Details: the dependence ladder and its validation gate"
+    | Rung | Model of $q(\mathbf z \mid \mathbf x)$ | Density | Enough when |
+    |:-:|:--|:-:|:--|
+    | 0 | `IndependenceDependence`: $\mathcal N(0, I)$ | yes | weak dependence, or few rows |
+    | 1 | `SchaakeShuffle`: rank-normalised training scores (optionally the $k$ nearest rows in $\mathbf x$) | no | only draws are needed |
+    | 0a | `IndependenceDependence(affine=True)`: $\mathcal N(\mathbf m, D^2)$ | yes | the marginals are globally biased or mis-scaled, no dependence |
+    | 2 | `GaussianCopula`: $\mathcal N(0, R)$, $R$ shrunk towards $I$ (Ledoit–Wolf) | yes | constant, roughly elliptical dependence |
+    | 2a | `GaussianCopula(affine=True)`: $\mathcal N(\mathbf m, D R D)$ | yes | the same, with globally biased or mis-scaled marginals |
+    | 3 | `ConditionalGaussianCopula`: $\mathcal N\big(0, L(\mathbf x) D(\mathbf x)^2 L(\mathbf x)^\top\big)$, unit lower-triangular $L$ | yes | correlations that change with $\mathbf x$ |
+    | 4 | `MixtureDependence`: $\sum_k \pi_k(\mathbf x)\,\mathcal N\big(\boldsymbol\mu_k(\mathbf x), L_k(\mathbf x) L_k(\mathbf x)^\top\big)$, 3 components | yes | dependence with a few regimes: targets that move together between modes; keeps exact marginals and masks |
+    | 5 | `FlowDependence`: conditional spline flow initialised at the identity | yes | non-Gaussian dependence with enough rows |
+
+    The affine rungs fit a per-target location $\mathbf m$ and scale $D$ of the
+    normal scores, so a global miscalibration of the marginals is absorbed by a
+    cheap rung and the conditional and flow rungs are kept for dependence only.
+    `JointRegressor(method="sklar")` fits independence, affine independence,
+    Gaussian copula, affine Gaussian copula, conditional Gaussian copula,
+    conditional mixture and flow (`dependence_scores_` uses the names
+    `affine_independence`, `affine_gaussian_copula`, `conditional_mixture`).
+    Vine copulas are not implemented. `select_dependence` keeps the
+    lowest rung $c$ with held-out mean log density $\bar\ell_c \ge \bar\ell_0$
+    and $\bar\ell_{\max} - \bar\ell_c \le 2\,\mathrm{SE}$ (paired per-row
+    differences). In the package's tests (ladder without the affine rungs) ($d = 3$, 4,000 training and 2,000
+    validation rows), held-out negative log score in nats per row:
+
+    | Simulated dependence | Independence | Gaussian copula | Conditional copula | Conditional mixture | Flow | Truth | Chosen |
+    |:--|:-:|:-:|:-:|:-:|:-:|:-:|:--|
+    | none | 4.2588 | 4.2591 | 4.2588 | 4.2675 | 4.2588 | 4.2588 | independence |
+    | constant Gaussian | 4.3291 | 3.9576 | 3.9606 | 3.9623 | 3.9788 | 3.9566 | Gaussian copula |
+    | correlation varying with $\mathbf x$ | 4.2233 | 4.1882 | 3.9516 | 3.9600 | 3.9991 | 3.9413 | conditional copula |
+    | mixture over a hidden sign | 4.2394 | 3.7035 | 3.7079 | 3.4337 | 3.4790 | 3.4197 | conditional mixture |
+
+    Fit the dependence on **out-of-fold** scores: scores from marginals fitted on
+    the same rows are too uniform. `JointRegressor` cross-fits (`n_folds=3`);
+    with `Dependence.fit` it is your job. Rungs 3 and 5 can move the score
+    marginals away from standard normal; the density stays valid but its
+    marginals are no longer the $F_j$ (`Dependence.marginal_drift`). PITs are
+    clipped to $[10^{-6}, 1 - 10^{-6}]$, so $|z_j| \le 4.75$. Per-target inputs:
+    `GaussianMarginals`, `MixtureMarginals` (quantiles by a safeguarded
+    Newton–bisection root finder, tail scores from the survival function), and
+    `QuantileMarginals`, `BinnedMarginals`, `SampleMarginals`, with exponential
+    tails beyond the outer knots.
+
+### 4.4 Recalibration
+
+In plain words: fix a systematic miscalibration on held-out rows and keep a
+joint predictive. Each recalibrator has `fit(predictive_cal, y_cal)` and
+`transform(predictive)`; all correct on average over rows, not at each
+$\mathbf x$.
+
+| Recalibrator | Map | Fixes | Cannot fix |
+|:--|:--|:--|:--|
+| `ScaleRecalibrator` | $\mathbf Y' = \mathbf m(\mathbf x) + \mathbf s \odot (\mathbf Y - \mathbf m(\mathbf x))$, one $s_j$ per target, $\mathbf m$ the mean or (`about="center"`) the image of the latent origin | over- or under-dispersion per target (`JointRegressor` applies it, `scale_`) | mean, shape, dependence |
+| `LatentRecalibrator` | radial map $R(\mathbf z) = r(\lVert \mathbf z \rVert)\,\mathbf z / \lVert \mathbf z \rVert$, $r(l) = \hat F_L^{-1}(F_{\chi_d}(l))$ (Dheur and Ben Taieb 2025) | over- or under-confidence of the whole vector, keeping a density | dependence; it leaves a `LatentScore` region unchanged (monotone in the old score) |
+| `MarginalRecalibrator` | per target, a monotone map through $(u_{(k)}, k/(m+1))$ of the sorted calibration PITs (Vovk et al. 2019, 2020) | each target, with $P(V_j \le k/(m+1)) = k/(m+1)$ at the knots | dependence (kept from the base) |
+
+`latent_calibration_error` is about $0.31/\sqrt n$ for a calibrated joint
+predictive, not zero. `VarianceTemperatureScaler` and `PITCalibrator` are the
+one-target versions.
+
+## 5. If you know MCMC, HMC or simulation-based inference
+
+Training on simulated pairs (data $\to$ parameters) makes the joint predictive
+an approximate posterior: neural posterior estimation (NPE). The parameters are
+the targets.
+
+| You know | Here | Note |
+|:--|:--|:--|
+| Posterior draws `[chain, draw, param]` | `dist.sample(S)`: `[n, S, d]` for $n$ data sets | independent draws: no warm-up, thinning or autocorrelation |
+| Unnormalised log posterior | `dist.log_prob(theta)` | normalised, comparable across data sets and models |
+| Credible and HPD regions | `dist.hpd_level(theta)`, corner-plot contours | the learned distribution's own probability |
+| Dropping a nuisance column | `dist.marginal(dims)` | keeps a density when the head allows it |
+| `corner`, `getdist`, `chainconsumer` | `plot_corner_plot` | 68% and 95% mass by default, as `getdist`; `level_convention="sigma"` reproduces `corner` (39.3%, 86.5%); `chainconsumer` uses 68.3% and 95.4% |
+| Posterior predictive checks | PIT and pre-rank histograms on held-out pairs | they test the learned distribution against held-out true values |
+| SBC, TARP, expected coverage | [`metrics.sbi`](../metrics/calibration.md#simulation-based-calibration-sbc-and-tarp), `hpd_calibration` | draws `[N, S, D]`, the layout `sample` returns |
+| $\hat R$, ESS, divergences | seed-to-seed spread of refits, `validation_log_score_`, the diagnostics of section 3.4 | no mixing to check: $\hat R$ is 1 and ESS equals $S$ whatever the fit |
+| LOO, ELPD, stacking | mean held-out `log_prob`; `JointRegressor()` stacking | same stacking objective as Yao et al. (2018) |
+| NPE | `JointRegressor(method).fit(x_sim, theta_sim)`, or your posterior head with `as_joint` | `"flow"`: spline flow; `"mixture"`: as in the first NPE papers (Papamakarios and Murray 2016) |
+| NLE, NRE | a flow trained on $\theta \to x$ with `flow_score`, or [`NeuralRatioLoss`](../losses/nre.md) with `ratio_classifier_score`, then [`inference.likelihood`](../methods/likelihood_inference.md) | maximum likelihood and profile intervals, no MCMC; posterior draws on a candidate bank go into `SampleJoint` |
+| LF2I, WALDO | [`NeymanConfidenceSet`](../methods/neyman.md), [`WaldoConformal`](../methods/waldo.md) | any test statistic, including the learned posterior |
+| Marginal NRE (a few parameters among many) | [marginal ratio estimation](../losses/nre.md#marginal-ratio-estimation): `MarginalRatioEstimator`, then `as_joint` | see below |
+| L-C2ST | not implemented; `worst_slab_coverage`, `conditional_coverage_gap` | |
+
+**Three kinds of region**, never interchangeable:
+
+| Term | Object | Statement | Holds when |
+|:--|:--|:--|:--|
+| *Credible region* | an HPD region of a posterior for one data set | holds a stated share of that posterior | only as well as the prior, likelihood and estimator are right |
+| *Prediction region* | `model.region`, `JointConformal` | at least $1 - \alpha$ of new pairs drawn like the calibration pairs have their target inside, on average over $\mathbf x$ (and over $\theta$ as drawn by the prior) | always, given exchangeability |
+| *Confidence set* | `NeymanConfidenceSet` | contains the true parameter with probability at least $1 - \alpha$ at **every** parameter value | up to the error of the learned critical value |
+
+**A few parameters among many nuisances.** `MarginalRatioEstimator` learns
+their marginal posteriors directly: the nuisances are integrated out by the
+simulator, with no truncation or rounds. `RatioPosterior` (from `as_joint`)
+turns a learned log ratio plus prior draws into a joint predictive, so regions,
+`hpd_calibration` and corner plots apply.
+
+**What differs in kind.** One trained map serves every data set
+(*amortisation*): it is close to the posterior on average over data sets and can
+be detectably off for one. The distribution of the training $\theta_i$ acts as
+the prior: a model trained on a skewed population pulls rare cases towards the
+bulk ([Neyman confidence sets](../methods/neyman.md) shows it and the fix).
+
+**What the library does not do.** No sequential or multi-round inference, no
+built-in embedding networks (`x` is `[N, p]` features you supply), no MCMC
+samplers. The external-software parity harness runs the sbibm tasks against
+`sbi` (its `sbi_parity` suite); there the library's spline flow was not the best
+method on any task. Use a sampler for one data set with an affordable exact
+posterior, for marginal likelihoods, or when you need guarantees per data set.
+
+**Example with an exact answer.** A line $y_i = a + b\,t_i + \varepsilon_i$ at
+ten points $t_i \in [-1, 1]$, $\varepsilon_i \sim \mathcal N(0, \sigma^2)$, with
+$\sigma^2 \sim \text{Inv-Gamma}(3, 0.5)$ and $(a, b) \mid \sigma \sim \mathcal N(0, \sigma^2 I_2)$.
+The posterior of $\theta = (a, b, \log\sigma)$ is Normal-Inverse-Gamma: with
+$X = [\mathbf 1, \mathbf t]$, $V_n = (I_2 + X^\top X)^{-1}$, $m_n = V_n X^\top y$,
+$\alpha_n = 8$, $\beta_n = 0.5 + \tfrac12 (y^\top y - m_n^\top V_n^{-1} m_n)$,
+$\sigma^2 \mid y \sim \text{Inv-Gamma}(\alpha_n, \beta_n)$ and
+$(a, b) \mid \sigma, y \sim \mathcal N(m_n, \sigma^2 V_n)$. The mean of
+$\log p(\theta \mid y) - \log q(\theta \mid y)$ at the true $\theta$ of
+simulated pairs estimates the expected Kullback–Leibler divergence from the
+exact posterior $p$ to the learned $q$. About 25 s.
+
+```python
+import numpy as np
+from scipy.special import gammaln
+
+from torchregress.joint import hpd_calibration
+from torchregress.metrics.sbi import sbc_uniformity_pvalue, simulation_based_calibration_ranks
+
+T = np.linspace(-1.0, 1.0, 10)
+X_LINE = np.stack([np.ones_like(T), T], axis=1)  # [10, 2]: intercept a, slope b
+
+
+def simulate_line(n: int, seed: int) -> tuple[np.ndarray, np.ndarray]:  # (data, a b log sigma)
+    rng = np.random.default_rng(seed)
+    sigma = np.sqrt(0.5 / rng.gamma(3.0, 1.0, size=n))
+    beta = sigma[:, None] * rng.standard_normal((n, 2))
+    data = beta @ X_LINE.T + sigma[:, None] * rng.standard_normal((n, 10))
+    return data.astype(np.float32), np.column_stack([beta, np.log(sigma)]).astype(np.float32)
+
+
+def exact_posterior(data: np.ndarray):
+    data = data.astype(np.float64)
+    prec = np.eye(2) + X_LINE.T @ X_LINE
+    loc = data @ X_LINE @ np.linalg.inv(prec)
+    rate = 0.5 + 0.5 * ((data**2).sum(1) - np.einsum("ni,ij,nj->n", loc, prec, loc))
+    return loc, prec, 8.0, rate
+
+
+def exact_log_prob(theta: np.ndarray, data: np.ndarray) -> np.ndarray:  # log p(theta | data)
+    loc, prec, shape, rate = exact_posterior(data)
+    sigma2 = np.exp(2 * theta[:, 2].astype(np.float64))
+    r = theta[:, :2] - loc
+    log_normal = -0.5 * np.einsum("ni,ij,nj->n", r, prec, r) / sigma2 - np.log(2 * np.pi * sigma2)
+    log_normal += 0.5 * np.log(np.linalg.det(prec))
+    log_inv_gamma = shape * np.log(rate) - gammaln(shape) - (shape + 1) * np.log(sigma2) - rate / sigma2
+    return log_normal + log_inv_gamma + np.log(2.0) + np.log(sigma2)  # Jacobian of sigma^2 = e^(2s)
+
+
+def exact_sample(data: np.ndarray, n_samples: int, seed: int) -> np.ndarray:  # [n, S, 3]
+    rng = np.random.default_rng(seed)
+    loc, prec, shape, rate = exact_posterior(data)
+    sigma2 = rate[:, None] / rng.gamma(shape, 1.0, size=(len(data), n_samples))
+    z = rng.standard_normal((len(data), n_samples, 2)) @ np.linalg.cholesky(np.linalg.inv(prec)).T
+    beta = loc[:, None] + np.sqrt(sigma2)[..., None] * z
+    return np.concatenate([beta, 0.5 * np.log(sigma2)[..., None]], axis=-1)
+
+
+data, theta = simulate_line(20_000, seed=0)  # simulated (data, parameters) pairs
+data_obs, theta_obs = simulate_line(2_000, seed=1)  # fresh simulations to check against
+heads = {m: JointRegressor(m, device="cpu").fit(data, theta) for m in ("gaussian", "mixture")}
+exact = exact_log_prob(theta_obs, data_obs)
+for name, npe in heads.items():
+    post = npe.predict(data_obs)  # 2,000 amortised posteriors in one call
+    gap = exact - post.log_prob(theta_obs).double().numpy()
+    hpd = hpd_calibration(post.hpd_level(theta_obs))
+    sbc = sbc_uniformity_pvalue(simulation_based_calibration_ranks(post.sample(255), theta_obs))
+    print(
+        f"{name:<9} KL {gap.mean():.3f} +- {gap.std() / np.sqrt(gap.size):.3f} nats, "
+        f"HPD KS p = {float(hpd.p_value):.2g}, SBC min p = {sbc['min_p_value']:.2g}"
+    )
+fig = plot_corner_plot(
+    heads["mixture"].predict(data_obs), row=17, n_samples=20_000, label="Learned (mixture head)",
+    others={"Exact posterior": exact_sample(data_obs[17:18], 20_000, seed=2)[0]},
+    true_vals=theta_obs[17], param_names=["$a$", "$b$", r"$\log\sigma$"], return_figure=True,
+)
+```
+
+```text
+gaussian  KL 0.133 +- 0.014 nats, HPD KS p = 3.7e-05, SBC min p = 0.26
+mixture   KL 0.058 +- 0.009 nats, HPD KS p = 0.35, SBC min p = 0.34
+```
+
+![Learned posterior against the exact posterior for one data set](../assets/images/joint/guide/npe_corner_exact.png)
+
+The mixture head is closer (0.06 against 0.13 nats) and its HPD regions hold
+their stated mass over 2,000 data sets; the Gaussian head's do not, an error in
+the joint shape that SBC, one parameter at a time, misses here (p = 0.26). For
+data set 17 the learned posterior is slightly wider than the exact one.
+**Cross-check against your sampler:** overlay its draws with `others=`, and test
+that their HPD levels under the learned posterior, `post.hpd_level(draws[None])`,
+are uniform (`hpd_calibration`; thin the chain first). **Hand draws on:**
+`dist.sample(S)[row]` is `[S, d]`, the layout of `corner.corner` and getdist's
+`MCSamples`; ArviZ wants leading `(chain, draw)`, so pass `draws[None]`.
+
+## 6. Recipes
+
+→ See the [joint regression comparison](../examples/joint_regression_comparison.md) for every `JointRegressor` head scored against a known conditional density.
+
+**Fresh calibration rows.** `calibrate(X, Y)` replaces the held-out calibration
+split with rows you supply, for example fresh simulations; they must not have
+been used for training or recalibration.
+
+```python
+model.calibrate(x_cal, y_cal)
+print(f"{model.n_conformal_} calibration rows, coverage {model.region(x_new).contains(y_new).float().mean():.3f}")
+```
+
+```text
+2000 calibration rows, coverage 0.892
+```
+
+**Weights and groups.** Options of `JointConformal`. Integer `groups=` (to
+`calibrate` and `region`) give one threshold per group and
+$P(\mathbf Y \in R(\mathbf X) \mid G = g) \ge 1 - \alpha$ for every group (a group
+unseen in calibration gets $\hat t = +\infty$). For covariate shift, `weights=`
+and `test_weights=` give $\ge 1 - \alpha$ when they are the **true** likelihood
+ratio $dP_{\text{test}}/dP_{\text{cal}}(\mathbf x)$ (Tibshirani et al. 2019),
+approximately with an estimate.
+
+```python
+g_cal, g_new = (x_cal[:, 0].abs() > 1).long(), (x_new[:, 0].abs() > 1).long()
+cp = JointConformal(LatentScore(), alpha=0.1).calibrate(model.predict(x_cal), y_cal, groups=g_cal)
+inside_g = cp.region(dist, groups=g_new).contains(y_new)
+print([f"group {g}: {inside_g[g_new == g].float().mean():.3f}" for g in (0, 1)])
+```
+
+```text
+['group 0: 0.890', 'group 1: 0.904']
+```
+
+**Recalibrate.** Here a joint predictive made too narrow on purpose (half the
+covariance) and repaired by `ScaleRecalibrator`; the exact factor is
+$\sqrt 2 = 1.41$.
+
+```python
+from torchregress.joint import ScaleRecalibrator
+
+too_narrow = lambda d: GaussianJoint.from_covariance(d.mean(), 0.5 * d.covariance())  # noqa: E731
+recal = ScaleRecalibrator().fit(too_narrow(model.predict(x_cal)), y_cal)
+print(f"scale factors {recal.scale_.numpy().round(2)}")
+for name, d in (("too narrow", too_narrow(dist)), ("recalibrated", recal.transform(too_narrow(dist)))):
+    ks = float(hpd_calibration(d.hpd_level(y_new)).ks_statistic)
+    print(f"{name:<12} HPD KS {ks:.3f}, log score {d.log_prob(y_new).mean():.3f}")
+```
+
+```text
+scale factors [1.36 1.36 1.41]
+too narrow   HPD KS 0.320, log score -1.315
+recalibrated HPD KS 0.034, log score -0.845
+```
+
+**SLS regions.** A super-level-set model learns a region directly, without a
+density; `as_joint(conformal, x)` makes it a region the tools accept (coverage,
+volume, corner plots, the region panels; no HPD calibration without a density).
+
+```python
+from torchregress.losses import SLSConformal, SLSLoss
+
+torch.manual_seed(0)
+sls = SLSLoss(d=3, context_dim=2, K=1, tau=0.9, warmup_steps=300)  # features as context
+opt = torch.optim.Adam(sls.parameters(), lr=1e-3)
+for step in range(1500):
+    idx = torch.randint(0, len(x), (256,))
+    opt.zero_grad()
+    sls(x[idx], y[idx]).backward()
+    opt.step()
+conformal = SLSConformal(sls, alpha=0.1)
+conformal.calibrate(x_cal, y_cal)
+region_sls = as_joint(conformal, x_new)
+print(
+    f"{type(region_sls).__name__}: coverage {region_sls.contains(y_new).float().mean():.3f}, "
+    f"median log volume {region_sls.log_volume()[0].median():.2f}"
+)
+```
+
+```text
+SLSRegion: coverage 0.900, median log volume 0.89
+```
+
+**Large data.** Held-out splits are capped at `max_holdout` rows each (20,000 by
+default): more held-out rows add little, so with a million rows 94% of them
+train the heads instead of 60%. With `batch_size="auto"` (the default) the batch
+grows from 256 up to 4096 so that an epoch stays under about 400 steps;
+`batch_size_` reports the size used. Below about 100,000 training rows nothing
+changes. Scoring and regions need no draws for the scale recalibration, which
+is taken about `center()`, a location without sampling.
+
+```text
+model = JointRegressor(max_holdout=20_000, batch_size="auto").fit(X, Y)  # the defaults
+model.n_train_, model.batch_size_
+```
+
+**Plots.** `plot_corner_plot` and `plot_joint_diagnostics` take any joint
+predictive or region; options, contour conventions and a gallery are in
+[joint predictive plots](../methods/visualization.md#4-joint-predictive-plots-corner-plots-and-diagnostics).
+
+## 7. What the library does not claim
+
+- **No coverage at each $\mathbf x$.** Regions cover on average over rows; within
+  subgroups only for groups declared in advance.
+- **No posterior over models.** A stack of heads is a weighted joint predictive
+  chosen by held-out log score; the spread between heads is not calibrated
+  epistemic uncertainty.
+- **No guarantee under shift** without weights equal to the true likelihood
+  ratio, and none under label or concept shift.
+- **No calibration from a good score.** A good log score, energy score or CRPS
+  does not imply calibration or correct dependence.
+- **No "best" head.** Weights and the dependence model are chosen per data set
+  on held-out rows.
+
+## 8. References
 
 | # | Reference |
 |:-:|:----------|
 | 1 | Sklar, A. "Fonctions de répartition à n dimensions et leurs marges." *Publ. Inst. Statist. Univ. Paris* 8, 1959. |
-| 2 | Clark, M. et al. "The Schaake shuffle: a method for reconstructing space–time variability in forecasted precipitation and temperature fields." *J. Hydrometeorology* 5, 2004. |
-| 3 | Ledoit, O. and Wolf, M. "A well-conditioned estimator for large-dimensional covariance matrices." *J. Multivariate Anal.* 88, 2004. |
-| 4 | Klein, N., Hothorn, T., Barbanti, L. and Kneib, T. "Multivariate conditional transformation models." *Scand. J. Statist.* 49, 2022. |
-| 5 | Arpogaus, M., Kneib, T., Nagler, T. and Rügamer, D. "Hybrid Bernstein normalizing flows for flexible multivariate density regression." [arXiv:2505.14164](https://arxiv.org/abs/2505.14164), 2025. |
-| 6 | Yao, Y., Vehtari, A., Simpson, D. and Gelman, A. "Using stacking to average Bayesian predictive distributions." *Bayesian Analysis* 13, 2018. |
-| 7 | Lei, J., G'Sell, M., Rinaldo, A., Tibshirani, R. J. and Wasserman, L. "Distribution-free predictive inference for regression." *JASA* 113, 2018. |
-| 8 | Izbicki, R., Shimizu, G. and Stern, R. B. "CD-split and HPD-split: efficient conformal regions in high dimensions." *JMLR* 23, 2022. |
-| 9 | Dheur, V., Fontana, M., Estievenart, Y., Desobry, N. and Ben Taieb, S. "Multi-output conformal regression: a unified comparative study with new conformity scores." *ICML*, 2025 ([arXiv:2501.10533](https://arxiv.org/abs/2501.10533)). |
-| 10 | Braun et al. "Multivariate standardized residuals for conformal prediction." [arXiv:2507.20941](https://arxiv.org/abs/2507.20941), 2025. |
-| 11 | Wang, Z., Gao, R., Yin, M., Zhou, M. and Blei, D. "Probabilistic conformal prediction using conditional random samples." *AISTATS*, 2023. |
-| 12 | Tibshirani, R. J., Barber, R. F., Candès, E. and Ramdas, A. "Conformal prediction under covariate shift." *NeurIPS*, 2019. |
-| 13 | Vovk, V., Gammerman, A. and Shafer, G. *Algorithmic Learning in a Random World.* Springer, 2005. |
-| 14 | Schlembach, F., Smirnov, E. and Winands, M. "Corrected max-rank multi-target conformal regions." *COPA*, 2026. |
-| 15 | Dheur, V. and Ben Taieb, S. "Multivariate latent recalibration for conditional normalizing flows." *NeurIPS*, 2025 ([arXiv:2505.16636](https://arxiv.org/abs/2505.16636)). |
-| 16 | Vovk, V., Shen, J., Manokhin, V. and Xie, M. "Nonparametric predictive distributions based on conformal prediction." *Machine Learning* 108, 2019. |
-| 17 | Vovk, V., Petej, I., Toccaceli, P., Gammerman, A., Ahlberg, E. and Carlsson, L. "Conformal calibrators." *COPA*, 2020. |
-| 18 | Allen, S., Ziegel, J. and Ginsbourger, D. "Assessing the calibration of multivariate probabilistic forecasts." *QJRMS*, 2024 ([arXiv:2307.05846](https://arxiv.org/abs/2307.05846)). |
-| 19 | Thorarinsdottir, T. L., Scheuerer, M. and Heinz, C. "Assessing the calibration of high-dimensional ensemble forecasts using rank histograms." *J. Comput. Graph. Stat.* 25, 2016. |
-| 20 | Bar-Shalom, Y., Li, X. R. and Kirubarajan, T. *Estimation with Applications to Tracking and Navigation.* Wiley, 2001. |
-| 21 | Cauchois, M., Gupta, S. and Duchi, J. "Knowing what you know: valid and validated confidence sets in multiclass and multilabel prediction." *JMLR* 22, 2021. |
-| 22 | Braun et al. "Excess risk of the target coverage." *ICML*, 2026 ([arXiv:2512.11779](https://arxiv.org/abs/2512.11779)). |
-| 23 | Pinson, P. and Tastu, J. "Discrimination ability of the energy score." Technical University of Denmark, 2013. |
-| 24 | Hoff, P. "Bayes-optimal prediction with frequentist coverage control." *Bernoulli* 29, 2023. |
-
----
-
-## 11. Complete example
-
-Three targets with nonlinear means, a correlation between $y_0$ and $y_1$ that
-changes sign with $x_0$, and Student-$t_5$ noise, so a Gaussian head can match
-the first two moments but not the tails. The script fits the Gaussian
-head, checks the conformal region on held-out rows, builds a region for two
-targets of interest, recalibrates the latent norm on separate rows,
-re-conformalises the recalibrated predictive on yet other rows, and runs three
-diagnostics. It runs in about 5 s on a laptop CPU, imports included.
-
-```python
-import torch
-
-from torchregress.joint import (
-    JointConformal,
-    JointRegressor,
-    LatentRecalibrator,
-    LatentScore,
-    hpd_calibration,
-    latent_calibration_error,
-    nees_consistency,
-    prerank_histograms,
-)
-
-
-def simulate(n: int, seed: int) -> tuple[torch.Tensor, torch.Tensor]:
-    """Three targets: nonlinear means, x-dependent correlation, Student-t(5) noise."""
-    g = torch.Generator().manual_seed(seed)
-    x = torch.randn(n, 4, generator=g)
-    rho = torch.tanh(1.5 * x[:, 0])  # correlation of y0 and y1 varies with x0
-    e = torch.randn(n, 3, generator=g)
-    chi2_5 = torch.randn(n, 5, generator=g).square().sum(1, keepdim=True)
-    e = e / (chi2_5 / 5).sqrt()
-    y = torch.empty(n, 3)
-    y[:, 0] = torch.sin(x[:, 1]) + 0.4 * e[:, 0]
-    y[:, 1] = 0.5 * x[:, 2] ** 2 + 0.4 * (rho * e[:, 0] + (1 - rho**2).sqrt() * e[:, 1])
-    y[:, 2] = x[:, 3] + 0.3 * e[:, 2]
-    return x, y
-
-
-torch.manual_seed(0)
-x, y = simulate(3000, seed=0)  # fit (the model holds out its own splits)
-x_rc, y_rc = simulate(1000, seed=1)  # latent recalibration
-x_cf, y_cf = simulate(1000, seed=3)  # conformal step after recalibration
-x_te, y_te = simulate(2000, seed=2)  # test rows
-
-model = JointRegressor("gaussian", hidden=(64, 64), max_epochs=150, patience=15, device="cpu", seed=0)
-model.fit(x, y)
-dist = model.predict(x_te)
-print(f"held-out log score:      {dist.log_prob(y_te).mean():.3f} nats")
-print(f"scale factors:           {model.scale_.numpy().round(3)}")
-
-region = model.region(x_te, alpha=0.1)
-log_vol, _ = region.log_volume()
-print(f"joint 90% coverage:      {region.contains(y_te).float().mean():.3f}")
-print(f"median log-volume:       {log_vol.median():.3f}")
-
-sub = model.region(x_te, alpha=0.1, interest=[0, 1])
-print(f"(y0, y1) 90% coverage:   {sub.contains(y_te[:, [0, 1]]).float().mean():.3f}")
-
-recal = LatentRecalibrator().fit(model.predict(x_rc), y_rc)
-dist_rc = recal.transform(dist)
-print(f"L-ECE before / after:    {latent_calibration_error(dist, y_te):.3f} / "
-      f"{latent_calibration_error(dist_rc, y_te):.3f}")
-print(f"log score after recal:   {dist_rc.log_prob(y_te).mean():.3f} nats")
-
-cp = JointConformal(LatentScore(), alpha=0.1).calibrate(recal.transform(model.predict(x_cf)), y_cf)
-region_rc = cp.region(dist_rc)
-log_vol_rc, se_rc = region_rc.log_volume()
-print(f"recalibrated region:     coverage {region_rc.contains(y_te).float().mean():.3f}, "
-      f"median log-volume {log_vol_rc.median():.3f} (MC s.e. {se_rc.median():.3f})")
-
-names = ("location", "scale", "dependence")
-before = prerank_histograms(dist.sample(99), y_te, preranks=names)
-after = prerank_histograms(dist_rc.sample(99), y_te, preranks=names)
-for name, p0, p1 in zip(names, before.p_values_holm, after.p_values_holm):
-    print(f"pre-rank {name:<11} Holm p before {p0:.2g}, after {p1:.2g}")
-nees = nees_consistency(dist.mean(), dist.covariance(), y_te)
-print(f"NEES mean {nees.statistic:.3f}, band [{nees.lower:.3f}, {nees.upper:.3f}] -> {nees.verdict}")
-hpd = hpd_calibration(dist.hpd_level(y_te))
-hpd_rc = hpd_calibration(dist_rc.hpd_level(y_te))
-print(f"HPD KS before / after:   {hpd.ks_statistic:.3f} / {hpd_rc.ks_statistic:.3f}")
-```
-
-Output (torch 2.14.1, Python 3.13, CPU):
-
-```text
-held-out log score:      -1.835 nats
-scale factors:           [0.997 1.006 1.103]
-joint 90% coverage:      0.904
-median log-volume:       1.853
-(y0, y1) 90% coverage:   0.911
-L-ECE before / after:    0.109 / 0.010
-log score after recal:   -1.673 nats
-recalibrated region:     coverage 0.895, median log-volume 1.779 (MC s.e. 0.063)
-pre-rank location    Holm p before 4.7e-12, after 0.73
-pre-rank scale       Holm p before 1.4e-26, after 0.73
-pre-rank dependence  Holm p before 6.3e-15, after 0.73
-NEES mean 2.711, band [2.894, 3.108] -> conservative
-HPD KS before / after:   0.186 / 0.023
-```
-
-Reading the output:
-
-- **Coverage holds for the misspecified model.** The joint 90% region covers
-  close to 90% of the test rows, and so does the region for $(y_0, y_1)$ alone,
-  although the Gaussian head has the wrong tails.
-- **The diagnostics see the misspecification.** The NEES is near (here just
-  below) its band, because the second moments are roughly right, but all three
-  pre-ranks reject and the HPD curve is far from the diagonal: the shape is
-  wrong, not the scale.
-- **Latent recalibration fixes the norm.** L-ECE, the HPD Kolmogorov–Smirnov
-  distance and the pre-rank tests all return to the calibrated range, and the
-  held-out log score improves by about 0.16 nats per row.
-- **It does not change the conformal region.** The recalibrated `LatentScore`
-  is a monotone function of the old one (§7.2), so the region is the same set
-  family; the coverage and volume differ only through the calibration rows and
-  the Monte Carlo error of the volume. Recalibration buys a better density and
-  calibrated HPD sets; conformal calibration had already bought the coverage.
-
----
-
-## 12. Relation to existing tools
-
-`torchregress.joint` reuses the library's primitives instead of re-implementing
-them: thresholds come from `losses.conformal.finite_sample_quantile` (and its
-weighted counterpart), HPD levels from `metrics.sample_hpd_level`, masked
-Gaussian densities from `losses.known_covariance_gaussian_nll`, the normal CDF
-from `utils.distributions.normal_cdf`, the quantile loss from
-`utils.quantile.pinball_residual`, and stacking uses the same EM as
-`DensityEnsemble.fit_weights`. The table says when to use the joint objects and
-when an existing tool is the better fit.
-
-| Existing tool | Relation to `torchregress.joint` | Use it when |
-|:--|:--|:--|
-| [`MultivariateScoreConformal`](../api/conformal.md) | Raw-tensor, loss-level API on `(mu, Sigma, y)`: the Mahalanobis score is the square of `MahalanobisScore`, `score_fn="nll"` is `DensityScore` of a Gaussian. Same threshold rule, so the same regions for the same scores. | You already have means and covariances as tensors and want one radius; use `JointConformal` for masks, nuisance targets, groups, other scores, volumes or sampling. |
-| [`ConformalizedDensity`](../api/conformal.md) | Raw-tensor level sets of any `-log p(y \mid x)` callable: the score of `DensityScore`. | You have a density callable and need its level set (or a 1-D interval); use `JointConformal` with `DensityScore` or `HPDScore` on a `JointPredictive` (for example `ConditionalModelJoint`) for adaptive HPD sets, masks or volumes. |
-| [`MultiTargetConformal`](../api/conformal.md) | One interval per target, calibrated separately: no joint guarantee (only $1 - d\alpha$ by Bonferroni). | Per-target statements are what you need; for a box with a joint guarantee use `MaxResidualScore`. |
-| [`sample_hpd_level`, `model_hpd_level`](../api/metrics.md) | `JointPredictive.hpd_level` calls `sample_hpd_level`; `model_hpd_level` does the same for a raw flow-head model. | Raw models: `model_hpd_level`; joint predictives: `hpd_level` and `hpd_calibration`. |
-| [`energy_score`, `variogram_score`, `crps_from_samples`](../api/metrics.md) | Proper scores on draws, layout `[S, n, d]` (sample first), while `JointPredictive.sample` returns `[n, S, d]`: pass `samples.movedim(1, 0)`. With `S == n` a wrong layout passes the shape checks. | Scoring draws; the joint diagnostics (pre-rank histograms, `dependence_error`) say *why* a score is poor. |
-| [`DensityEnsemble`](../api/ensemble.md) | A mixture of flow heads with fitted weights; `ConditionalModelJoint(ensemble, x)` turns it into a `JointPredictive` (regions, recalibration, diagnostics). Its weight EM is the one `JointRegressor` uses for stacking. | You train the members yourself; `JointRegressor(method="auto")` when you want the heads fitted and stacked for you. |
-| `ConditionalModelJoint` | Adapter for any model with `log_prob(context, y) -> [n]` and `sample(context, S) -> [n, S, d]`: `NormalizingFlowLoss`, `ContrastiveFlowLoss`, `DensityEnsemble`, `MarginalContrastiveDensity`, `NormalizingFlowMap`. | A trained density head from elsewhere in the library; `FlowJoint` for a `NormalizingFlowLoss` when you also need its latent map. |
-| [`VarianceTemperatureScaler`, `PITCalibrator`](../api/calibration.md) | Univariate counterparts of `ScaleRecalibrator` (one variance factor) and `MarginalRecalibrator` (PIT recalibration); they do not keep or check a dependence structure. | One target, or per-target calibration without a joint predictive. |
-| [`binned_conditional_coverage`, `smooth_conditional_coverage`](../api/inference.md) | Coverage as a function of a parameter (Neyman constructions). | Coverage over parameter space; `worst_slab_coverage` and `conditional_coverage_gap` for coverage over feature space of a joint region. |
-| [`GaussianCopulaSplineHead`](../api/models.md) | A trainable head: full-covariance Gaussian base and coordinatewise monotone splines (a Gaussian copula with spline marginals), exact densities of observed subsets via `intrinsic_log_prob(context, y, mask)`, draws `[S, B, D]`. Its API differs from the flow-head convention, so `ConditionalModelJoint` does not wrap it. `SklarJoint` with `GaussianCopula` or `ConditionalGaussianCopula` is the joint-package counterpart, with any marginal engine. | You want the copula and marginals learned end to end in one network. |
-| [`known_covariance_gaussian_nll`](../api/losses.md) | Exact Gaussian likelihood with missing dimensions marginalised; `GaussianJoint.log_prob(y, mask)`, masked `MahalanobisScore` and `nees_consistency` call it. | Training with known measurement covariances; the joint objects for prediction and regions. |
-| [`prediction.py` density grids](../api/utils.md) (`quantiles_to_density_grid`, `bars_to_density_grid`, `samples_to_density_grid`) | 1-D density grids per target. Different tail rules: `quantiles_to_density_grid` truncates the law to the outer quantiles and renormalises, while `QuantileMarginals`, `BinnedMarginals` and `SampleMarginals` keep the outer mass in exponential tails, so densities and CDFs differ near and beyond the outer knots. | Plotting or integrating one target on a grid; the marginal adapters to join targets by a dependence model. |
-
-!!! warning "Two meanings of a mask"
-    In `torchregress.joint`, a boolean `[n, d]` mask (`True` = observed)
-    **integrates the missing targets out**: the density is that of the observed
-    sub-vector. In `MultivariateGaussianLoss` and `LowRankGaussianLoss` a mask is a
-    **reduction mask**: it selects which rows or entries enter the loss average.
-    For a Gaussian likelihood that marginalises missing targets during training,
-    use `known_covariance_gaussian_nll` (or `GaussianJoint.log_prob(y, mask)`).
-
----
-
-## Next steps
-
-- [Multi-Target Regression](multi-target-regression.md): the Gaussian, low-rank,
-  mixture and flow losses behind the heads.
-- [Joint API reference](../api/joint.md): every class and function with its
-  signature.
-- [Conformal Prediction](../methods/conformal/index.md): single-target
-  conformal predictors and their guarantees.
-- [Likelihood-Ratio Inference](../methods/likelihood_inference.md) and
-  [Neyman Confidence Sets](../methods/neyman.md): profiling and confidence sets
-  for parameters.
-- [Uncertainty Decomposition](uncertainty-decomposition.md): what ensembles and
-  single heads can and cannot say about epistemic uncertainty.
+| 2 | Vovk, V., Gammerman, A. and Shafer, G. *Algorithmic Learning in a Random World.* Springer, 2005. |
+| 3 | Lei, J., G'Sell, M., Rinaldo, A., Tibshirani, R. J. and Wasserman, L. "Distribution-free predictive inference for regression." *JASA* 113, 2018. |
+| 4 | Hoff, P. "Bayes-optimal prediction with frequentist coverage control." *Bernoulli* 29, 2023. |
+| 5 | Yao, Y., Vehtari, A., Simpson, D. and Gelman, A. "Using stacking to average Bayesian predictive distributions." *Bayesian Analysis* 13, 2018. |
+| 6 | Izbicki, R., Shimizu, G. and Stern, R. B. "CD-split and HPD-split: efficient conformal regions in high dimensions." *JMLR* 23, 2022. |
+| 7 | Dheur, V., Fontana, M., Estievenart, Y., Desobry, N. and Ben Taieb, S. "Multi-output conformal regression: a unified comparative study with new conformity scores." *ICML*, 2025 ([arXiv:2501.10533](https://arxiv.org/abs/2501.10533)). |
+| 8 | Wang, Z., Gao, R., Yin, M., Zhou, M. and Blei, D. "Probabilistic conformal prediction using conditional random samples." *AISTATS*, 2023. |
+| 9 | Schlembach, F., Smirnov, E. and Winands, M. "Corrected max-rank multi-target conformal regions." *COPA*, 2026. |
+| 10 | Tibshirani, R. J., Barber, R. F., Candès, E. and Ramdas, A. "Conformal prediction under covariate shift." *NeurIPS*, 2019. |
+| 11 | Braun et al. "Multivariate standardized residuals for conformal prediction." [arXiv:2507.20941](https://arxiv.org/abs/2507.20941), 2025. |
+| 12 | Clark, M. et al. "The Schaake shuffle: a method for reconstructing space–time variability in forecasted precipitation and temperature fields." *J. Hydrometeorology* 5, 2004. |
+| 13 | Ledoit, O. and Wolf, M. "A well-conditioned estimator for large-dimensional covariance matrices." *J. Multivariate Anal.* 88, 2004. |
+| 14 | Dheur, V. and Ben Taieb, S. "Multivariate latent recalibration for conditional normalizing flows." *NeurIPS*, 2025 ([arXiv:2505.16636](https://arxiv.org/abs/2505.16636)). |
+| 15 | Vovk, V., Shen, J., Manokhin, V. and Xie, M. "Nonparametric predictive distributions based on conformal prediction." *Machine Learning* 108, 2019. |
+| 16 | Vovk, V., Petej, I., Toccaceli, P., Gammerman, A., Ahlberg, E. and Carlsson, L. "Conformal calibrators." *COPA*, 2020. |
+| 17 | Allen, S., Ziegel, J. and Ginsbourger, D. "Assessing the calibration of multivariate probabilistic forecasts." *QJRMS*, 2024 ([arXiv:2307.05846](https://arxiv.org/abs/2307.05846)). |
+| 18 | Thorarinsdottir, T. L., Scheuerer, M. and Heinz, C. "Assessing the calibration of high-dimensional ensemble forecasts using rank histograms." *J. Comput. Graph. Stat.* 25, 2016. |
+| 19 | Cauchois, M., Gupta, S. and Duchi, J. "Knowing what you know: valid and validated confidence sets in multiclass and multilabel prediction." *JMLR* 22, 2021. |
+| 20 | Braun et al. "Excess risk of the target coverage." *ICML*, 2026 ([arXiv:2512.11779](https://arxiv.org/abs/2512.11779)). |
+| 21 | Pinson, P. and Tastu, J. "Discrimination ability of the energy score." Technical University of Denmark, 2013. |
+| 22 | Papamakarios, G. and Murray, I. "Fast ε-free inference of simulation models with Bayesian conditional density estimation." *NeurIPS*, 2016. |
+| 23 | Talts, S., Betancourt, M., Simpson, D., Vehtari, A. and Gelman, A. "Validating Bayesian inference algorithms with simulation-based calibration." [arXiv:1804.06788](https://arxiv.org/abs/1804.06788), 2018. |
+| 24 | Dalmasso, N., Masserano, L., Zhao, D., Izbicki, R. and Lee, A. B. "Likelihood-free frequentist inference: bridging classical statistics and machine learning for reliable simulator-based inference." *Electronic Journal of Statistics*, 2024 ([arXiv:2107.03920](https://arxiv.org/abs/2107.03920)). |
+| 25 | Braun, Jordan, Bach. "Super-level-set conformal prediction." [arXiv:2605.06210](https://arxiv.org/abs/2605.06210), 2026. |
+| 26 | Shen, X. and Meinshausen, N. "Engression: extrapolation through the lens of distributional regression." *JRSS-B*, 2024 ([arXiv:2307.00835](https://arxiv.org/abs/2307.00835)). |
+| 27 | Gneiting, T. and Raftery, A. E. "Strictly proper scoring rules, prediction, and estimation." *JASA* 102, 2007. |

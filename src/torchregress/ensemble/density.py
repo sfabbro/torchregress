@@ -104,6 +104,9 @@ class _DensityHead(Protocol):
 class DensityEnsemble(nn.Module):
     """Mixture of conditional density models (equal or fitted weights).
 
+    Joint API: ``torchregress.joint.as_joint(ensemble, x)`` gives the
+    :class:`~torchregress.joint.MixtureJoint` of its members.
+
     Args:
         heads: ``M >= 2`` density heads.  Each must provide
             ``log_prob(context, y) -> [N]`` and

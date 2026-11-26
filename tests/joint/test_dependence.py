@@ -15,6 +15,7 @@ from torchregress.joint.dependence import (
     FlowDependence,
     GaussianCopula,
     IndependenceDependence,
+    MixtureDependence,
     SchaakeShuffle,
     SklarJoint,
     TemplateJoint,
@@ -222,7 +223,7 @@ EXPECTED = {
     "a": ("independence",),
     "b": ("gaussian_copula", "conditional_gaussian_copula"),
     "c": ("conditional_gaussian_copula",),
-    "d": ("flow",),
+    "d": ("conditional_mixture",),  # two Gaussian regimes: the mixture rung is well specified
 }
 
 
@@ -237,6 +238,7 @@ def ladder() -> dict[str, dict[str, object]]:
             IndependenceDependence().fit(z),
             GaussianCopula().fit(z),
             ConditionalGaussianCopula().fit(z, x),
+            MixtureDependence().fit(z, x),
             FlowDependence().fit(z, x),
         ]
         chosen, table = select_dependence(rungs, z_val, x_val)
@@ -296,6 +298,42 @@ class TestLadder:
         # better than the best Gaussian rung by a wide margin, within 0.1 nat of the truth
         assert table["flow"] - table["gaussian_copula"] > 0.15
         assert table["truth"] - table["flow"] < 0.1
+
+    def test_mixture_rung_is_well_specified_for_two_regimes(
+        self, ladder: dict[str, dict[str, object]]
+    ) -> None:
+        table = ladder["d"]["table"]
+        assert isinstance(table, dict)
+        # the truth is a two-component Gaussian mixture: within 0.03 nat of it on the
+        # 2,000 held-out rows, and ahead of the flow, which needs more rows
+        assert table["truth"] - table["conditional_mixture"] < 0.03, table
+        assert table["conditional_mixture"] > table["flow"], table
+        # on Gaussian dependence it costs little against the well-specified rungs
+        for case, rung in (("b", "gaussian_copula"), ("c", "conditional_gaussian_copula")):
+            other = ladder[case]["table"]
+            assert isinstance(other, dict)
+            assert other[rung] - other["conditional_mixture"] < 0.02, other
+
+    def test_mixture_rung_keeps_exact_marginals_and_masks(self) -> None:
+        z, x = _make_case("d", 600, seed=30)
+        rung = MixtureDependence(max_epochs=30).fit(z, x)
+        scores = rung.predictive(50, x[:50])
+        assert scores.has_density and scores.exact_marginals
+        marginals = GaussianMarginals(torch.zeros(50, D, dtype=F64), torch.ones(50, D, dtype=F64))
+        joint = SklarJoint(marginals, scores)
+        assert joint.has_density and joint.exact_marginals
+        mask = torch.ones(50, D, dtype=torch.bool)
+        mask[:, 1] = False
+        sub = joint.marginal([0, 2])
+        assert sub.has_density
+        torch.testing.assert_close(joint.log_prob(z[:50], mask), sub.log_prob(z[:50][:, [0, 2]]))
+        # unconditional fit: one mixture for every row
+        const = MixtureDependence(max_epochs=30).fit(z)
+        assert not const.conditional
+        lp = const.log_prob(z[:20])
+        assert lp.shape == (20,) and bool(torch.isfinite(lp).all())
+        with pytest.raises(ValueError, match="n_components"):
+            MixtureDependence(n_components=0)
 
     def test_gaussian_copula_recovers_the_correlation(
         self, ladder: dict[str, dict[str, object]]
@@ -467,3 +505,80 @@ class TestSelection:
         chosen, table = select_dependence(cands, z, x, n_se=0.0)
         assert list(table) == ["independence", "gaussian_copula", "gaussian_copula#2"]
         assert chosen is cands[0]
+
+
+class TestAffineRungs:
+    """Marginal miscalibration must not be read as dependence by the gate."""
+
+    @staticmethod
+    def _scores(n: int, rho: float, loc: float, scale: float, seed: int) -> torch.Tensor:
+        gen = torch.Generator().manual_seed(seed)
+        corr = torch.full((D, D), rho, dtype=F64)
+        corr.fill_diagonal_(1.0)
+        z = torch.randn(n, D, generator=gen, dtype=F64) @ torch.linalg.cholesky(corr).mT
+        return loc + scale * z
+
+    @staticmethod
+    def _ladder(z: torch.Tensor) -> list[Dependence]:
+        return [
+            IndependenceDependence().fit(z),
+            IndependenceDependence(affine=True).fit(z),
+            GaussianCopula().fit(z),
+            GaussianCopula(affine=True).fit(z),
+            FlowDependence(max_epochs=60, seed=0).fit(z),
+        ]
+
+    def test_density_is_the_affine_gaussian(self) -> None:
+        z = self._scores(3000, 0.6, 0.3, 1.5, seed=50)
+        rung = GaussianCopula(shrinkage=0.0, affine=True).fit(z)
+        assert rung.loc_ is not None and rung.scale_ is not None and rung.correlation_ is not None
+        cov = rung.scale_.unsqueeze(-1) * rung.correlation_ * rung.scale_
+        ref = MultivariateNormal(rung.loc_, covariance_matrix=cov).log_prob(z)
+        torch.testing.assert_close(rung.log_prob(z), ref, rtol=1e-9, atol=1e-9)
+        torch.testing.assert_close(rung.loc_, z.mean(0))
+        torch.testing.assert_close(rung.scale_, z.std(0, unbiased=False))
+        ind = IndependenceDependence(affine=True).fit(z)
+        ref_ind = Normal(z.mean(0), z.std(0, unbiased=False)).log_prob(z).sum(-1)
+        torch.testing.assert_close(ind.log_prob(z), ref_ind, rtol=1e-9, atol=1e-9)
+
+    def test_plain_rungs_are_unchanged(self) -> None:
+        z = self._scores(500, 0.5, 0.2, 1.3, seed=51)
+        ind = IndependenceDependence().fit(z)
+        torch.testing.assert_close(ind.log_prob(z), Normal(0.0, 1.0).log_prob(z).sum(-1))
+        cop = GaussianCopula().fit(z)
+        assert cop.name == "gaussian_copula" and ind.name == "independence"
+        drift = cop.marginal_drift(z)
+        torch.testing.assert_close(drift["mean"], torch.zeros(D, dtype=F64))
+        torch.testing.assert_close(drift["std"], torch.ones(D, dtype=F64))
+
+    def test_overdispersed_independent_scores_select_affine_independence(self) -> None:
+        # over-dispersed, biased marginals and no dependence: the cheapest rung that
+        # corrects the marginals is chosen, not the flow
+        z_fit = self._scores(3000, 0.0, 0.25, 1.4, seed=52)
+        z_val = self._scores(1500, 0.0, 0.25, 1.4, seed=53)
+        chosen, table = select_dependence(self._ladder(z_fit), z_val)
+        assert chosen.name == "affine_independence", table
+        assert table["affine_independence"] > table["independence"] + 0.1
+        # without the affine rungs the flow is chosen for its marginal correction alone
+        plain = [c for c in self._ladder(z_fit) if not getattr(c, "affine", False)]
+        chosen_plain, table_plain = select_dependence(plain, z_val)
+        assert chosen_plain.name == "flow", table_plain
+
+    def test_calibrated_correlated_scores_select_the_plain_copula(self) -> None:
+        z_fit = self._scores(3000, 0.6, 0.0, 1.0, seed=54)
+        z_val = self._scores(1500, 0.6, 0.0, 1.0, seed=55)
+        chosen, table = select_dependence(self._ladder(z_fit), z_val)
+        assert chosen.name == "gaussian_copula", table
+
+    def test_miscalibrated_correlated_scores_select_the_affine_copula(self) -> None:
+        z_fit = self._scores(3000, 0.6, 0.25, 1.4, seed=56)
+        z_val = self._scores(1500, 0.6, 0.25, 1.4, seed=57)
+        chosen, table = select_dependence(self._ladder(z_fit), z_val)
+        assert chosen.name == "affine_gaussian_copula", table
+        assert list(table) == [
+            "independence",
+            "affine_independence",
+            "gaussian_copula",
+            "affine_gaussian_copula",
+            "flow",
+        ]

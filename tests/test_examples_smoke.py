@@ -68,6 +68,7 @@ def test_hard_problem_examples_import_smoke() -> None:
     _load_example_module("eiv_method_comparison")
     _load_example_module("noisy_label_comparison")
     _load_example_module("multimodal_method_comparison")
+    _load_example_module("joint_regression_comparison")
     _load_example_module("contrastive_flow_parameter_estimation")
     _load_example_module("ordinal_regression_comparison")
     _load_example_module("ordinal_uncertain_ground_truth_comparison")
@@ -495,6 +496,16 @@ def test_multimodal_method_comparison_main_smoke() -> None:
         flow_transforms=2,
     )
     mod.main(cfg)
+
+
+def test_joint_regression_comparison_main_smoke() -> None:
+    mod = _load_example_module("joint_regression_comparison")
+    cfg = mod.JointComparisonConfig(
+        n_train=240, n_test=40, max_epochs=1, patience=1, eval_samples=16
+    )
+    rows = mod.main(cfg)
+    assert [r["Method"] for r in rows][:2] == ["oracle", "independent targets"]
+    assert len(rows) == 2 + len(mod.METHODS)
 
 
 def test_multimodal_method_comparison_diabetes_main_smoke() -> None:

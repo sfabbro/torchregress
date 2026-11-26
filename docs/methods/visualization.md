@@ -326,16 +326,19 @@ fig = plot_joint_diagnostics(test, y[300:], x=x, region=region, return_figure=Tr
 Every statistic comes from [`torchregress.joint`](../api/joint.md); the figure
 reads top to bottom, and red marks a departure at the 5% level.
 
-| Panel | Computed by | How to read it |
-|:------|:------------|:---------------|
-| Joint HPD calibration | `hpd_calibration(predictive.hpd_level(y))` | The fraction of observations inside the HPD region of mass $a$ against $a$, with the simultaneous DKW band $a \pm \sqrt{\log(2/\alpha)/(2n)}$. Below the diagonal: regions too small (over-confident); above: too large. Needs a density. |
-| Predicted / empirical correlation and difference | `dependence_error` | Average predictive correlation against the correlation of standardised residuals. Off-diagonal differences are dependence errors, but marginal errors also move them: read with the PITs. |
-| Pre-rank histograms | `prerank_histograms` | Rank of the observation among the draws under a pre-rank (location, scale, dependence, energy, average rank, band depth), relative to uniform, with Holm-adjusted $\chi^2$ p-values. Slope: bias; U shape: too narrow; hump: too wide; high dependence ranks: targets move together more than predicted. |
-| Per-target PIT | ranks of `prerank_histograms` (one target, `location`), `holm_adjust` | $\widehat F(u) - u$ of the randomised PIT with a DKW band simultaneous over the targets shown. ∩ above 0: predictive too high; ∪: too low; +/− S shape: too narrow; −/+: too wide. |
-| Region coverage by level | `JointRegion.contains`, `coverage_by_mask` | Empirical coverage with $\pm 1.96$ standard errors at each $1-\alpha$. On or above the diagonal: the guarantee holds on these rows. |
-| Region size | `JointRegion.log_volume` | Distribution of log-volumes per level: smaller is sharper at equal coverage. |
-| Worst-slab coverage (`x`) | `worst_slab_coverage` | Coverage of the worst slab of feature space (chosen on one half, evaluated on the other). Far below nominal: coverage depends on $x$. |
-| Conditional coverage (`x`) | `conditional_coverage_gap` | Out-of-fold $P(\text{covered} \mid x)$ and the ERT estimate; mass away from the nominal line and ERT > 0 show coverage varying with $x$. |
+| Panel | Computed by |
+|:------|:------------|
+| Joint HPD calibration | `hpd_calibration(predictive.hpd_level(y))` (needs a density) |
+| Predicted / empirical correlation and difference | `dependence_error` |
+| Pre-rank histograms | `prerank_histograms` (Holm-adjusted $\chi^2$ p-values) |
+| Per-target PIT | ranks of `prerank_histograms` for one target, DKW band simultaneous over the targets shown |
+| Region coverage by level, region size | `JointRegion.contains`, `coverage_by_mask`, `JointRegion.log_volume` |
+| Worst-slab coverage, conditional coverage (with `x`) | `worst_slab_coverage`, `conditional_coverage_gap` |
+
+What each panel says when it is red, the statistics, and what to try are in
+the guide's [checking calibration](../guide/joint-regression.md#34-checking-calibration),
+with a good and a broken model side by side. `seed=` makes the figure
+reproducible.
 
 !!! info "What these checks cannot show"
     All panels test calibration on average over rows (or over slabs of $x$).

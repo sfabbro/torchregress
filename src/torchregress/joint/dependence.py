@@ -22,10 +22,12 @@ Rung   Model of :math:`q(z \mid x)`     Fit                              Density
 1      :class:`SchaakeShuffle`          template of training scores      no
 2      :class:`GaussianCopula`          shrunk correlation, closed form  yes
 3      :class:`ConditionalGaussianCopula` NLL, modified Cholesky in x    yes
+4      :class:`MixtureDependence`       NLL, Gaussian mixture in x       yes
 5      :class:`FlowDependence`          NLL, conditional spline flow     yes
 =====  ===============================  ===============================  =======
 
-(Rung 4 of the design, vine copulas, is not implemented.)
+Rungs 0 and 2 have an ``affine=True`` form that also fits a location and scale
+of each score.  Vine copulas are not implemented.
 
 :math:`q` is a *copula* density only if its marginals are standard normal.  A
 fitted :math:`q` whose marginals drift also reshapes the per-target
@@ -69,6 +71,7 @@ from typing import Any, Optional, Union
 import torch
 from torch import Tensor, nn
 
+from ..losses.mdn import MixtureDensityLoss
 from ..losses.nflows import NormalizingFlowLoss, create_flow_model
 from ._common import mlp, safe_cholesky, target_index, train
 from .marginals import Marginals
@@ -80,6 +83,7 @@ __all__ = [
     "FlowDependence",
     "GaussianCopula",
     "IndependenceDependence",
+    "MixtureDependence",
     "SchaakeShuffle",
     "SklarJoint",
     "TemplateJoint",
@@ -304,25 +308,61 @@ class Dependence(ABC):
         return f"{type(self).__name__}()"
 
 
+def _score_moments(z: Tensor) -> tuple[Tensor, Tensor]:
+    """Per-target mean and standard deviation ``[d]`` of scores ``z [N, d]`` (std floored)."""
+    loc = z.mean(0)
+    scale = (z - loc).square().mean(0).sqrt().clamp(min=1e-3)
+    return loc, scale
+
+
 class IndependenceDependence(Dependence):
     r"""Rung 0: :math:`q(z \mid x) = \mathcal N(0, I)`.
 
     The joint is the product of the marginals,
     :math:`p(y \mid x) = \prod_j f_j(y_j \mid x)`.
+
+    With ``affine=True`` the location and scale of each score are fitted,
+    :math:`q(z) = \mathcal N(m, \mathrm{diag}(s^2))` with :math:`m_j, s_j` the
+    mean and standard deviation of the training scores of target ``j``
+    (``2d`` parameters).  The targets stay independent, but a global bias or
+    over- or under-dispersion of the marginals is corrected: this is the
+    cheapest rung that can absorb marginal miscalibration, so the richer
+    rungs are not selected for that reason alone (see
+    :func:`select_dependence`).
+
+    Args:
+        affine: Fit a per-target location and scale of the scores.
+
+    Attributes:
+        loc_, scale_: The fitted :math:`m` and :math:`s` ``[d]`` (0 and 1 without ``affine``).
     """
 
     name = "independence"
 
+    def __init__(self, affine: bool = False) -> None:
+        super().__init__()
+        self.affine = bool(affine)
+        if self.affine:
+            self.name = f"affine_{type(self).name}"
+        self.loc_: Optional[Tensor] = None
+        self.scale_: Optional[Tensor] = None
+
     def fit(self, z: Tensor, x: Optional[Tensor] = None) -> "IndependenceDependence":
         start = time.perf_counter()
         self._remember(z, None)
+        if self.affine:
+            self.loc_, self.scale_ = _score_moments(z)
+        else:
+            self.loc_, self.scale_ = torch.zeros_like(z[0]), torch.ones_like(z[0])
         self.fit_time_ = time.perf_counter() - start
         return self
 
     def predictive(self, n: int, x: Optional[Tensor] = None) -> GaussianJoint:
+        if self.loc_ is None or self.scale_ is None:
+            raise RuntimeError("IndependenceDependence is not fitted")
         d = self.event_dim
         eye = torch.eye(d).to(device=self._device, dtype=self._dtype)
-        return GaussianJoint(self._zeros(n), eye)
+        return GaussianJoint(self.loc_.expand(n, d), self.scale_.unsqueeze(-1) * eye)
 
 
 def _low_rank_correlation(corr: Tensor, rank: int, n_iter: int = 50) -> Tensor:
@@ -359,15 +399,36 @@ class GaussianCopula(Dependence):
     (principal factors, rescaled to unit diagonal), ``r (d + 1)``
     parameters instead of ``d (d - 1) / 2``.  Covariates are ignored.
 
+    With ``affine=True`` the location and scale of each score are fitted as
+    well, :math:`q(z) = \mathcal N(m, D R D)` with :math:`D = \mathrm{diag}(s)`
+    (see :class:`IndependenceDependence`): the same dependence, plus a
+    correction of a global bias or mis-scaling of the marginals.
+
+    Args:
+        shrinkage: ``"auto"`` or an intensity in ``[0, 1]``.
+        rank: Rank of the low-rank-plus-diagonal correlation (full when ``None``).
+        affine: Fit a per-target location and scale of the scores.
+
     Attributes:
         correlation_: The fitted :math:`R` ``[d, d]``.
         shrinkage_: The intensity :math:`\lambda` used.
+        loc_, scale_: The fitted :math:`m` and :math:`s` ``[d]`` (0 and 1 without ``affine``).
     """
 
     name = "gaussian_copula"
 
-    def __init__(self, shrinkage: Union[str, float] = "auto", rank: Optional[int] = None) -> None:
+    def __init__(
+        self,
+        shrinkage: Union[str, float] = "auto",
+        rank: Optional[int] = None,
+        affine: bool = False,
+    ) -> None:
         super().__init__()
+        self.affine = bool(affine)
+        if self.affine:
+            self.name = f"affine_{type(self).name}"
+        self.loc_: Optional[Tensor] = None
+        self.scale_: Optional[Tensor] = None
         if isinstance(shrinkage, str):
             if shrinkage != "auto":
                 raise ValueError(f"shrinkage must be 'auto' or a float, got {shrinkage!r}")
@@ -411,13 +472,18 @@ class GaussianCopula(Dependence):
         self.shrinkage_ = lam
         self.correlation_ = corr
         self._chol = safe_cholesky(corr)
+        if self.affine:
+            self.loc_, self.scale_ = _score_moments(z)
+        else:
+            self.loc_, self.scale_ = torch.zeros_like(z[0]), torch.ones_like(z[0])
         self.fit_time_ = time.perf_counter() - start
         return self
 
     def predictive(self, n: int, x: Optional[Tensor] = None) -> GaussianJoint:
-        if self._chol is None:
+        if self._chol is None or self.loc_ is None or self.scale_ is None:
             raise RuntimeError("GaussianCopula is not fitted")
-        return GaussianJoint(self._zeros(n), self._chol)
+        d = self.event_dim
+        return GaussianJoint(self.loc_.expand(n, d), self.scale_.unsqueeze(-1) * self._chol)
 
 
 # ─────────────────────────────────────────────────────────────── training loop
@@ -604,6 +670,129 @@ class ConditionalGaussianCopula(Dependence):
         with torch.no_grad():
             tril, log_s = self.net_.factors(xs)
         return GaussianJoint(self._zeros(n), tril * torch.exp(log_s).unsqueeze(-2))
+
+
+class MixtureDependence(Dependence):
+    r"""Rung 4: Gaussian mixture on the normal scores with parameters that depend on ``x``.
+
+    .. math::
+        q(z \mid x) = \sum_{k=1}^{K} \pi_k(x)\,
+            \mathcal N\big(z;\ \mu_k(x),\ L_k(x) L_k(x)^\top\big),
+
+    a mixture density network (:class:`~torchregress.losses.MixtureDensityLoss`,
+    full covariances up to 8 targets, diagonal beyond) of the standardised
+    covariates, trained by negative log-likelihood with held-out early stopping
+    (best weights restored, the initial ones included).  Without ``x`` the
+    mixture is constant.
+
+    It is the rung for dependence that a single Gaussian cannot represent but
+    that has a few regimes: targets that move together between modes, or a
+    correlation that switches sign.  Compared with :class:`FlowDependence` it
+    has fewer parameters and needs fewer rows, and its predictive keeps exact
+    marginals and exact densities under missing targets (a mixture of
+    Gaussians marginalises in closed form), so
+    :class:`SklarJoint` keeps ``exact_marginals``.  The component means and
+    scales are free, so the fitted :math:`q` can also move and rescale the
+    score marginals; see :meth:`Dependence.marginal_drift`.
+
+    Args:
+        n_components: Mixture components :math:`K`.
+        hidden: MLP hidden widths.
+        max_epochs, patience, lr, batch_size, val_fraction: Adam training and
+            early stopping (``max_epochs=0`` returns the initial model).
+        seed: Initialisation and shuffling seed.
+    """
+
+    name = "conditional_mixture"
+
+    def __init__(
+        self,
+        n_components: int = 3,
+        hidden: Sequence[int] = (64, 64),
+        max_epochs: int = 300,
+        patience: int = 25,
+        lr: float = 1e-3,
+        batch_size: int = 256,
+        val_fraction: float = 0.15,
+        seed: int = 0,
+    ) -> None:
+        super().__init__()
+        if int(n_components) < 1:
+            raise ValueError(f"n_components must be positive, got {n_components}")
+        self.n_components = int(n_components)
+        self.hidden = tuple(int(h) for h in hidden)
+        self.max_epochs = int(max_epochs)
+        self.patience = int(patience)
+        self.lr = float(lr)
+        self.batch_size = int(batch_size)
+        self.val_fraction = float(val_fraction)
+        self.seed = int(seed)
+        self.net_: Optional[nn.Sequential] = None
+        self.training_: dict[str, Any] = {}
+        self._mdn: Optional[MixtureDensityLoss] = None
+        self._x_loc: Optional[Tensor] = None
+        self._x_scale: Optional[Tensor] = None
+
+    def _context(self, x: Optional[Tensor], n: int) -> Tensor:
+        if self._x_loc is None or self._x_scale is None:
+            # Unconditional: a constant input, so the mixture is the same for every row.
+            return torch.ones(n, 1, dtype=self._dtype, device=self._device)
+        if x is None or x.shape[0] != n:
+            raise ValueError(f"x must be [n, p] with n = {n}")
+        return (x.to(device=self._device, dtype=self._dtype) - self._x_loc) / self._x_scale
+
+    def _joint(self, context: Tensor) -> DistributionJoint:
+        assert self.net_ is not None and self._mdn is not None
+        return DistributionJoint(self._mdn.distribution(self.net_(context)))
+
+    def fit(self, z: Tensor, x: Optional[Tensor] = None) -> "MixtureDependence":
+        start = time.perf_counter()
+        self._remember(z, x)
+        d = int(z.shape[1])
+        if x is not None:
+            x = x.to(device=z.device, dtype=z.dtype)
+            self._x_loc, self._x_scale = _standardiser(x)
+            self.conditional = True
+            in_dim = int(x.shape[1])
+        else:
+            self._x_loc = self._x_scale = None
+            self.conditional = False
+            in_dim = 1
+        self._mdn = MixtureDensityLoss(
+            n_components=self.n_components,
+            n_features=d,
+            covariance_type="full" if d <= 8 else "diagonal",
+        )
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(self.seed)
+            net = mlp(in_dim, self.hidden, self._mdn.expected_output_size)
+        self.net_ = net.to(device=z.device, dtype=z.dtype)
+        context = self._context(x, int(z.shape[0]))
+
+        def nll(zb: Tensor, cb: Optional[Tensor]) -> Tensor:
+            assert cb is not None
+            return -self._joint(cb).log_prob(zb)
+
+        self.training_ = _fit_score_model(
+            self.net_,
+            nll,
+            z,
+            context,
+            max_epochs=self.max_epochs,
+            patience=self.patience,
+            lr=self.lr,
+            batch_size=self.batch_size,
+            val_fraction=self.val_fraction,
+            seed=self.seed,
+        )
+        self.fit_time_ = time.perf_counter() - start
+        return self
+
+    def predictive(self, n: int, x: Optional[Tensor] = None) -> DistributionJoint:
+        if self.net_ is None:
+            raise RuntimeError("MixtureDependence is not fitted")
+        with torch.no_grad():
+            return self._joint(self._context(x, n))
 
 
 class _UnconditionalFlowJoint(FlowJoint):
@@ -959,6 +1148,15 @@ def select_dependence(
     and a more complex rung is kept only when its gain is resolved.
     ``n_se = 0`` gives the plain arg-max.
 
+    The conditional and flow rungs can move and rescale the score marginals,
+    so with miscalibrated marginals they gain log score without any
+    dependence.  Put ``IndependenceDependence(affine=True)`` and
+    ``GaussianCopula(affine=True)`` in the ladder (as
+    :class:`~torchregress.joint.JointRegressor` does) so that a cheap rung
+    can absorb a global miscalibration and the richer ones are kept only
+    for what they add beyond it; :meth:`Dependence.marginal_drift` reports
+    how much of the chosen rung is such a correction.
+
     Args:
         candidates: Fitted dependence models, simplest first.
         z_val: Held-out normal scores ``[N, d]`` (out of fold, as for ``fit``).
@@ -971,11 +1169,15 @@ def select_dependence(
     """
     if n_se < 0:
         raise ValueError("n_se must be non-negative")
+
+    def baseline(c: Dependence) -> bool:
+        return isinstance(c, IndependenceDependence) and not c.affine
+
     ladder = [c for c in candidates if c.has_density]
-    if not any(isinstance(c, IndependenceDependence) for c in ladder):
+    if not any(baseline(c) for c in ladder):
         ladder.insert(0, IndependenceDependence().fit(z_val))
     else:
-        ladder.sort(key=lambda c: not isinstance(c, IndependenceDependence))
+        ladder.sort(key=lambda c: not baseline(c))
     names: list[str] = []
     scores: list[Tensor] = []
     for c in ladder:

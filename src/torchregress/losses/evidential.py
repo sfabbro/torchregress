@@ -30,6 +30,8 @@ class EvidentialRegressionLoss(DistributionLoss):
     """
     Evidential Regression loss using Normal-Inverse-Gamma (NIG) prior.
 
+    Joint API: ``torchregress.joint.as_joint(loss, y_pred)`` gives independent Student-t targets.
+
     This loss function models uncertainty by placing a NIG prior over the
     Gaussian parameters (mean and variance). The model outputs four parameters
     (γ, ν, α, β) that define the NIG distribution:

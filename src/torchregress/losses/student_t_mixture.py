@@ -907,60 +907,7 @@ class StudentTMixture(Distribution):
         # keep the relative accuracy of 1 − q instead of an absolute eps / f(x).
         upper = target > 0.5
         tail = torch.where(upper, 1.0 - target, target)
-        qk = target.unsqueeze(-1)
-        # Bracket: every component's CDF is <= q at lo and >= q at hi.
-        lo = (loc_e - _t_tail_bound(qk, df_e) * scale_e).amin(-1)
-        hi = (loc_e + _t_tail_bound(1.0 - qk, df_e) * scale_e).amax(-1)
-        w = logw_e.exp()
-        ref = (w * scale_e).sum(-1)
-        # Start: weighted average of approximate component quantiles (normal
-        # quantile plus the first Cornish-Fisher term of the t; exact at nu = inf).
-        zq = torch.special.ndtri(qk)
-        inv_nu = torch.where(torch.isinf(df_e), torch.zeros_like(df_e), 1.0 / df_e)
-        tq = zq + (zq**3 + zq) * inv_nu / 4.0
-        x = torch.minimum(torch.maximum((w * (loc_e + tq * scale_e)).sum(-1), lo), hi)
-        dx_old = hi - lo
-        active = torch.arange(x.numel(), device=x.device)
-        for _ in range(max_iter):
-            if active.numel() == 0:
-                break
-            xa, lo_a, hi_a = x[active], lo[active], hi[active]
-            up_a = upper[active]
-            log_tail, log_pdf = StudentTMixture._log_cdf_and_log_pdf(
-                xa.unsqueeze(-1),
-                logw_e[active],
-                loc_e[active],
-                scale_e[active],
-                df_e[active],
-                up_a.unsqueeze(-1),
-            )
-            # g = F(x) − q in both forms: (1 − q) − (1 − F) on the upper side.
-            p_tail = log_tail.exp()
-            g = torch.where(up_a, tail[active] - p_tail, p_tail - tail[active])
-            lo_a = torch.where(g < 0, xa, lo_a)
-            hi_a = torch.where(g > 0, xa, hi_a)
-            step = g / log_pdf.exp()
-            newton = xa - step
-            # Newton inside the closed bracket and at least halving the step before
-            # last; otherwise bisect (guaranteed progress on flat or multimodal CDFs).
-            use_newton = (
-                torch.isfinite(newton)
-                & (newton >= lo_a)
-                & (newton <= hi_a)
-                & (step.abs() * 2.0 <= dx_old[active].abs())
-            )
-            x_new = torch.where(use_newton, newton, 0.5 * (lo_a + hi_a))
-            x_new = torch.where(g == 0, xa, x_new)
-            dx = x_new - xa
-            limit = tol * (x_new.abs() + ref[active])
-            done = (
-                (g == 0)
-                | (use_newton & (step.abs() <= limit))
-                | (dx.abs() <= limit)
-                | ((hi_a - lo_a) <= limit)
-            )
-            x[active], lo[active], hi[active], dx_old[active] = x_new, lo_a, hi_a, dx
-            active = active[~done]
+        x = _mixture_tail_quantile(tail, upper, logw_e, loc_e, scale_e, df_e, tol, max_iter)
         return x.reshape(shape[:-1])
 
     # ------------------------------------------------------------------
@@ -1043,3 +990,84 @@ def _gather_component(
     expanded = param.expand(*shape, n_comp, *tail)
     index = idx.reshape(*shape, 1, *([1] * len(tail))).expand(*shape, 1, *tail)
     return expanded.gather(len(shape), index).squeeze(len(shape))
+
+
+def _mixture_tail_quantile(
+    tail: Tensor,
+    upper: Tensor,
+    logw: Tensor,
+    loc: Tensor,
+    scale: Tensor,
+    df: Tensor,
+    tol: float,
+    max_iter: int,
+) -> Tensor:
+    r"""Roots of a univariate Student-t mixture CDF, one per element (rtsafe, active set).
+
+    For element ``e`` with parameters ``logw, loc, scale, df [E, K]`` it solves
+    :math:`F_e(x) = \tau_e` where ``upper`` is false and :math:`1 - F_e(x) = \tau_e`
+    where it is true (``tail [E]`` in ``(0, 1)``), so an upper-tail quantile is as
+    accurate relative to :math:`1 - F` as a lower one is to :math:`F`.  A guaranteed
+    bracket comes from Student-t tail bounds of every component; Newton steps use the
+    exact mixture density and are replaced by bisection whenever they leave the
+    bracket or fail to halve the step before last, so it converges for multimodal
+    mixtures and heavy tails alike.  Stops when every step is below
+    ``tol * (|x| + w·scale)`` or after ``max_iter`` iterations.  Shared by
+    :meth:`StudentTMixture.marginal_quantile` and
+    :class:`~torchregress.joint.MixtureMarginals`.
+    """
+    q = torch.where(upper, 1.0 - tail, tail).unsqueeze(-1)
+    # Bracket: every component's CDF is <= q at lo and >= q at hi.
+    lo = (loc - _t_tail_bound(q, df) * scale).amin(-1)
+    hi = (loc + _t_tail_bound(1.0 - q, df) * scale).amax(-1)
+    w = logw.exp()
+    ref = (w * scale).sum(-1)
+    # Start: weighted average of approximate component quantiles (normal
+    # quantile plus the first Cornish-Fisher term of the t; exact at nu = inf).
+    zq = torch.special.ndtri(q)
+    inv_nu = torch.where(torch.isinf(df), torch.zeros_like(df), 1.0 / df)
+    tq = zq + (zq**3 + zq) * inv_nu / 4.0
+    x = torch.minimum(torch.maximum((w * (loc + tq * scale)).sum(-1), lo), hi)
+    dx_old = hi - lo
+    active = torch.arange(x.numel(), device=x.device)
+    for _ in range(max_iter):
+        if active.numel() == 0:
+            break
+        xa, lo_a, hi_a = x[active], lo[active], hi[active]
+        up_a = upper[active]
+        log_tail, log_pdf = StudentTMixture._log_cdf_and_log_pdf(
+            xa.unsqueeze(-1),
+            logw[active],
+            loc[active],
+            scale[active],
+            df[active],
+            up_a.unsqueeze(-1),
+        )
+        # g = F(x) − q in both forms: (1 − q) − (1 − F) on the upper side.
+        p_tail = log_tail.exp()
+        g = torch.where(up_a, tail[active] - p_tail, p_tail - tail[active])
+        lo_a = torch.where(g < 0, xa, lo_a)
+        hi_a = torch.where(g > 0, xa, hi_a)
+        step = g / log_pdf.exp()
+        newton = xa - step
+        # Newton inside the closed bracket and at least halving the step before
+        # last; otherwise bisect (guaranteed progress on flat or multimodal CDFs).
+        use_newton = (
+            torch.isfinite(newton)
+            & (newton >= lo_a)
+            & (newton <= hi_a)
+            & (step.abs() * 2.0 <= dx_old[active].abs())
+        )
+        x_new = torch.where(use_newton, newton, 0.5 * (lo_a + hi_a))
+        x_new = torch.where(g == 0, xa, x_new)
+        dx = x_new - xa
+        limit = tol * (x_new.abs() + ref[active])
+        done = (
+            (g == 0)
+            | (use_newton & (step.abs() <= limit))
+            | (dx.abs() <= limit)
+            | ((hi_a - lo_a) <= limit)
+        )
+        x[active], lo[active], hi[active], dx_old[active] = x_new, lo_a, hi_a, dx
+        active = active[~done]
+    return x

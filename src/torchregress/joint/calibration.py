@@ -99,7 +99,14 @@ class ScaleRecalibrator:
         Y' = m(x) + s \odot \big(Y - m(x)\big), \qquad Y \sim p(\cdot \mid x),
 
     with :math:`m(x)` the predictive mean and :math:`s \in \mathbb R^d_{>0}`
-    shared by all rows.  Its density is
+    shared by all rows.  With ``about="center"``, :math:`m(x)` is
+    :meth:`~torchregress.joint.JointPredictive.center` instead: the same point
+    for Gaussian and mixture predictives, the image of the latent origin for a
+    flow, where the mean would cost ``n_samples`` draws per row at every
+    :meth:`transform`.  Any fixed :math:`m(x)` gives a valid change of
+    variables; the two choices differ by a shift of
+    :math:`(1 - s)\,(m_{\text{center}} - m_{\text{mean}})`, second order when
+    :math:`s` is near one.  Its density is
     :math:`\log p'(y) = \log p\big(m + (y - m) / s\big) - \sum_j \log s_j`,
     its covariance :math:`S \Sigma(x) S` with :math:`S = \mathrm{diag}(s)`, and the
     dependence structure (copula) of the base predictive is unchanged.
@@ -128,15 +135,27 @@ class ScaleRecalibrator:
         n_samples: Monte Carlo draws for the mean and covariance of heads that
             do not have them in closed form.
         max_iter: L-BFGS iterations for ``"nll"``.
+        about: ``"mean"`` (default) or ``"center"``, the point :math:`m(x)` the
+            scaling is taken about.  With ``"center"`` and ``objective="nll"``
+            no draws are needed (the search starts at :math:`s = 1`).
 
     Attributes:
         scale_: Fitted factors ``[d]``.
     """
 
-    def __init__(self, objective: str = "variance", n_samples: int = 1024, max_iter: int = 100):
+    def __init__(
+        self,
+        objective: str = "variance",
+        n_samples: int = 1024,
+        max_iter: int = 100,
+        about: str = "mean",
+    ):
         if objective not in ("variance", "nll"):
             raise ValueError(f"objective must be 'variance' or 'nll', got {objective!r}")
+        if about not in ("mean", "center"):
+            raise ValueError(f"about must be 'mean' or 'center', got {about!r}")
         self.objective = objective
+        self.about = about
         self.n_samples = int(n_samples)
         self.max_iter = int(max_iter)
         self.scale_: Optional[Tensor] = None
@@ -147,9 +166,17 @@ class ScaleRecalibrator:
         """Fit the factors on calibration rows ``y [n, d]`` (``mask``: ``True`` = observed)."""
         y = _check_pair(predictive, y)
         obs = _check_fit_mask(y, mask)
+        # The variance solution (and the draws it may cost) is the answer of
+        # objective="variance" and the start of "nll" about the mean; "nll" about the
+        # center starts at s = 1 and needs no draws.
+        moments = self.objective == "variance" or self.about == "mean"
         with torch.no_grad(), seeded(_MEAN_SEED):
-            mean = predictive.mean(self.n_samples).detach()
-            var = predictive.covariance(self.n_samples).detach().diagonal(dim1=-2, dim2=-1)
+            mean = self._location(predictive)
+            var = (
+                predictive.covariance(self.n_samples).detach().diagonal(dim1=-2, dim2=-1)
+                if moments
+                else torch.ones_like(mean)
+            )
         y = y.to(mean)
         resid = torch.where(obs, y - mean, torch.zeros_like(y))
         obs_f = obs.to(mean.dtype)
@@ -157,11 +184,19 @@ class ScaleRecalibrator:
         # A target with no residual spread (constant, or predicted exactly) has no
         # scale to fit: its factor stays 1 in both objectives.
         free = torch.isfinite(msr) & (msr > 0)
-        scale = torch.where(free, msr.sqrt(), torch.ones_like(msr))
+        scale = torch.ones_like(msr)
+        if moments:
+            scale = torch.where(free, msr.sqrt(), scale)
         if self.objective == "nll" and bool(free.any()):
             scale = self._fit_nll(predictive, mean, resid, obs, scale, mask is not None, free)
         self.scale_ = scale.detach()
         return self
+
+    def _location(self, predictive: JointPredictive) -> Tensor:
+        """The point ``m(x) [n, d]`` the scaling is taken about."""
+        if self.about == "center":
+            return predictive.center(self.n_samples).detach()
+        return predictive.mean(self.n_samples).detach()
 
     def _fit_nll(
         self,
@@ -249,7 +284,7 @@ class ScaleRecalibrator:
         # Monte Carlo means are drawn with a fixed seed (the caller's RNG state is
         # restored), so the same predictive always gets the same recalibration.
         with torch.no_grad(), seeded(_MEAN_SEED):
-            mean = predictive.mean(self.n_samples).detach()
+            mean = self._location(predictive)
         scale = self.scale_.to(mean)
         return AffineJoint(predictive, (1.0 - scale) * mean, scale)
 

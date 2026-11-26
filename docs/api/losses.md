@@ -145,6 +145,7 @@ For `[..., N]` sequences (spectra, light curves, profiles), batched over the lea
 | `NeuralRatioLoss` | `NeuralRatioLoss(classifier, *, criterion="bce", reduction="mean")` | Classifier-based neural ratio estimation; `forward(context, observations, negative_context=..., negative_target=None, ...)` |
 | `build_ratio_classifier` | `build_ratio_classifier(context_dim, observable_dim, hidden_dims=(64,64), activation="silu")` | Default MLP logit scorer for NRE |
 | `neural_ratio_logits` | `neural_ratio_logits(classifier, context, observable)` | Per-candidate log-ratio logits |
+| `in_batch_negative_index` | `in_batch_negative_index(batch_size, n_negatives, *, generator=None, device=None)` | `[N, K]` indices of `K` distinct other rows per row (never the row itself): `theta[index]` is a negative bank drawn from the batch |
 | `neural_ratio_loss` | `neural_ratio_loss(classifier, context, observable, negative_context, negative_target=None, criterion="bce", reduction="mean")` | Functional NRE loss |
 | `EvidentialRegressionLoss` | `EvidentialRegressionLoss(coeff_nig=1e-2, reduction="mean", unconstrained_inputs=True)` | NIG evidential regression |
 | `DiscreteWasserstein1Loss` | `DiscreteWasserstein1Loss(bin_edges=None, from_logits=False, reduction="mean")` | 1-Wasserstein between mass vectors on a shared grid; see [Grid & basis densities](../losses/density_basis.md) |

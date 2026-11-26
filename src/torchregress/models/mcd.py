@@ -24,7 +24,7 @@ from typing import Any, cast
 import torch
 from torch import Tensor, nn
 
-from ..inference import effective_sample_size
+from ..inference.ratio import effective_sample_size
 from ..losses.nre import neural_ratio_logits, neural_ratio_loss
 from ..utils.pytorch_compat import _collect_transform_cycles
 
@@ -37,6 +37,9 @@ _PAIR_ELEMENTS = 1 << 24
 
 class MarginalContrastiveDensity(nn.Module):
     """Conditional density ``p(y | x) = p(y) r(x, y)`` from a marginal flow and a ratio classifier.
+
+    Joint API: ``torchregress.joint.as_joint(model, x)`` gives its
+    :class:`~torchregress.joint.ConditionalModelJoint`.
 
     Args:
         marginal: Unconditional density of the targets: a module that, called

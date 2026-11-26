@@ -18,6 +18,9 @@ _Check = tuple[Tensor, type[Exception], str]
 class GaussianCopulaSplineHead(nn.Module):
     """Conditional vector flow: a full Gaussian followed by coordinate splines.
 
+    Joint API: ``torchregress.joint.as_joint(head, context)`` gives its
+    :class:`~torchregress.joint.CopulaSplineJoint`.
+
     Every coordinate has a context-dependent monotone rational-quadratic spline;
     the Gaussian base has a full Cholesky covariance. Consequently the output
     is a *joint* normalizing spline flow, but its copula is restricted to the

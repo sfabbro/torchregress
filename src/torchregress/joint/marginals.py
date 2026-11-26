@@ -18,6 +18,8 @@ continuous and strictly increasing and the densities strictly positive, so the
 scores are finite and the change of variables is exact:
 
 * :class:`GaussianMarginals` -- :math:`\mathcal N(\mu_{ij}, \sigma_{ij}^2)`;
+* :class:`MixtureMarginals` -- a univariate Gaussian mixture per row and target
+  (closed-form CDF and density, quantiles by a safeguarded root finder);
 * :class:`QuantileMarginals` -- a grid of predicted quantiles, piecewise-linear
   CDF between the knots and exponential tails beyond them (the TabICL
   convention);
@@ -48,6 +50,7 @@ from typing import Optional, Union
 import torch
 from torch import Tensor
 
+from ..losses.student_t_mixture import _mixture_tail_quantile, _work_dtype
 from ..utils.distributions import normal_cdf
 from ._common import target_index
 
@@ -55,6 +58,7 @@ __all__ = [
     "BinnedMarginals",
     "GaussianMarginals",
     "Marginals",
+    "MixtureMarginals",
     "QuantileMarginals",
     "SampleMarginals",
 ]
@@ -62,6 +66,8 @@ __all__ = [
 _HALF_LOG_2PI = 0.5 * math.log(2.0 * math.pi)
 #: Smallest gap between consecutive knots, relative to the knot spread.
 _TIE_GAP = 1e-6
+#: Elements (rows x draws x targets x components) per block of the mixture quantile solver.
+_QUANTILE_CHUNK = 1 << 20
 
 
 class Marginals(ABC):
@@ -459,6 +465,190 @@ class SampleMarginals(QuantileMarginals):
             n_draws + 1
         )
         super().__init__(levels, samples.movedim(1, 2), tail_knots=tail_knots)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Gaussian mixtures
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class MixtureMarginals(Marginals):
+    r"""Per-target univariate Gaussian mixtures (a mixture density head per target).
+
+    .. math::
+        F_{ij}(y) = \sum_{k=1}^K w_{ijk}\, \Phi\Big(\frac{y - \mu_{ijk}}{\sigma_{ijk}}\Big),
+        \qquad
+        f_{ij}(y) = \sum_{k=1}^K \frac{w_{ijk}}{\sigma_{ijk}}\,
+        \varphi\Big(\frac{y - \mu_{ijk}}{\sigma_{ijk}}\Big).
+
+    * :meth:`cdf` and :meth:`log_prob` are closed form (``logsumexp`` of
+      component terms).  The CDF is evaluated in float64 (float32 on MPS) from
+      both :math:`\log F` and :math:`\log(1 - F)`, each from ``log_ndtr``, so
+      it is accurate relative to :math:`F` in the lower tail and to
+      :math:`1 - F` in the upper one.
+    * :meth:`icdf` solves :math:`F(y) = u` by the safeguarded Newton--bisection
+      iteration of :meth:`StudentTMixture.marginal_quantile
+      <torchregress.losses.StudentTMixture.marginal_quantile>` (shared code): a
+      bracket from Gaussian tail bounds of every component, Newton steps with
+      the exact density, bisection whenever a step leaves the bracket or does
+      not halve the previous one, at most ``max_iter`` iterations, vectorised
+      over rows, draws and targets.  Levels above 1/2 are solved on
+      :math:`1 - F(y) = 1 - u`.  Converged roots are within
+      ``tol`` :math:`\cdot (|y| + \bar\sigma)` of the exact quantile
+      (:math:`\bar\sigma` the weight-averaged component scale), so a round
+      trip through :meth:`cdf` is exact to float64 rounding down to levels of
+      :math:`10^{-30}` (tested from :math:`10^{-30}` to :math:`1 - 10^{-9}`,
+      and for well-separated components).
+    * :meth:`normal_scores` and :meth:`from_normal_scores` work on the side of
+      the median where the tail probability is small: :math:`z = \Phi^{-1}(F)`
+      below the median and :math:`z = -\Phi^{-1}(1 - F)` above it, both
+      clipped at ``eps`` as in :class:`Marginals`.  The default
+      implementation forms :math:`F` in the input dtype first, which in
+      float32 rounds :math:`1 - F` to a multiple of :math:`6 \times 10^{-8}`
+      and moves an upper-tail score by up to about :math:`10^{-3}` (see
+      ``tests/joint/test_marginals.py``).
+
+    Args:
+        weights: Non-negative mixture weights ``[n, d, K]`` (renormalised over ``K``).
+        means: Component means ``[n, d, K]``.
+        stds: Positive component standard deviations ``[n, d, K]``.
+        tol: Relative tolerance of :meth:`icdf`.
+        max_iter: Iteration cap of :meth:`icdf` (bisection alone needs about 60
+            halvings in float64; Newton converges in a handful).
+
+    Attributes:
+        log_weights, loc, scale: Normalised log weights, means and standard
+            deviations ``[n, d, K]``.
+    """
+
+    def __init__(
+        self,
+        weights: Tensor,
+        means: Tensor,
+        stds: Tensor,
+        *,
+        tol: float = 1e-12,
+        max_iter: int = 100,
+    ) -> None:
+        if means.dim() != 3 or weights.shape != means.shape or stds.shape != means.shape:
+            raise ValueError(
+                "weights, means and stds must all be [n, d, K], got "
+                f"{tuple(weights.shape)}, {tuple(means.shape)} and {tuple(stds.shape)}"
+            )
+        if means.shape[-1] < 1:
+            raise ValueError("at least one mixture component is needed")
+        weights = weights.to(device=means.device, dtype=means.dtype)
+        stds = stds.to(device=means.device, dtype=means.dtype)
+        if not bool((stds > 0).all()):
+            raise ValueError("stds must be positive")
+        if not bool((weights >= 0).all() and (weights.sum(-1) > 0).all()):
+            raise ValueError("weights must be non-negative with a positive sum over K")
+        if not tol > 0 or int(max_iter) < 1:
+            raise ValueError("tol must be positive and max_iter at least 1")
+        self.log_weights = weights.log() - weights.sum(-1, keepdim=True).log()
+        self.loc = means
+        self.scale = stds
+        self.tol = float(tol)
+        self.max_iter = int(max_iter)
+
+    @property
+    def batch_size(self) -> int:
+        return int(self.loc.shape[0])
+
+    @property
+    def event_dim(self) -> int:
+        return int(self.loc.shape[1])
+
+    @property
+    def n_components(self) -> int:
+        """Components per target, ``K``."""
+        return int(self.loc.shape[-1])
+
+    def _dtype(self) -> torch.dtype:
+        return self.loc.dtype
+
+    def _device(self) -> torch.device:
+        return self.loc.device
+
+    def _params(self, like: Tensor, dtype: torch.dtype) -> tuple[Tensor, Tensor, Tensor]:
+        """``log w, mu, sigma`` as ``[n, d, K]`` or ``[n, 1, d, K]`` (for ``[n, S, d]`` input)."""
+        out = tuple(p.to(dtype) for p in (self.log_weights, self.loc, self.scale))
+        if like.dim() == 3:
+            return out[0].unsqueeze(1), out[1].unsqueeze(1), out[2].unsqueeze(1)
+        return out[0], out[1], out[2]
+
+    def _log_cdf_and_sf(self, y: Tensor) -> tuple[Tensor, Tensor]:
+        r""":math:`\log F` and :math:`\log(1 - F)` in the work dtype, shape of ``y``."""
+        work = _work_dtype(y.device)
+        logw, loc, scale = self._params(y, work)
+        r = (y.to(work).unsqueeze(-1) - loc) / scale
+        log_cdf = torch.logsumexp(logw + torch.special.log_ndtr(r), dim=-1)
+        log_sf = torch.logsumexp(logw + torch.special.log_ndtr(-r), dim=-1)
+        return log_cdf, log_sf
+
+    def cdf(self, y: Tensor) -> Tensor:
+        log_cdf, log_sf = self._log_cdf_and_sf(self._check(y))
+        out = torch.where(log_cdf < -math.log(2.0), log_cdf.exp(), -torch.expm1(log_sf))
+        return out.to(y.dtype)
+
+    def log_prob(self, y: Tensor) -> Tensor:
+        logw, loc, scale = self._params(self._check(y), y.dtype)
+        r = (y.unsqueeze(-1) - loc) / scale
+        return torch.logsumexp(logw - 0.5 * r.square() - scale.log() - _HALF_LOG_2PI, dim=-1)
+
+    def normal_scores(self, y: Tensor, eps: float = 1e-6) -> Tensor:
+        log_cdf, log_sf = self._log_cdf_and_sf(self._check(y))
+        upper = log_sf < log_cdf
+        tail = torch.where(upper, log_sf, log_cdf).exp().clamp(eps, 1.0 - eps)
+        z = torch.special.ndtri(tail)
+        return torch.where(upper, -z, z).to(y.dtype)
+
+    def icdf(self, u: Tensor) -> Tensor:
+        uw = self._check(u).to(_work_dtype(u.device))
+        upper = uw > 0.5
+        return self._solve(torch.where(upper, 1.0 - uw, uw), upper).to(u.dtype)
+
+    def from_normal_scores(self, z: Tensor, eps: float = 1e-6) -> Tensor:
+        zw = self._check(z).to(_work_dtype(z.device))
+        tail = normal_cdf(-zw.abs()).clamp(eps, 1.0 - eps)
+        return self._solve(tail, zw > 0).to(z.dtype)
+
+    def _solve(self, tail: Tensor, upper: Tensor) -> Tensor:
+        """Root of ``F = tail`` (``1 - F = tail`` where ``upper``), shape of ``tail``."""
+        work = tail.dtype
+        logw, loc, scale = self._params(tail, work)
+        shape = tail.shape
+        n_comp = self.n_components
+        full = (*shape, n_comp)
+        flat = [p.expand(full) for p in (logw, loc, scale)]
+        per_row = math.prod(shape[1:]) * n_comp
+        step = max(1, _QUANTILE_CHUNK // max(1, per_row))
+        parts = []
+        for start in range(0, int(shape[0]), step):
+            rows = slice(start, start + step)
+            lw, mu, sd = (p[rows].reshape(-1, n_comp) for p in flat)
+            df = torch.full_like(mu, math.inf)
+            parts.append(
+                _mixture_tail_quantile(
+                    tail[rows].reshape(-1),
+                    upper[rows].reshape(-1),
+                    lw,
+                    mu,
+                    sd,
+                    df,
+                    self.tol,
+                    self.max_iter,
+                ).reshape(tail[rows].shape)
+            )
+        return torch.cat(parts, dim=0) if parts else tail.clone()
+
+    def select_targets(self, dims: Union[int, Sequence[int]]) -> "MixtureMarginals":
+        idx = target_index(dims, self.event_dim)
+        out = MixtureMarginals.__new__(MixtureMarginals)
+        out.log_weights = self.log_weights[:, idx]
+        out.loc, out.scale = self.loc[:, idx], self.scale[:, idx]
+        out.tol, out.max_iter = self.tol, self.max_iter
+        return out
 
 
 class BinnedMarginals(_PiecewiseMarginals):

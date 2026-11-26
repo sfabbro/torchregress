@@ -30,6 +30,7 @@ from typing import Any, Optional, Union
 import torch
 from torch import Tensor
 
+from ..losses.known_covariance import KnownCovarianceGaussianNLL, _total_covariance
 from ..metrics.distribution import sample_hpd_level
 from ._common import masked_gaussian_quadratic, target_index
 
@@ -170,6 +171,25 @@ class JointPredictive(ABC):
         """Predictive mean ``[n, d]`` (Monte Carlo unless the head overrides it)."""
         return self.sample(n_samples).mean(dim=1)
 
+    def center(self, n_samples: int = 512) -> Tensor:
+        r"""A location summary ``[n, d]`` that avoids sampling where it can.
+
+        The image of the latent origin, :math:`T(0; x)`, for a predictive with a
+        latent map (the mean of a Gaussian; for a flow, the point the mode of the
+        base distribution is sent to); otherwise the predictive mean, which is
+        closed form for mixtures and Monte Carlo (``n_samples`` draws) for the
+        rest.  Wrappers combine the centers of what they wrap.  Use it where a
+        deterministic reference point per row is needed and the mean would cost
+        ``n_samples`` draws per row, as in
+        :class:`~torchregress.joint.ScaleRecalibrator` with ``about="center"``.
+        """
+        if self.has_latent:
+            origin = torch.zeros(
+                self.batch_size, self.event_dim, dtype=self.dtype, device=self.device
+            )
+            return self.from_latent(origin)
+        return self.mean(n_samples)
+
     def covariance(self, n_samples: int = 512) -> Tensor:
         """Predictive covariance ``[n, d, d]`` (Monte Carlo unless overridden)."""
         draws = self.sample(n_samples)
@@ -291,6 +311,43 @@ class GaussianJoint(JointPredictive):
             device=cov_factor.device, dtype=cov_factor.dtype
         )
         return cls(mean, torch.linalg.cholesky(cov))
+
+    @classmethod
+    def from_known_covariance(
+        cls,
+        y_pred: Tensor,
+        *,
+        loss: Any = None,
+        known_covariance: Optional[Tensor] = None,
+        known_variance: Optional[Tensor] = None,
+        model_scale: Optional[Tensor] = None,
+        model_factor: Optional[Tensor] = None,
+    ) -> "GaussianJoint":
+        r"""Gaussian predictive of a :class:`~torchregress.losses.KnownCovarianceGaussianNLL`.
+
+        :math:`\mathcal N(\hat y, C)`, where
+        :math:`C = C_{\text{known}} + \mathrm{diag}(s^2) + UU^\top` is the total
+        covariance whose likelihood the loss evaluates: the known measurement
+        covariance (or variance) of each row, the given model terms, and the
+        learned terms of ``loss`` (none when ``loss`` is omitted).  The masked
+        density equals the loss's NLL with the same mask.
+
+        Args:
+            y_pred: Predictions ``[n, d]``.
+            loss: The trained loss whose learned covariance terms are included.
+            known_covariance, known_variance, model_scale, model_factor: As in
+                :meth:`KnownCovarianceGaussianNLL.forward
+                <torchregress.losses.KnownCovarianceGaussianNLL.forward>`.
+        """
+        head = KnownCovarianceGaussianNLL() if loss is None else loss
+        if not isinstance(head, KnownCovarianceGaussianNLL):
+            raise TypeError(f"loss must be a KnownCovarianceGaussianNLL, got {type(loss).__name__}")
+        if y_pred.dim() != 2:
+            raise ValueError(f"y_pred must be [n, d], got {tuple(y_pred.shape)}")
+        with torch.no_grad():
+            variance, factor = head._model_terms(y_pred, model_scale, model_factor)
+            cov = _total_covariance(y_pred, known_covariance, known_variance, variance, factor)
+        return cls.from_covariance(y_pred.detach(), cov)
 
     @property
     def batch_size(self) -> int:
@@ -530,12 +587,12 @@ class FlowJoint(DistributionJoint):
 
 
 class ConditionalModelJoint(JointPredictive):
-    """Predictive of a conditional density model with the flow-head API.
+    """Predictive of a conditional model with the flow-head API (density or draws only).
 
-    Wraps any object with ``log_prob(context, target) -> [n]`` and
-    ``sample(context, n_samples) -> [n, S, d]`` (``[n, d]`` for one draw): the
-    convention of :class:`~torchregress.losses.NormalizingFlowLoss` (and
-    :class:`~torchregress.losses.ContrastiveFlowLoss`),
+    Wraps any object with ``sample(context, n_samples) -> [n, S, d]``
+    (``[n, d]`` for one draw) and, for a density, ``log_prob(context, target)
+    -> [n]``: the convention of :class:`~torchregress.losses.NormalizingFlowLoss`
+    (and :class:`~torchregress.losses.ContrastiveFlowLoss`),
     :class:`~torchregress.ensemble.DensityEnsemble`,
     :class:`~torchregress.models.MarginalContrastiveDensity` and
     :class:`~torchregress.models.NormalizingFlowMap`, the same one
@@ -547,19 +604,24 @@ class ConditionalModelJoint(JointPredictive):
     supports them.  ``MarginalContrastiveDensity.log_prob`` normalises by Monte
     Carlo, so its densities (and density-based regions) carry that error.
 
+    A model without ``log_prob`` (an implicit generator, such as the energy-score
+    head of :class:`~torchregress.joint.JointRegressor` or a user-trained
+    generative network) gives a draws-only predictive: ``has_density`` is then
+    ``False`` for this instance, and ``sample`` runs the model on every call
+    (draws are not stored), so mean, covariance and marginals are Monte Carlo.
+
     Args:
-        model: The conditional density model.
+        model: The conditional model.
         context: Model input for the rows, ``[n, ...]``.
         event_dim: Number of targets ``d``; inferred from one draw when omitted.
     """
 
-    has_density = True
-
     def __init__(self, model: Any, context: Tensor, event_dim: Optional[int] = None) -> None:
-        if not (
-            callable(getattr(model, "log_prob", None)) and callable(getattr(model, "sample", None))
-        ):
-            raise TypeError("model must define log_prob(context, target) and sample(context, n)")
+        if not callable(getattr(model, "sample", None)):
+            raise TypeError(
+                "model must define sample(context, n) (and log_prob(context, target) for a density)"
+            )
+        self.has_density = callable(getattr(model, "log_prob", None))
         if context.dim() < 1 or context.shape[0] < 1:
             raise ValueError(f"context must be [n, ...] with n >= 1, got {tuple(context.shape)}")
         self.model = model
@@ -601,6 +663,8 @@ class ConditionalModelJoint(JointPredictive):
         return draws  # type: ignore[no-any-return]
 
     def log_prob(self, y: Tensor, mask: Optional[Tensor] = None) -> Tensor:
+        if not self.has_density:
+            raise NotImplementedError(f"{type(self.model).__name__} has no density (draws only)")
         if mask is not None:
             raise NotImplementedError(
                 f"{type(self.model).__name__} cannot integrate out missing targets"
@@ -696,6 +760,9 @@ class ProjectedJoint(JointPredictive):
     def sample(self, n_samples: int) -> Tensor:
         return self.base.sample(n_samples)[:, :, self.dims]
 
+    def center(self, n_samples: int = 512) -> Tensor:
+        return self.base.center(n_samples)[:, self.dims]
+
 
 class MaskedMarginalJoint(JointPredictive):
     """Exact marginal of a predictive that integrates out masked targets.
@@ -755,6 +822,9 @@ class MaskedMarginalJoint(JointPredictive):
 
     def mean(self, n_samples: int = 512) -> Tensor:
         return self.base.mean(n_samples)[:, self.dims]
+
+    def center(self, n_samples: int = 512) -> Tensor:
+        return self.base.center(n_samples)[:, self.dims]
 
     def covariance(self, n_samples: int = 512) -> Tensor:
         return self.base.covariance(n_samples)[:, self.dims][:, :, self.dims]
@@ -847,6 +917,10 @@ class AffineJoint(JointPredictive):
 
     def mean(self, n_samples: int = 512) -> Tensor:
         inner = self.base.mean(n_samples)
+        return self.loc.to(inner) + self.scale.to(inner) * inner
+
+    def center(self, n_samples: int = 512) -> Tensor:
+        inner = self.base.center(n_samples)
         return self.loc.to(inner) + self.scale.to(inner) * inner
 
     def covariance(self, n_samples: int = 512) -> Tensor:
@@ -947,6 +1021,10 @@ class MixtureJoint(JointPredictive):
     def mean(self, n_samples: int = 512) -> Tensor:
         means = torch.stack([m.mean(n_samples) for m in self.members], dim=1)  # [n, K, d]
         return (self._row_weights(means).unsqueeze(-1) * means).sum(1)
+
+    def center(self, n_samples: int = 512) -> Tensor:
+        centers = torch.stack([m.center(n_samples) for m in self.members], dim=1)  # [n, K, d]
+        return (self._row_weights(centers).unsqueeze(-1) * centers).sum(1)
 
     def covariance(self, n_samples: int = 512) -> Tensor:
         # Law of total covariance: mean of the members' covariances plus the

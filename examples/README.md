@@ -75,6 +75,7 @@ Optional dependencies are noted where a script needs one (`zuko` for flows,
 | `contrastive_flow_parameter_estimation.py` | comparison | `--mode demo`: contrastive normalizing flow for nuisance-aware parameter estimation; `--mode compare`: Gaussian summary, flow NLL, contrastive flow, NRE and NPE on the same pseudo-experiments (`--summary-json-path`; default `all`; needs `zuko`). | fast |
 | `eiv_method_comparison.py` | comparison | EIV loss variants under measurement error. | fast |
 | `multimodal_method_comparison.py` | comparison | Multimodal / multi-target regression methods. | fast |
+| `joint_regression_comparison.py` | comparison | Every `JointRegressor` head against the true conditional density of one multi-target problem: NLL gap, energy and variogram scores, joint region coverage and volume, and what dropping the correlations costs (`--summary-json-path`; needs `zuko`). | slow (about 45 s on 4 CPU threads; not measured on 2 cores) |
 | `noisy_label_comparison.py` | comparison | Noisy-label losses with calibration metrics (`--dataset synthetic\|diabetes`). | fast |
 | `ood_selective_prediction_comparison.py` | comparison | OOD and selective-prediction signals across uncertainty methods (`--dataset synthetic\|diabetes`). | fast |
 | `ordinal_regression_comparison.py` | comparison | Ordinal regression methods (`--dataset synthetic\|diabetes`). | fast |

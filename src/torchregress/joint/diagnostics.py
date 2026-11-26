@@ -47,7 +47,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 import torch
 from scipy.stats import chi2, chisquare, kstest
@@ -77,6 +77,11 @@ __all__ = [
 _F64 = torch.float64
 PRERANKS = ("location", "scale", "dependence", "energy", "average_rank", "band_depth")
 _PAIR_BUDGET = 1 << 22  # elements per chunk of pairwise-distance tensors
+
+
+def _tensor(value: Any) -> Tensor:
+    """``value`` as a tensor (the diagnostics accept NumPy arrays and lists as well)."""
+    return value if isinstance(value, Tensor) else torch.as_tensor(value)
 
 
 def _check_samples(samples: Tensor, y: Tensor) -> None:
@@ -224,6 +229,7 @@ def prerank_histograms(
         n_bins: Histogram bins (at most ``S + 1``).
         seed: Seed of the random tie-breaking.
     """
+    samples, y = _tensor(samples), _tensor(y)
     _check_samples(samples, y)
     if preranks is None:
         names = tuple(p for p in PRERANKS if samples.shape[2] >= 2 or p != "dependence")
@@ -322,6 +328,8 @@ def nees_consistency(
         confidence: :math:`1 - a`.
         mask: Boolean ``[n, d]`` (``True`` = observed).
     """
+    mean, covariance, y = _tensor(mean), _tensor(covariance), _tensor(y)
+    mask = None if mask is None else _tensor(mask)
     if mean.dim() != 2 or y.shape != mean.shape:
         raise ValueError(f"mean and y must be [n, d], got {tuple(mean.shape)}, {tuple(y.shape)}")
     n, d = mean.shape
@@ -407,6 +415,7 @@ def hpd_calibration(levels: Tensor, n_bins: int = 20, confidence: float = 0.95) 
         n_bins: Grid resolution of the returned curve.
         confidence: :math:`1-\alpha` of the band.
     """
+    levels = _tensor(levels)
     if levels.dim() != 1 or levels.numel() == 0:
         raise ValueError("levels must be a non-empty [n] tensor")
     lv = levels.to(_F64)
@@ -461,6 +470,7 @@ def coverage_by_mask(covered: Tensor, mask: Tensor) -> CoverageByMask:
         covered: ``[n]`` boolean (or 0/1) coverage indicators.
         mask: ``[n, d]`` boolean, ``True`` = observed.
     """
+    covered, mask = _tensor(covered), _tensor(mask)
     if covered.dim() != 1 or mask.dim() != 2 or mask.shape[0] != covered.shape[0]:
         raise ValueError("covered must be [n] and mask [n, d]")
     patterns, inverse, counts = torch.unique(
@@ -530,6 +540,7 @@ def worst_slab_coverage(
         seed: Seed for the split and the directions.
         n_grid: Quantile grid for the slab ends.
     """
+    x, covered = _tensor(x), _tensor(covered)
     if x.dim() != 2 or covered.shape != (x.shape[0],):
         raise ValueError("x must be [n, p] and covered [n]")
     if not 0.0 < delta < 1.0:
@@ -668,6 +679,7 @@ def conditional_coverage_gap(
         n_fourier: Random Fourier features (0 for a linear classifier).
         ridge: Ridge penalty on the weights.
     """
+    x, covered = _tensor(x), _tensor(covered)
     if x.dim() != 2 or covered.shape != (x.shape[0],):
         raise ValueError("x must be [n, p] and covered [n]")
     n, p = x.shape
@@ -746,6 +758,7 @@ def dependence_error(samples: Tensor, y: Tensor) -> DependenceError:
         samples: Draws ``[n, S, d]``.
         y: Observations ``[n, d]``.
     """
+    samples, y = _tensor(samples), _tensor(y)
     _check_samples(samples, y)
     draws = samples.to(_F64)
     centred = draws - draws.mean(1, keepdim=True)

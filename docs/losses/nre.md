@@ -12,7 +12,10 @@ problems where a normalized likelihood is unavailable or expensive.
 
 The implementation is in [`torchregress.losses.nre`](../api/losses.md): `NeuralRatioLoss` wraps any
 `nn.Module` scorer, `build_ratio_classifier` constructs the usual MLP, and
-`neural_ratio_logits` / `neural_ratio_loss` are the functional forms.
+`neural_ratio_logits` / `neural_ratio_loss` are the functional forms, and `in_batch_negative_index`
+draws negatives from the batch itself. [`MarginalRatioEstimator`](#marginal-ratio-estimation)
+learns the posterior of chosen parameters with many nuisances, and `RatioPosterior` samples a
+posterior from any learned ratio.
 
 !!! abstract "The idea in one line"
     Train a classifier on *joint* pairs $(\theta, x) \sim p(\theta, x)$ versus *marginal* pairs
@@ -29,6 +32,7 @@ The implementation is in [`torchregress.losses.nre`](../api/losses.md): `NeuralR
 | You need a calibrated conditional density $p(y \mid x)$ for sampling or predictive intervals | [`GaussianNLLLoss`](gaussian.md) or [`NormalizingFlowLoss`](nflows.md) | NRE gives a ratio (likelihood up to an $x$-dependent constant), not a normalized density to sample from |
 | You already train a conditional flow and want to rank alternate parameter contexts | [`ContrastiveFlowLoss`](nflows.md) | InfoNCE over flow log-densities; needs the `zuko` extra and a trained density model, and inherits its density-estimation quality |
 | You want a full amortized posterior $p(\theta \mid x)$ with sampling | Normalizing flow density surrogate (`NormalizingFlowLoss` in SBI mode) | NPE-style surrogates model the posterior directly; NRE needs extra inference steps (grid, MCMC, or reweighting) to turn ratios into posterior samples |
+| You want the posterior of a few parameters out of many (the rest are nuisances) | **`MarginalRatioEstimator`** ([below](#marginal-ratio-estimation)) | One ratio per requested marginal; the nuisances are integrated out by the simulator, and the cost does not grow with their number. `RatioPosterior` samples it by importance resampling of prior draws |
 | You want a regression head on data whose likelihood is intractable | **`NeuralRatioLoss`** (joint encoder + classifier) | The encoder can output $\hat\theta$ and be scored by the ratio against negative candidates instead of a squared error |
 
 ---
@@ -67,7 +71,8 @@ density estimation, and the classifier can be any differentiable scorer, e.g.
 
 For one observation with a matched positive context $\theta^+$ and $K$ negative candidate
 contexts $\{\theta^-_k\}_{k=1}^K$, write $s_+ = s(\theta^+, x)$ and $s^-_k = s(\theta^-_k, x)$.
-The **balanced binary NRE** objective is
+The **balanced binary NRE** objective (NRE-A; "balanced" here means equal weight on the
+positive and negative terms, not the balancing regulariser of BNRE, Delaunoy et al. 2022) is
 
 $$
 \mathcal{L}_{\text{bce}}
@@ -119,7 +124,10 @@ the reference prior independently of $x$, so `negative_target` is rejected for `
 
 !!! tip "Choosing $\gamma$ and $K$"
     $\gamma = 1$ (the default) is a safe start. Larger $K$ makes each update more informative, but
-    unlike NRE-B the estimate stays unbiased at any $K$. A typical range is $K = 2$–$32$.
+    unlike NRE-B the estimate stays unbiased at any $K$. Miller, Weniger and Forré (2022) used
+    $K = 99$ in their benchmark and recommend $K$ up to half the mini-batch size; they report
+    little sensitivity to $\gamma$ between 0.1 and 10. Small $K$ (2–32) is the cheap setting,
+    not the recommended one.
 
 In both objectives the classifier sees a positive pair and negative pairs. The reduction over the
 batch is handled by [`BaseLoss`](base.md) (`'none' | 'mean' | 'sum'`, `mask`, `weights`).
@@ -311,6 +319,151 @@ generating $c$ within the observation noise ($\approx 0.2$ for $\sigma = 0.5$).
     $-\log\sigma(s(\hat\theta, x))$ pushes $\hat\theta$ toward higher ratio than the alternatives.
     Joint encoder–classifier training is co-adaptive; evaluate the recovered estimates on held-out
     data, and consider pretraining or periodically refreshing the classifier.
+
+---
+
+## Marginal ratio estimation
+
+When only a few of the parameters matter, learn their posterior directly. For a subset
+("marginal") $\vartheta = \theta_M$ of $\theta \in \mathbb{R}^P$, a classifier that separates
+$(\vartheta_i, x_i)$ from $(\vartheta_j, x_i)$ estimates the marginal ratio
+$r_M(\vartheta, x) = p(\vartheta \mid x) / p(\vartheta)$; the other parameters are integrated out
+by the simulator, because $(\vartheta_i, x_i)$ is already a draw of
+$p(\vartheta, x) = \int p(\theta, x)\, d\theta_{-M}$ (Miller et al. 2021).
+
+[`MarginalRatioEstimator`](../api/inference.md#marginal-ratio-estimation) holds one embedding
+$e(x)$ shared by all marginals and one head $s_M(\vartheta, e(x))$ per requested marginal, and
+minimises, for a batch of $N$ simulations,
+
+$$
+\mathcal{L} = \sum_{M} \frac{1}{N} \sum_{i=1}^{N}
+\mathcal{L}_{\text{CNRE}}\Bigl(s_M\bigl(\theta_{i,M}, e(x_i)\bigr),\,
+\bigl\{s_M\bigl(\theta_{j,M}, e(x_i)\bigr)\bigr\}_{j \in J_i}\Bigr),
+$$
+
+the CNRE loss above with $\gamma = 1$, where $J_i$ holds $K$ other rows of the batch
+([`in_batch_negative_index`](../api/losses.md): never row $i$, so the negatives are prior draws
+independent of $x_i$). $K$ defaults to half the batch, the large-$K$ regime CNRE recommends; all
+marginals are scored on the same pairs. Each head is a `NeuralRatioLoss` with its
+`build_ratio_classifier`, so `criterion="bce"` or `"multiclass"` are available too.
+
+**Why the nuisance dimension does not enter the cost.** A head reads
+$\operatorname{concat}(\theta_M, e(x))$: its input width is $|M| + \dim e$, whatever $P$ is. The
+embedding reads $x$ only. Adding nuisances changes the simulations, not the network. A joint
+estimator's first layer reads all $P$ parameters instead. In the tests (linear-Gaussian
+simulator, $D = 4$ observations, batch 256, $K = 128$), the head of the interest pair has 6 465
+parameters and takes 17 ms per step for $P = 4$, 16 and 64; a head on all $P$ parameters has
+6 593, 7 361 and 10 433.
+
+**Posterior and normalisation.** `estimator.posterior(x, prior_draws, marginal, prior_log_prob)`
+returns a [`RatioPosterior`](../api/inference.md#marginal-ratio-estimation), a
+`JointPredictive` over $\vartheta$, so [joint regions, diagnostics](../guide/joint-regression.md)
+and `plot_corner_plot` apply. From $M$ prior draws $\vartheta_k$ it samples by
+sampling-importance-resampling with weights $r(\vartheta_k, x)/\sum_j r(\vartheta_j, x)$, gives
+the density
+
+$$
+\log \hat p(\vartheta \mid x) = \log r(\vartheta, x) + \log p(\vartheta) - \log \hat Z(x),
+\qquad \hat Z(x) = \frac{1}{M}\sum_{k=1}^{M} r(\vartheta_k, x),
+$$
+
+and reports $\hat Z(x)$ as `normalisation()`. For the exact ratio
+$E_{p(\vartheta)}[r(\vartheta, x)] = 1$, so a $\hat Z$ far from 1 is an error of the learned
+ratio (the diagnostic of Miller et al. 2022); its relative Monte Carlo error is about
+$\sqrt{1/\mathrm{ESS} - 1/M}$, with `effective_sample_size()` the Kish size of the weights.
+`sample` warns when a row's ESS falls below `min_ess` (100 by default).
+
+!!! warning "What this is not"
+    No truncation of the prior around one observation and no sequential rounds (the "T" of
+    TMNRE): the estimator is amortised over the training prior, and the prior draws passed to
+    `posterior` must come from that prior. When the posterior is much narrower than the prior the
+    ESS drops; more prior draws is then the only remedy here. Not compared against swyft or
+    `sbi` yet.
+
+```python
+import math
+
+import torch
+
+from torchregress.inference import MarginalRatioEstimator
+
+torch.manual_seed(0)
+P, D, sigma = 20, 4, 0.5  # 2 parameters of interest, 18 nuisances
+A = torch.cat(
+    [
+        torch.tensor([[1.0, 0.0], [0.0, 1.0], [0.7, -0.5], [0.3, 0.6]]),
+        torch.randn(D, P - 2) / math.sqrt(P - 2),
+    ],
+    dim=1,
+)
+
+
+def simulate(n: int) -> tuple[torch.Tensor, torch.Tensor]:
+    theta = torch.randn(n, P)  # prior N(0, I)
+    return theta, theta @ A.T + sigma * torch.randn(n, D)
+
+
+# 1. Learn the 1-D and 2-D marginals of (theta_0, theta_1) only.
+theta, x = simulate(10_000)
+marginals = MarginalRatioEstimator.univariate([0, 1]) + MarginalRatioEstimator.pairs([0, 1])
+estimator = MarginalRatioEstimator(P, marginals, observation_dim=D)
+estimator.fit(theta, x, max_epochs=15, patience=5, lr=2e-3)
+
+# 2. Posterior of the pair for three new observations, from 16 384 prior draws.
+theta_true, x_obs = simulate(3)
+prior_draws = torch.randn(16_384, 2)
+
+
+def prior_log_prob(t: torch.Tensor) -> torch.Tensor:
+    return torch.distributions.Normal(0.0, 1.0).log_prob(t).sum(-1)
+
+
+with torch.no_grad():
+    posterior = estimator.posterior(x_obs, prior_draws, (0, 1), prior_log_prob=prior_log_prob)
+    draws = posterior.sample(4000)  # [3, 4000, 2]
+    print("normalisation E_p[r]:", posterior.normalisation())
+    print("effective sample size:", posterior.effective_sample_size())
+
+# 3. The exact posterior of the pair (linear-Gaussian, nuisances integrated out).
+cov = torch.linalg.inv(torch.eye(P) + A.T @ A / sigma**2)
+mean = x_obs @ (cov @ A.T / sigma**2).T
+print("posterior mean, learned:", draws.mean(1))
+print("posterior mean, exact:  ", mean[:, :2])
+print("posterior sd, learned:", draws.std(1).mean(0))
+print("posterior sd, exact:  ", cov.diagonal()[:2].sqrt())
+```
+
+Output (CPU, about 25 s):
+
+```text
+normalisation E_p[r]: tensor([0.9856, 0.9853, 1.1200])
+effective sample size: tensor([9768.8916, 9441.3740, 1224.8834])
+posterior mean, learned: tensor([[-0.3977,  0.1791],
+        [ 0.4802,  0.1462],
+        [-1.6907,  0.8094]])
+posterior mean, exact:   tensor([[-0.3938,  0.1668],
+        [ 0.4654,  0.0832],
+        [-1.7287,  0.7255]])
+posterior sd, learned: tensor([0.6522, 0.6635])
+posterior sd, exact:   tensor([0.6476, 0.6572])
+```
+
+The third observation sits further in the tail of the prior: fewer prior draws carry its
+posterior (ESS 1 225) and its normalisation is 12% off, against a Monte Carlo error of about 3%.
+In the tests, at 10 000 simulations and at most 12 epochs, for $P = 4$, 16 and 64: the learned
+log ratio of the pair correlates with the exact one at 0.98–0.996 on held-out pairs, with a mean
+absolute error of 0.11–0.12 on joint pairs; posterior means are within 0.08–0.10 posterior
+standard deviations (root mean square over 200 observations), standard deviations within 1.5%,
+and the mean $\hat Z$ is 1.02–1.04. For $P = 4$, SBC ranks of 500 fresh simulations (99 draws,
+10 bins, chi-square) give p-values 0.07 and 0.53, the HPD expected-coverage curve passes a KS test
+($p = 0.26$), and a [`JointConformal`](../api/joint.md) density region calibrated on 500
+simulations covers 80.3% of 1 000 fresh ones at nominal 80% (finite-sample coverage over the
+simulated population).
+
+`torchregress.joint.as_joint(estimator, x, prior_samples=..., marginal=...)` gives the same
+`RatioPosterior`. `RatioPosterior` also takes any log-ratio function
+`log_ratio(theta [n, S, d], x [n, ...]) -> [n, S]`, for example a classifier trained with
+`NeuralRatioLoss` on all parameters.
 
 ---
 

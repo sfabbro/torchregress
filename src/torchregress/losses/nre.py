@@ -69,6 +69,7 @@ from .base import BaseLoss
 __all__ = [
     "NeuralRatioLoss",
     "build_ratio_classifier",
+    "in_batch_negative_index",
     "neural_ratio_logits",
     "neural_ratio_loss",
 ]
@@ -151,6 +152,56 @@ def build_ratio_classifier(
     setattr(classifier, "observable_dim", observable_dim)
     setattr(classifier, "input_dim", context_dim + observable_dim)
     return classifier
+
+
+def in_batch_negative_index(
+    batch_size: int,
+    n_negatives: int,
+    *,
+    generator: Optional[torch.Generator] = None,
+    device: Optional[torch.device] = None,
+) -> Tensor:
+    """Indices of ``n_negatives`` other rows of the batch for every row, ``[N, K]``.
+
+    Row ``i`` gets ``K`` distinct rows ``j != i``, so ``theta[index]`` is a
+    ``[N, K, C]`` bank of negatives for :class:`NeuralRatioLoss` drawn from the
+    batch itself: when the batch rows are independent draws of
+    ``(theta, x)``, the ``theta_j`` of other rows are prior draws independent
+    of ``x_i``, which is what ``criterion="cnre"`` requires.  No row is ever
+    its own negative.
+
+    The rows are shuffled by a random permutation ``pi`` and row ``pi[a]``
+    takes rows ``pi[(a + o_k) mod N]`` for ``K`` distinct offsets ``o_k`` drawn
+    from ``1, ..., N - 1``: ``O(N K)`` memory, every row a uniformly random set
+    of partners.  The negatives of different rows overlap (each row is a
+    negative of exactly ``K`` others), as in every in-batch scheme.
+
+    Args:
+        batch_size: Number of rows ``N`` (at least 2).
+        n_negatives: Negatives per row ``K``, in ``[1, N - 1]``.
+        generator: Optional random generator (CPU) for reproducible draws.
+        device: Device of the returned index.
+
+    Returns:
+        ``[N, K]`` long tensor.
+
+    Example:
+        >>> theta = torch.randn(8, 3)
+        >>> index = in_batch_negative_index(8, 4)
+        >>> theta[index].shape
+        torch.Size([8, 4, 3])
+    """
+    n, k = int(batch_size), int(n_negatives)
+    if n < 2:
+        raise ValueError(f"in-batch negatives need at least two rows, got batch_size={n}")
+    if not 1 <= k <= n - 1:
+        raise ValueError(f"n_negatives must be in [1, {n - 1}] for a batch of {n}, got {k}")
+    perm = torch.randperm(n, generator=generator)
+    offsets = torch.randperm(n - 1, generator=generator)[:k] + 1
+    shifted = perm[(torch.arange(n).unsqueeze(1) + offsets.unsqueeze(0)) % n]
+    index = torch.empty_like(shifted)
+    index[perm] = shifted
+    return index.to(device) if device is not None else index
 
 
 def _as_2d(tensor: Tensor, name: str) -> Tensor:

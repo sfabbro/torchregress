@@ -150,3 +150,69 @@ def test_custom_marginal_engine_and_validation() -> None:
         JointRegressor().fit(x[:20], y[:20])
     with pytest.raises(ValueError, match="observed value"):
         JointRegressor().fit(x, torch.cat([y[:, :2], torch.full((700, 1), torch.nan)], 1))
+
+
+class TestScalingDefaults:
+    """Large-N settings: capped hold-out splits and the automatic batch size."""
+
+    @staticmethod
+    def _data(n: int) -> tuple[torch.Tensor, torch.Tensor]:
+        gen = torch.Generator().manual_seed(7)
+        x = torch.randn(n, 3, generator=gen)
+        y = torch.stack([x[:, 0], x[:, 0] - x[:, 1]], dim=1) + 0.3 * torch.randn(
+            n, 2, generator=gen
+        )
+        return x, y
+
+    def test_holdout_splits_are_capped(self) -> None:
+        x, y = self._data(4000)
+        model = JointRegressor("gaussian", max_epochs=2, max_holdout=150, device="cpu").fit(x, y)
+        assert (model.n_val_, model.n_recal_, model.n_conformal_) == (150, 150, 150)
+        assert model.n_train_ == 4000 - 450
+        # the conformal guarantee does not depend on the cap
+        xt, yt = self._data(3000)
+        cover = model.region(xt, alpha=0.2).contains(yt).float().mean()
+        se = (0.2 * 0.8 / 3000 + 0.2 * 0.8 / 151) ** 0.5
+        assert abs(float(cover) - 0.8) < 3.5 * se + 1 / 151
+
+    def test_default_cap_does_not_bind_on_small_data(self) -> None:
+        x, y = self._data(400)
+        model = JointRegressor("gaussian", max_epochs=1, device="cpu").fit(x, y)
+        assert (model.n_val_, model.n_recal_, model.n_conformal_) == (60, 40, 60)
+        assert model.batch_size_ == 256
+
+    def test_auto_batch_size_grows_with_the_training_set(self) -> None:
+        x, y = self._data(300_000)
+        model = JointRegressor("gaussian", max_epochs=1, hidden=(16,), device="cpu").fit(x, y)
+        assert (model.n_val_, model.n_recal_, model.n_conformal_) == (20_000, 20_000, 20_000)
+        assert model.n_train_ == 240_000
+        assert model.batch_size_ == 1024  # 240,000 / 1024 = 235 steps, 240,000 / 512 > 400
+        fixed = JointRegressor("gaussian", max_epochs=1, batch_size=64, device="cpu")
+        assert fixed.fit(*self._data(400)).batch_size_ == 64
+
+    def test_rejects_bad_settings(self) -> None:
+        with pytest.raises(ValueError, match="batch_size"):
+            JointRegressor(batch_size="big")
+        with pytest.raises(ValueError, match="batch_size"):
+            JointRegressor(batch_size=0)
+        with pytest.raises(ValueError, match="max_holdout"):
+            JointRegressor(max_holdout=4)
+
+    def test_flow_predict_needs_no_draws(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Scoring a recalibrated flow predictive must not sample (the center is exact)."""
+        from torchregress.joint.predictive import FlowJoint
+
+        x, y = self._data(1500)
+        y = y + 0.5 * torch.sin(3 * x[:, :2])
+        model = JointRegressor("flow", max_epochs=4, device="cpu").fit(x, y)
+        calls = {"n": 0}
+        original = FlowJoint.sample
+
+        def counting(self: FlowJoint, n_samples: int) -> torch.Tensor:
+            calls["n"] += 1
+            return original(self, n_samples)
+
+        monkeypatch.setattr(FlowJoint, "sample", counting)
+        pred = model.predict(x[:50])
+        assert torch.isfinite(pred.log_prob(y[:50])).all()
+        assert calls["n"] == 0

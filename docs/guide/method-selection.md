@@ -62,7 +62,7 @@ _Generated date_: `2026-11-26`
 | Noisy features / measurement error | `InputNoiseAugmentationLoss + GaussianCRPSLoss` / `MixtureDensityLoss` / `InputNoiseBinnedPDFLoss` | `FunctionalEIVLoss`, `StructuralEIVLoss`, `OrthogonalDistanceRegressionLoss`, `ForwardInversionRegressor`, `SplitMeasurementLoss`, `CorrectedScoreEIVLoss` | Start with explicit input-noise marginalization and test-time predictive averaging, then escalate to Jacobian-based EIV losses only if they clearly help. When attenuation bias dominates and labels are much more precise than the features, prefer the generative y->x inversion or a corrected-score loss; with repeat exposures use the split-measurement loss. |
 | Noisy labels / label corruption | `WeightedHuberLoss` | `BaseEnsembleModel`, `ConformalLoss` | Prefer robust baselines before heavier methods. |
 | Imbalanced / rare-target regression | `GaussianCRPSLoss` / `QuantileLoss + tail-slice evaluation` | `DensityConformal`, `FeatureDistributionSmoother`, `PrimeLoss`, `ConR`, `ContinuousGroupDRO`, `VIRRegressor`, `BalancedMSEBMC`, `RankSimLoss` | VIR adds evidential predictive uncertainty to imbalanced regression; use it when tail accuracy and calibrated uncertainty are both required. Astronomical benchmarks do not justify density weighting as default. Advanced research methods (DensityWeightedLoss, LDSLoss) should only be tried if coverage/calibration allow for tail gains. Representation-level methods (FDS, PRIME, ConR) and group-robust training (Group DRO over target bins) address feature collapse and worst-regime bias that output reweighting cannot fix. |
-| Likelihood-ratio / simulation-based parameter estimation | `NeuralRatioLoss` | `ContrastiveFlowLoss`, `NormalizingFlowLoss`, `NeymanConfidenceSet (prior-free confidence sets from any statistic)` | Use NRE when a simulator can generate (parameters, observations) and the target is an MLE/MAP estimate, likelihood-ratio test or hypothesis ranking. Draw negative contexts from the simulation/prior distribution, and validate posterior weights and intervals with SBC/TARP before trusting them. ContrastiveFlowLoss is the flow-log-density variant; an NPE-style p(theta|x) conditional flow is the alternative when amortised posterior samples are needed. For confidence sets with nominal coverage at every theta, whatever the training population, calibrate the statistic with NeymanConfidenceSet on labelled (theta, x) pairs. |
+| Likelihood-ratio / simulation-based parameter estimation | `NeuralRatioLoss` | `ContrastiveFlowLoss`, `NormalizingFlowLoss`, `MarginalRatioEstimator (posterior of a few parameters among many nuisances)`, `NeymanConfidenceSet (prior-free confidence sets from any statistic)` | Use NRE when a simulator can generate (parameters, observations) and the target is an MLE/MAP estimate, likelihood-ratio test or hypothesis ranking. Draw negative contexts from the simulation/prior distribution, and validate posterior weights and intervals with SBC/TARP before trusting them. ContrastiveFlowLoss is the flow-log-density variant; an NPE-style p(theta|x) conditional flow is the alternative when amortised posterior samples are needed. When only a few parameters matter, MarginalRatioEstimator learns their posterior directly (nuisances integrated out by the simulator) and RatioPosterior samples it from prior draws. For confidence sets with nominal coverage at every theta, whatever the training population, calibrate the statistic with NeymanConfidenceSet on labelled (theta, x) pairs. |
 | Selection bias / covariate-dependent missing labels | `PropensityWeightedLoss` | `DensityWeightedLoss` | Estimate p(observed|x) and apply IPW to reduce selection bias. |
 | Output constraints / monotonicity | `BoundedHead` / `NonNegativeHead` / `NonCrossingSort` | `SimplexHead`, `SpectralNormWrapper` | Apply structural constraints in the head before post-hoc calibration. |
 | Post-hoc calibration transforms | `VarianceTemperatureScaler` | `IsotonicMeanCalibrator`, `PITCalibrator`, `VarianceRestoringCalibrator` | Fit transforms on a held-out calibration split. VarianceRestoringCalibrator matches the marginal distribution (tails/population variance) and is not a substitute for conditional mean/variance calibration. |
@@ -118,7 +118,7 @@ _Generated date_: `2026-11-26`
 | `imbalanced_loss` (11) | yes | no | partial | no | no | no | partial | partial | yes | no |
 | `inference` (1) | yes | no | partial | no | no | no | partial | partial | no | no |
 | `joint_distribution` (2) | yes | yes | yes | no | yes | no | yes | partial | no | no |
-| `likelihood_ratio` (3) | yes | partial | yes | partial | no | no | yes | partial | no | no |
+| `likelihood_ratio` (5) | yes | partial | yes | partial | no | no | yes | partial | no | no |
 | `mc_dropout` (1) | yes | no | partial | yes | partial | partial | partial | partial | no | no |
 | `mdn` (2) | yes | yes | yes | no | yes | no | partial | partial | no | no |
 | `multivariate` (1) | yes | no | partial | no | no | no | partial | partial | no | no |
@@ -273,7 +273,9 @@ _Generated date_: `2026-11-26`
 | `PredictionPoweredInference` | `inference` | `Available` | yes | no | no | no | no | partial | partial |
 | `JointRegressor` | `joint_distribution` | `Available` | yes | yes | no | yes | no | yes | partial |
 | `SklarJoint` | `joint_distribution` | `Available` | yes | no | no | yes | no | partial | partial |
+| `MarginalRatioEstimator` | `likelihood_ratio` | `Available` | yes | no | no | no | no | partial | partial |
 | `NeuralRatioLoss` | `likelihood_ratio` | `Available` | partial | no | no | no | no | partial | partial |
+| `RatioPosterior` | `likelihood_ratio` | `Available` | yes | no | no | no | no | partial | partial |
 | `WifiRatioEnsemble` | `likelihood_ratio` | `Available` | partial | no | partial | no | no | yes | partial |
 | `maximize_score` | `likelihood_ratio` | `Available` | yes | partial | no | no | no | partial | partial |
 | `MCDropoutWrapper` | `mc_dropout` | `Strong` | yes | no | yes | partial | partial | partial | partial |
@@ -374,7 +376,7 @@ Peer-method check: `SWAG`, `BayesianNeuralNetwork`, `MixtureDensityLoss`
 | `imbalanced_loss` | 11 | yes | no | partial | no | no | no | partial | partial | yes | no |
 | `inference` | 1 | yes | no | partial | no | no | no | partial | partial | no | no |
 | `joint_distribution` | 2 | yes | yes | yes | no | yes | no | yes | partial | no | no |
-| `likelihood_ratio` | 3 | yes | partial | yes | partial | no | no | yes | partial | no | no |
+| `likelihood_ratio` | 5 | yes | partial | yes | partial | no | no | yes | partial | no | no |
 | `mc_dropout` | 1 | yes | no | partial | yes | partial | partial | partial | partial | no | no |
 | `mdn` | 2 | yes | yes | yes | no | yes | no | partial | partial | no | no |
 | `multivariate` | 1 | yes | no | partial | no | no | no | partial | partial | no | no |

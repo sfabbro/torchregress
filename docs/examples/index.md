@@ -30,6 +30,7 @@ Use the comparison examples first when making implementation decisions:
   across a deep ensemble, heteroscedastic ensemble, MC dropout, `SWAG`, and `BNN`; `--dataset diabetes` runs a real-data covariate-shift split
 - `examples/eiv_method_comparison.py`: EIV method tradeoffs (analytic/MC/ODR/ensemble variants); `--dataset diabetes` runs on Diabetes with synthetic measurement-error injection
 - `examples/multimodal_method_comparison.py`: Gaussian vs MDN vs optional flow on multimodal multi-target data; `--dataset diabetes` uses real Diabetes features + synthetic multimodal targets
+- `examples/joint_regression_comparison.py`: every `JointRegressor` head (Gaussian, mixture, flow, Sklar, energy, stacked default) against the true conditional density of a three-target problem, with joint region coverage and volume
 - `examples/contrastive_flow_parameter_estimation.py --mode compare`: shared-budget synthetic comparison for Gaussian summary density vs plain flow vs contrastive flow vs NRE vs NPE
 - `examples/noisy_label_comparison.py`: robust + probabilistic methods under label corruption with calibration metrics (`--dataset synthetic|diabetes`)
 - `examples/ordinal_regression_comparison.py`: ordered-target comparison (`OrdinalCrossEntropy`, `CumulativeLink`); `--dataset diabetes` uses train-quantile binning of Diabetes targets
@@ -261,6 +262,12 @@ epistemic, aleatoric = ensemble_variance_decomposition(means, log_vars)
 
 - Using normalizing flows for multi-target regression.
 - Multi-target/multimodal demo; compare with Gaussian and MDN baselines separately for decision-grade selection.
+
+### [Joint Regression Comparison](joint_regression_comparison.md)
+
+- Every head of `JointRegressor` and the stacked default on one problem with a known conditional density.
+- NLL gap to the oracle, energy and variogram scores, coverage and volume of the 90% region for the whole vector, runtime.
+- Shows what per-target predictions lose when targets are correlated.
 
 ### [Multimodal Method Comparison](multimodal_method_comparison.md)
 

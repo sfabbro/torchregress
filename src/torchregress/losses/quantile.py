@@ -99,6 +99,9 @@ class MultiQuantileLoss(RegressionLoss):
     """
     Loss for multiple quantile levels simultaneously.
 
+    Joint API: ``torchregress.joint.as_joint(loss, q, dependence=...)`` joins the predicted
+    quantiles ``[n, Q, d]`` by a dependence model (:class:`~torchregress.joint.SklarJoint`).
+
     This loss is useful for models that predict multiple quantiles at once,
     such as when generating prediction intervals.
 

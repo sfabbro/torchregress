@@ -2,7 +2,7 @@
   "artifact": "method_catalog",
   "version": 1,
   "summary": {
-    "total_methods": 175,
+    "total_methods": 177,
     "families": {
       "bnn": 7,
       "calibration_transform": 10,
@@ -22,7 +22,7 @@
       "imbalanced_loss": 11,
       "inference": 1,
       "joint_distribution": 2,
-      "likelihood_ratio": 3,
+      "likelihood_ratio": 5,
       "mc_dropout": 1,
       "mdn": 2,
       "multivariate": 1,
@@ -49,7 +49,7 @@
     "maturity": {
       "Core": 7,
       "Strong": 20,
-      "Available": 148
+      "Available": 150
     },
     "peer_uq_methods_present": {
       "SWAG": true,
@@ -866,7 +866,7 @@
       "ood_support": "partial",
       "imbalance": "no",
       "noisy_features_eiv": "no",
-      "notes": "Conformal prediction regions using Super-Level-Set regression frontiers."
+      "notes": "Conformal prediction regions using Super-Level-Set regression frontiers; torchregress.joint.SLSRegion exposes them as a JointRegion (exact volume, uniform draws, corner plots, diagnostics)."
     },
     {
       "name": "SplitConformal",
@@ -2033,7 +2033,7 @@
       "ood_support": "partial",
       "imbalance": "no",
       "noisy_features_eiv": "no",
-      "notes": "Joint conditional spline flow with a Gaussian copula; intrinsic arbitrary-mask marginals are exact, while Gaussian-error convolution uses finite quadrature."
+      "notes": "Joint conditional spline flow with a Gaussian copula; intrinsic arbitrary-mask marginals are exact, while Gaussian-error convolution uses finite quadrature. torchregress.joint.CopulaSplineJoint wraps it for the joint API (latent map, exact masks)."
     },
     {
       "name": "MarginalContrastiveDensity",
@@ -2265,7 +2265,7 @@
       "ood_support": "partial",
       "imbalance": "no",
       "noisy_features_eiv": "no",
-      "notes": "Joint predictive p(y | x) for y in R^d from arrays: Gaussian (full or low-rank), mixture, conditional-flow and Sklar heads on standardised targets, stacked by held-out log score, per-target scale recalibration, and conformal regions with finite-sample marginal (not per-x) coverage under exchangeability. NaN targets are integrated out exactly by the Gaussian and mixture heads. Stacking weights are not a posterior (same EM as DensityEnsemble.fit_weights). Related shipped classes: MultivariateGaussianLoss / LowRankGaussianLoss / MixtureDensityLoss / NormalizingFlowLoss (the head losses), DensityEnsemble (wrap with ConditionalModelJoint)."
+      "notes": "Joint predictive p(y | x) for y in R^d from arrays: Gaussian (full or low-rank), mixture, conditional-flow and Sklar heads on standardised targets (Sklar: quantile- or mixture-network marginals, whichever has the better held-out marginal log score), stacked by held-out log score, per-target scale recalibration, and conformal regions with finite-sample marginal (not per-x) coverage under exchangeability. NaN targets are integrated out exactly by the Gaussian and mixture heads. method='energy' is an engression generator trained by the energy score (draws only, no log score, not stacked; sample-ball regions). Stacking weights are not a posterior (same EM as DensityEnsemble.fit_weights). Related shipped classes: MultivariateGaussianLoss / LowRankGaussianLoss / MixtureDensityLoss / NormalizingFlowLoss (the head losses), DensityEnsemble; every multi-target head, loss and ensemble enters the joint API through torchregress.joint.as_joint."
     },
     {
       "name": "SklarJoint",
@@ -2288,7 +2288,7 @@
       "ood_support": "partial",
       "imbalance": "no",
       "noisy_features_eiv": "no",
-      "notes": "Any per-target marginals (Gaussian, quantile grid, histogram, draws) joined by a density on normal scores: a valid joint density for any score model. Dependence ladder IndependenceDependence / SchaakeShuffle / GaussianCopula / ConditionalGaussianCopula / FlowDependence, chosen by select_dependence on held-out out-of-fold scores (lowest rung within 2 paired standard errors of the best, never below independence). Score models with drifting marginals also reshape the marginals (Dependence.marginal_drift). Related shipped class: GaussianCopulaSplineHead (Gaussian copula with spline marginals, trained end to end)."
+      "notes": "Any per-target marginals (Gaussian, Gaussian mixture, quantile grid, histogram, draws) joined by a density on normal scores: a valid joint density for any score model. Dependence ladder IndependenceDependence / SchaakeShuffle / GaussianCopula / ConditionalGaussianCopula / MixtureDependence / FlowDependence, chosen by select_dependence on held-out out-of-fold scores (lowest rung within 2 paired standard errors of the best, never below independence). Score models with drifting marginals also reshape the marginals (Dependence.marginal_drift). Related shipped class: GaussianCopulaSplineHead (Gaussian copula with spline marginals, trained end to end)."
     },
     {
       "name": "JointConformal",
@@ -2491,6 +2491,52 @@
       "imbalance": "no",
       "noisy_features_eiv": "no",
       "notes": "wifi ensembles (Benevedes & Thaler 2025): log r = w0 + sum_i w_i f_i over frozen ratio estimators, convex weight fit on held-out data, sandwich covariance; frequentist error bars on log r(x) and mixture fractions (Gong-Samaniego). Valid when the member span contains the true log ratio."
+    },
+    {
+      "name": "MarginalRatioEstimator",
+      "family": "likelihood_ratio",
+      "public_path": "torchregress.inference.MarginalRatioEstimator",
+      "task_tags": [
+        "parameter_estimation",
+        "simulation_based_inference",
+        "likelihood_ratio",
+        "multi_target"
+      ],
+      "maturity": "Available",
+      "multimodal": "no",
+      "multi_target": "yes",
+      "non_gaussian": "yes",
+      "epistemic": "no",
+      "aleatoric": "no",
+      "decomposition": "no",
+      "calibration": "partial",
+      "ood_support": "partial",
+      "imbalance": "no",
+      "noisy_features_eiv": "no",
+      "notes": "Marginal neural ratio estimation (the marginal half of TMNRE, Miller et al. 2021): one shared embedding of x and one CNRE ratio head per requested marginal of the parameters, in-batch negatives (K = half the batch), all marginals on the same pairs. Nuisance parameters are integrated out by the simulator, so head cost does not grow with their number. No truncation or sequential rounds; amortised over the training prior. posterior() returns a RatioPosterior."
+    },
+    {
+      "name": "RatioPosterior",
+      "family": "likelihood_ratio",
+      "public_path": "torchregress.inference.RatioPosterior",
+      "task_tags": [
+        "parameter_estimation",
+        "simulation_based_inference",
+        "likelihood_ratio",
+        "multi_target"
+      ],
+      "maturity": "Available",
+      "multimodal": "no",
+      "multi_target": "yes",
+      "non_gaussian": "yes",
+      "epistemic": "no",
+      "aleatoric": "no",
+      "decomposition": "no",
+      "calibration": "partial",
+      "ood_support": "partial",
+      "imbalance": "no",
+      "noisy_features_eiv": "no",
+      "notes": "JointPredictive p(theta|x) = p(theta) r(theta, x) from any learned log ratio and prior draws: sampling-importance-resampling with Kish ESS and a low-ESS warning, Monte-Carlo-normalised log_prob, and normalisation() = E_p[r] (1 for an exact ratio, the CNRE diagnostic). Works with joint regions, diagnostics and corner plots; validate with SBC/TARP/HPD calibration."
     },
     {
       "name": "maximize_score",

@@ -333,7 +333,8 @@
       "examples": [
         "examples/multimodal_method_comparison.py",
         "examples/multimodal_method_comparison.py --dataset diabetes",
-        "examples/normalizing_flows_multitarget.py"
+        "examples/normalizing_flows_multitarget.py",
+        "examples/joint_regression_comparison.py"
       ],
       "comparison_grade": "Strong",
       "fairness_controls": [
@@ -351,10 +352,11 @@
       "peer_methods_visible": [
         "GaussianNLLLoss",
         "MixtureDensityLoss",
-        "NormalizingFlowLoss"
+        "NormalizingFlowLoss",
+        "JointRegressor"
       ],
       "gaps": "Needs domain-specific real-data multimodal benchmark(s) (beyond synthetic multimodal targets on real covariates) and optional-dependency CI coverage for zuko flow runs.",
-      "notes": "Dedicated comparisons now include synthetic and real-covariate tracks; flow path is optional and may be skipped in minimal environments without zuko."
+      "notes": "Dedicated comparisons now include synthetic and real-covariate tracks; flow path is optional and may be skipped in minimal environments without zuko. joint_regression_comparison.py scores every JointRegressor head against the true conditional density of one synthetic problem (NLL gap, energy and variogram scores, joint region coverage and volume)."
     },
     {
       "task": "Noisy features / EIV",
