@@ -570,6 +570,7 @@ EXPECTED_SIGNATURES = {
         "conformal_fraction: 'float' = 0.1, max_holdout: 'int' = 20000, "
         "recalibrate: 'bool' = True, "
         "score: 'Union[str, ConformalScore]' = 'auto', n_folds: 'int' = 3, "
+        "n_members: 'Optional[int]' = None, "
         "noise_dim: 'Optional[int]' = None, energy_draws: 'int' = 2, "
         "device: 'Optional[Union[str, torch.device]]' = None, seed: 'int' = 0) -> 'None'"
     ),

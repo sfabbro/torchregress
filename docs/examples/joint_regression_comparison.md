@@ -27,7 +27,7 @@ with $\boldsymbol\delta = (0.8, -0.8, 0.4)$, $\pi(\mathbf x) = \sigma(2 x_2)$, a
 | `JointRegressor('flow')` | Conditional spline flow |
 | `JointRegressor('sklar')` | Per-target marginals (a quantile or a mixture network, whichever scores better on validation rows) joined by the dependence ladder |
 | `JointRegressor('energy')` | Generative network trained by the energy score (no density) |
-| `JointRegressor('auto')` | The default: the density heads stacked by validation log score |
+| `JointRegressor('auto')` | The default: three copies of each network head, the head types stacked by validation log score |
 
 ## Metrics reported
 
@@ -50,20 +50,20 @@ Method                     | NLL    | NLLGap | Energy | Variogram | Cov90  | Log
 ---------------------------+--------+--------+--------+-----------+--------+----------+----------+---------+---------
 oracle                     | 2.0742 | 0.0000 | 0.7454 | 0.3175    | -      | -        | 0.7140   | -       | -
 independent targets        | 3.0642 | 0.9901 | 0.7820 | 0.3752    | -      | -        | 0.7650   | -       | -
-JointRegressor('gaussian') | 2.6451 | 0.5709 | 0.7697 | 0.3427    | 0.9160 | 2.5761   | 0.7660   | 1.0186  | 0.1318
-JointRegressor('mixture')  | 2.2530 | 0.1788 | 0.7524 | 0.3224    | 0.9150 | 2.2486   | 0.7340   | 0.6542  | 0.4725
-JointRegressor('flow')     | 2.3585 | 0.2843 | 0.7623 | 0.3241    | 0.9000 | 2.3047   | 0.6650   | 2.8958  | 13.1344
-JointRegressor('sklar')    | 2.4613 | 0.3871 | 0.7621 | 0.3287    | 0.9060 | 2.4660   | 0.7160   | 10.4279 | 14.3259
-JointRegressor('energy')   | -      | -      | 0.7611 | 0.3313    | 0.9060 | 2.9808   | 0.7230   | 2.5926  | 0.6922
-JointRegressor('auto')     | 2.2173 | 0.1432 | 0.7504 | 0.3196    | 0.9050 | 2.1314   | 0.7220   | 21.0984 | 8.4645
+JointRegressor('gaussian') | 2.6451 | 0.5709 | 0.7697 | 0.3427    | 0.9160 | 2.5761   | 0.7660   | 0.9360  | 0.1281
+JointRegressor('mixture')  | 2.2530 | 0.1788 | 0.7524 | 0.3224    | 0.9150 | 2.2486   | 0.7340   | 0.6439  | 0.4638
+JointRegressor('flow')     | 2.3585 | 0.2843 | 0.7623 | 0.3241    | 0.9000 | 2.3047   | 0.6650   | 2.8815  | 12.1936
+JointRegressor('sklar')    | 2.4613 | 0.3871 | 0.7621 | 0.3287    | 0.9060 | 2.4660   | 0.7160   | 8.2474  | 12.6936
+JointRegressor('energy')   | -      | -      | 0.7611 | 0.3313    | 0.9060 | 2.9808   | 0.7230   | 1.9559  | 0.4123
+JointRegressor('auto')     | 2.1860 | 0.1118 | 0.7477 | 0.3165    | 0.8970 | 2.0491   | 0.7340   | 36.2122 | 14.3660
 ```
 
 Reading it, for this problem and this seed:
 
 - Dropping the correlations costs 0.42 nats per row against the same Gaussian head (0.99 against 0.57), and it shows in the variogram score (0.375 against 0.343) much more than in the energy score.
-- The stacked default has the smallest gap to the oracle (0.14 nats) and the smallest region. The mixture head alone is close (0.18 nats), because the truth is a mixture.
+- The stacked default (three copies of each network head) has the smallest gap to the oracle (0.11 nats) and the smallest region. The mixture head alone is at 0.18 nats; it is the closest single head because the truth is a mixture.
 - Every conformal region is within two standard errors of 0.90 (one standard error is about 0.018 with 400 calibration rows and 1,000 test rows). Per-target 90% intervals taken together cover 67% to 77%.
-- The energy head needs no density family and evaluates in under a second where the flow needs thirteen, but it has no log density and its region is the largest.
+- The energy head needs no density family and evaluates in under half a second where the flow needs twelve, but it has no log density and its region is the largest.
 - The Sklar route picks mixture marginals and the conditional-mixture dependence rung on its validation rows and ends at 0.39 nats, between the single Gaussian (0.57) and the flow (0.28): the two modes move all three targets together, and that shared mode has to be learned by the dependence model from the normal scores.
 
 !!! warning "One problem, one seed"

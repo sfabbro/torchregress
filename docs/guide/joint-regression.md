@@ -528,8 +528,15 @@ represents. With missing targets the norms run over the observed coordinates,
 which is the energy score of the observed sub-vector's marginal: a proper score
 for that marginal, not for the joint.
 
-`"auto"` combines the fitted heads by *stacking*: with $p_k$ the heads and $V$
-the validation rows, the weights solve the concave problem
+`"auto"` trains each network head (Gaussian, mixture, flow) three times from
+different initialisations and averages the copies with equal weights, a *deep
+ensemble* (Lakshminarayanan et al. 2017 [28]; `n_members`, 1 for a single named
+head). On three harness designs with known densities (4,000 rows) the copies
+took the test log-score gap of the flow head from 0.38, 0.45 and 0.58 nats to
+0.25, 0.34 and 0.42, and that of `"auto"` from 0.26, 0.37 and 0.41 to 0.21, 0.30
+and 0.33, for two to three times the fit time. It then combines the head types
+by *stacking*: with $p_k$ the (ensembled) heads and $V$ the validation rows, the
+weights solve the concave problem
 
 $$
 \hat{\mathbf w} = \arg\max_{\mathbf w \in \Delta_K} \sum_{i \in V} \log \sum_{k=1}^K w_k\, p_k(\mathbf y_i \mid \mathbf x_i)
@@ -969,3 +976,4 @@ predictive or region; options, contour conventions and a gallery are in
 | 25 | Braun, Jordan, Bach. "Super-level-set conformal prediction." [arXiv:2605.06210](https://arxiv.org/abs/2605.06210), 2026. |
 | 26 | Shen, X. and Meinshausen, N. "Engression: extrapolation through the lens of distributional regression." *JRSS-B*, 2024 ([arXiv:2307.00835](https://arxiv.org/abs/2307.00835)). |
 | 27 | Gneiting, T. and Raftery, A. E. "Strictly proper scoring rules, prediction, and estimation." *JASA* 102, 2007. |
+| 28 | Lakshminarayanan, B., Pritzel, A. and Blundell, C. "Simple and scalable predictive uncertainty estimation using deep ensembles." *NeurIPS*, 2017. |

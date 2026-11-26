@@ -217,3 +217,107 @@ class TestScalingDefaults:
         pred = model.predict(x[:50])
         assert torch.isfinite(pred.log_prob(y[:50])).all()
         assert calls["n"] == 0
+
+
+class TestEnsembleCopies:
+    """``n_members``: deep-ensemble copies of each network head."""
+
+    @staticmethod
+    def _data(n: int = 600) -> tuple[torch.Tensor, torch.Tensor]:
+        gen = torch.Generator().manual_seed(11)
+        x = torch.randn(n, 3, generator=gen)
+        sign = torch.where(torch.rand(n, generator=gen) < 0.5, 1.0, -1.0)
+        y = torch.stack([x[:, 0] + sign, x[:, 1] - sign], dim=1) + 0.3 * torch.randn(
+            n, 2, generator=gen
+        )
+        return x, y
+
+    def test_single_head_default_is_one_copy(self) -> None:
+        from torchregress.joint import GaussianJoint
+
+        x, y = self._data()
+        model = JointRegressor("gaussian", max_epochs=3, device="cpu").fit(x, y)
+        assert len(model._heads["gaussian"]) == 1
+        assert isinstance(model.predict(x[:5]), GaussianJoint)
+
+    def test_copies_are_averaged_with_equal_weights(self) -> None:
+        from torchregress.joint import MixtureJoint
+
+        x, y = self._data()
+        model = JointRegressor(
+            "mixture", n_members=3, max_epochs=6, recalibrate=False, device="cpu"
+        ).fit(x, y)
+        heads = model._heads["mixture"]
+        assert len(heads) == 3
+        # different initialisations: the copies are not the same network
+        first = [p.detach().clone() for p in heads[0].parameters()]
+        assert any(not torch.equal(a, b) for a, b in zip(first, heads[1].parameters()))
+        pred = model.predict(x[:40])
+        inner = pred.base  # type: ignore[attr-defined]
+        assert isinstance(inner, MixtureJoint) and len(inner.members) == 3
+        torch.testing.assert_close(inner.weights, torch.full((3,), 1 / 3))
+        # density of the ensemble = mean of the copies' densities
+        ys = (y[:40] - model._y_stats[0]) / model._y_stats[1]  # type: ignore[index]
+        xs = (x[:40] - model._x_stats[0]) / model._x_stats[1]  # type: ignore[index]
+        parts = torch.stack([h.predictive(xs).log_prob(ys) for h in heads])
+        expected = torch.logsumexp(parts, 0) - math.log(3.0)
+        jac = model._y_stats[1].log().sum()  # type: ignore[index]
+        torch.testing.assert_close(pred.log_prob(y[:40]), expected - jac, rtol=1e-4, atol=1e-4)
+        assert model.weights_ is not None and model.weights_.tolist() == [1.0]
+
+    def test_auto_ensembles_the_network_heads_and_stacks_across_types(self) -> None:
+        from torchregress.joint import MixtureJoint
+
+        x, y = self._data()
+        model = JointRegressor(max_epochs=3, device="cpu").fit(x, y)
+        assert {k: len(v) for k, v in model._heads.items()} == {
+            "gaussian": 3,
+            "mixture": 3,
+            "flow": 3,
+        }
+        assert model.members_ == ["gaussian", "mixture", "sklar", "flow"]
+        assert model.weights_ is not None and model.weights_.shape == (4,)
+        pred = model.predict(x[:20])
+        inner = pred
+        while hasattr(inner, "base"):  # unit change, and the scale recalibration when kept
+            inner = inner.base
+        assert isinstance(inner, MixtureJoint)
+        assert not any(isinstance(m, MixtureJoint) for m in inner.members)  # one flat mixture
+        torch.testing.assert_close(inner.weights.sum(), torch.tensor(1.0))
+        assert torch.isfinite(pred.log_prob(y[:20])).all()
+        assert pred.sample(7).shape == (20, 7, 2)
+        one = JointRegressor(max_epochs=3, n_members=1, device="cpu").fit(x, y)
+        assert all(len(v) == 1 for v in one._heads.values())
+
+    def test_ensemble_handles_missing_targets_and_is_deterministic(self) -> None:
+        x, y = self._data()
+        y = y.clone()
+        y[::7, 1] = float("nan")
+        a = JointRegressor("gaussian", n_members=2, max_epochs=4, device="cpu").fit(x, y)
+        b = JointRegressor("gaussian", n_members=2, max_epochs=4, device="cpu").fit(x, y)
+        mask = torch.isfinite(y[:30])
+        filled = torch.nan_to_num(y[:30])
+        la = a.predict(x[:30]).log_prob(filled, mask)
+        torch.testing.assert_close(la, b.predict(x[:30]).log_prob(filled, mask))
+        assert torch.isfinite(la).all()
+        region = a.region(x[:30], alpha=0.2)
+        assert region.contains(filled, mask=mask).shape == (30,)
+
+    def test_rejects_bad_n_members(self) -> None:
+        with pytest.raises(ValueError, match="n_members"):
+            JointRegressor(n_members=0)
+
+
+def test_n_parameters_counts_every_copy_and_the_sklar_networks() -> None:
+    gen = torch.Generator().manual_seed(2)
+    x = torch.randn(300, 3, generator=gen)
+    y = torch.stack([x[:, 0], x[:, 0] - x[:, 1]], dim=1) + 0.3 * torch.randn(300, 2, generator=gen)
+    one = JointRegressor("gaussian", max_epochs=1, hidden=(8,), device="cpu").fit(x, y)
+    # (3 -> 8) + (8 -> 2 means + 3 Cholesky entries)
+    assert one.n_parameters_ == (3 * 8 + 8) + (8 * 5 + 5)
+    three = JointRegressor("gaussian", n_members=3, max_epochs=1, hidden=(8,), device="cpu")
+    assert three.fit(x, y).n_parameters_ == 3 * one.n_parameters_
+    sklar = JointRegressor("sklar", max_epochs=1, hidden=(8,), device="cpu").fit(x, y)
+    assert sklar.n_parameters_ > 0
+    with pytest.raises(RuntimeError, match="fit"):
+        _ = JointRegressor().n_parameters_

@@ -683,6 +683,13 @@ class JointRegressor:
             Mahalanobis score for conformal rows with missing targets.  See
             :meth:`region` for the trade-off.
         n_folds: Folds for the out-of-fold normal scores of the Sklar route.
+        n_members: Independently initialised copies of each network head (Gaussian,
+            mixture, flow), averaged with equal weights: a deep ensemble
+            (Lakshminarayanan et al. 2017).  ``None`` (default) means 3 for
+            ``method="auto"`` and 1 for a single named head.  With more than one
+            copy the head's predictive is a mixture of its copies (a Gaussian head
+            is then no longer a single Gaussian); stacking is across head types.
+            The Sklar and energy heads always have one copy.
         noise_dim: Dimension :math:`k` of the Gaussian noise of the energy head,
             concatenated to the features at the input layer.  ``None`` (default) uses
             :math:`k = d`, the least noise for a predictive that is not confined to a
@@ -742,6 +749,7 @@ class JointRegressor:
         n_train_, n_val_, n_recal_, n_conformal_: Rows in each split
             (``n_conformal_`` follows :meth:`calibrate`).
         batch_size_: Minibatch size used by the last :meth:`fit`.
+        n_parameters_: Number of network parameters of the fitted model (all copies).
         dependence_scores_: Validation log score of each dependence rung (Sklar route).
         dependence_: Name of the rung the validation gate chose (Sklar route).
         marginal_scores_: Mean held-out sum of marginal log densities of each marginal
@@ -772,6 +780,7 @@ class JointRegressor:
         recalibrate: bool = True,
         score: Union[str, ConformalScore] = "auto",
         n_folds: int = 3,
+        n_members: Optional[int] = None,
         noise_dim: Optional[int] = None,
         energy_draws: int = 2,
         device: Optional[Union[str, torch.device]] = None,
@@ -814,6 +823,9 @@ class JointRegressor:
             raise ValueError(f"energy_draws must be at least 2, got {energy_draws}")
         self.noise_dim = None if noise_dim is None else int(noise_dim)
         self.energy_draws = int(energy_draws)
+        if n_members is not None and int(n_members) < 1:
+            raise ValueError(f"n_members must be at least 1, got {n_members}")
+        self.n_members = None if n_members is None else int(n_members)
         self.device = torch.device(
             device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
         )
@@ -834,7 +846,7 @@ class JointRegressor:
         self.n_recal_: Optional[int] = None
         self.n_conformal_: Optional[int] = None
         self.n_targets_: Optional[int] = None
-        self._heads: dict[str, _Head] = {}
+        self._heads: dict[str, list[_Head]] = {}
         self._engine: Optional[MarginalEngine] = None
         self._marginal_candidates: dict[str, MarginalEngine] = {}
         self._dependence: Optional[Dependence] = None
@@ -915,6 +927,19 @@ class JointRegressor:
             if name == "sklar":
                 self._fit_sklar(xs, ys, mask, train_d, val_d, gen)
             else:
+                copies = 1 if name == "energy" else self._n_copies()
+                self._heads[name] = []
+                for copy_id in range(1, copies):
+                    # Extra copies of a deep ensemble: same rows, another initialisation.
+                    torch.manual_seed(self.seed + offset + 7919 * copy_id)
+                    extra = self._build_head(name, xs.shape[1], d, ys[train_d], mask[train_d]).to(
+                        dev
+                    )
+                    self._train_head(
+                        extra, name, xs, ys, mask_arg, train_d, val_d, mask, gen, offset
+                    )
+                    self._heads[name].append(extra)
+                torch.manual_seed(self.seed + offset)
                 head = self._build_head(name, xs.shape[1], d, ys[train_d], mask[train_d]).to(dev)
                 rows_tr = train_d if head.supports_missing else train_d[mask[train_d].all(1)]
                 rows_va = val_d if head.supports_missing else val_d[mask[val_d].all(1)]
@@ -957,7 +982,7 @@ class JointRegressor:
                 )
                 for param in head.parameters():
                     param.requires_grad_(False)
-                self._heads[name] = head
+                self._heads[name].insert(0, head)
                 if isinstance(head, _EnergyHead) and eps_va is not None:
                     # Data units: the standardisation shift cancels in the score, the
                     # scale does not.  No log score: this head is never stacked.
@@ -972,7 +997,7 @@ class JointRegressor:
                     n_obs = es.numel() if m_arg is None else int(m_arg[rows_va].any(-1).sum())
                     self.validation_energy_score_[name] = float(es.sum()) / max(n_obs, 1)
                     continue
-            masked = has_missing and name != "sklar" and self._heads[name].supports_missing
+            masked = has_missing and name != "sklar" and self._heads[name][0].supports_missing
             rows_lp = val_d if (masked or not has_missing) else val_d[mask[val_d].all(1)]
             with torch.no_grad():
                 lp = self._member_predictive(name, xs[rows_lp]).log_prob(
@@ -1189,7 +1214,84 @@ class JointRegressor:
             assert self._engine is not None and self._dependence is not None
             scores = self._dependence.predictive(xs.shape[0], xs)
             return SklarJoint(self._engine.predict(xs), scores)
-        return self._heads[name].predictive(xs)
+        copies = [head.predictive(xs) for head in self._heads[name]]
+        return copies[0] if len(copies) == 1 else MixtureJoint(copies)
+
+    @property
+    def n_parameters_(self) -> int:
+        """Number of network parameters of the fitted model.
+
+        Every ensemble copy of every head is counted; for the Sklar route, the
+        networks of the marginal engine and of the chosen dependence rung
+        (closed-form rungs have none).
+        """
+        if self.weights_ is None:
+            raise RuntimeError("Call fit() first.")
+
+        def count(holder: object) -> int:
+            modules = [holder] if isinstance(holder, nn.Module) else list(vars(holder).values())
+            return sum(
+                int(param.numel())
+                for module in modules
+                if isinstance(module, nn.Module)
+                for param in module.parameters()
+            )
+
+        total = sum(count(head) for copies in self._heads.values() for head in copies)
+        for part in (self._engine, self._dependence):
+            if part is not None:
+                total += count(part)
+        return total
+
+    def _n_copies(self) -> int:
+        """Ensemble copies of each network head (see ``n_members``)."""
+        if self.n_members is not None:
+            return self.n_members
+        return 3 if self.method == "auto" else 1
+
+    def _train_head(
+        self,
+        head: _Head,
+        name: str,
+        xs: Tensor,
+        ys: Tensor,
+        mask_arg: Optional[Tensor],
+        train_d: Tensor,
+        val_d: Tensor,
+        mask: Tensor,
+        gen: torch.Generator,
+        offset: int,
+    ) -> None:
+        """Train one density head with early stopping on the validation log score."""
+        rows_tr = train_d if head.supports_missing else train_d[mask[train_d].all(1)]
+        rows_va = val_d if head.supports_missing else val_d[mask[val_d].all(1)]
+        m_arg = mask_arg if head.supports_missing else None
+
+        def batch_loss(idx: Tensor) -> Tensor:
+            r = rows_tr[idx.to(rows_tr.device)]
+            return head.loss(xs[r], ys[r], None if m_arg is None else m_arg[r])
+
+        def validation() -> Tensor:
+            return head.loss(xs[rows_va], ys[rows_va], None if m_arg is None else m_arg[rows_va])
+
+        train_module(
+            head,
+            batch_loss,
+            int(rows_tr.numel()),
+            validation,
+            max_epochs=self.max_epochs,
+            patience=self.patience,
+            batch_size=self.batch_size_,
+            lr=self.lr,
+            weight_decay=self.weight_decay,
+            generator=gen,
+            optimizer="adamw",
+            clip_norm=10.0,
+            skip_nonfinite=True,
+            name=f"the {name} head",
+        )
+        for param in head.parameters():
+            param.requires_grad_(False)
 
     def _base_predictive(self, x: Tensor) -> JointPredictive:
         """Stacked predictive in data units, before recalibration."""
@@ -1207,7 +1309,15 @@ class JointRegressor:
                 keep = self.weights_ == self.weights_.max()
             kept = [m for m, k in zip(members, keep.tolist()) if k]
             weights = self.weights_[keep] / self.weights_[keep].sum()
-            inner = kept[0] if len(kept) == 1 else MixtureJoint(kept, weights.to(self.device))
+            # One flat mixture: the copies of an ensembled head share its stacking weight.
+            flat: list[JointPredictive] = []
+            flat_w: list[float] = []
+            for member, weight in zip(kept, weights.tolist()):
+                parts = member.members if isinstance(member, MixtureJoint) else [member]
+                flat += parts
+                flat_w += [weight / len(parts)] * len(parts)
+            flat_weights = torch.tensor(flat_w, dtype=torch.float32, device=self.device)
+            inner = flat[0] if len(flat) == 1 else MixtureJoint(flat, flat_weights)
         loc, scale = self._y_stats
         if isinstance(inner, GaussianJoint):
             # Stay Gaussian in data units: closed-form marginals, conditionals and CDFs.

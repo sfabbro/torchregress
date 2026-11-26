@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `JointRegressor.n_parameters_`: number of network parameters of the fitted model (every
+  ensemble copy, and the Sklar route's engine and dependence networks).
 - Dependence ladder rung 4, `torchregress.joint.MixtureDependence(n_components=3, ...)`: a
   Gaussian mixture on the normal scores whose weights, means and covariances depend on `x`
   (a mixture density network; constant without `x`), for dependence with a few regimes such
@@ -354,6 +356,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ScaleRecalibrator(..., about="mean" | "center")` takes its per-target scaling about either.
 ### Changed
 
+- `JointRegressor(method="auto")` now trains three independently initialised copies of each
+  network head (Gaussian, mixture, flow) and averages them with equal weights before
+  stacking across head types: a deep ensemble (`n_members=None`: 3 for `"auto"`, 1 for a
+  single named head; set `n_members=1` for the old behaviour). The first full-size harness
+  run had the library's own 3-flow `DensityEnsemble` ahead of the stacked default on every
+  dataset. Measured on three harness designs with known densities (4,000 rows, one seed):
+  test log-score gap to the oracle 0.26, 0.37, 0.41 nats with one copy and 0.21, 0.30, 0.33
+  with three (flow head alone 0.38, 0.45, 0.58 against 0.25, 0.34, 0.42; mixture head 0.37,
+  0.49, 0.78 against 0.31, 0.41, 0.52), for two to three times the fit time (13 to 19 s
+  against 27 to 41 s on a laptop CPU).
 - `JointRegressor` holds out less by default: `val_fraction=0.1`, `recal_fraction=0.05`,
   `conformal_fraction=0.1` (were 0.15, 0.10, 0.15), so 75% of the rows train the heads instead
   of 60%. Measured on three harness designs with known densities (4,000 rows, two seeds), the
