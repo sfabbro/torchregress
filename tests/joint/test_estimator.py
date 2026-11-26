@@ -258,7 +258,7 @@ class TestEnsembleCopies:
         torch.testing.assert_close(inner.weights, torch.full((3,), 1 / 3))
         # density of the ensemble = mean of the copies' densities
         ys = (y[:40] - model._y_stats[0]) / model._y_stats[1]  # type: ignore[index]
-        xs = (x[:40] - model._x_stats[0]) / model._x_stats[1]  # type: ignore[index]
+        xs = model._standardised(x[:40])
         parts = torch.stack([h.predictive(xs).log_prob(ys) for h in heads])
         expected = torch.logsumexp(parts, 0) - math.log(3.0)
         jac = model._y_stats[1].log().sum()  # type: ignore[index]
@@ -321,3 +321,48 @@ def test_n_parameters_counts_every_copy_and_the_sklar_networks() -> None:
     assert sklar.n_parameters_ > 0
     with pytest.raises(RuntimeError, match="fit"):
         _ = JointRegressor().n_parameters_
+
+
+class TestFeatureClipping:
+    """Features are clamped to the training range before they enter the networks."""
+
+    @staticmethod
+    def _data(n: int = 800) -> tuple[torch.Tensor, torch.Tensor]:
+        gen = torch.Generator().manual_seed(21)
+        x = torch.randn(n, 3, generator=gen)
+        y = torch.stack([x[:, 0], x[:, 0] - x[:, 1]], dim=1) + 0.2 * torch.randn(
+            n, 2, generator=gen
+        )
+        return x, y
+
+    def test_a_glitched_feature_does_not_blow_up_the_density(self) -> None:
+        x, y = self._data()
+        model = JointRegressor("gaussian", max_epochs=40, device="cpu").fit(x, y)
+        glitch = x[:5].clone()
+        glitch[:, 2] = 500.0  # hundreds of standard deviations outside the training range
+        at_edge = x[:5].clone()
+        at_edge[:, 2] = x[:, 2].max()
+        # the model's training rows are a subset of x, so the clamp is at most that maximum
+        lp_glitch = model.predict(glitch).log_prob(y[:5])
+        assert torch.isfinite(lp_glitch).all()
+        clamped = glitch.clone()
+        assert model._x_range is not None and model._x_stats is not None
+        top = model._x_range[1][2] * model._x_stats[1][2] + model._x_stats[0][2]
+        clamped[:, 2] = top
+        torch.testing.assert_close(lp_glitch, model.predict(clamped).log_prob(y[:5]))
+        assert float(top) <= float(x[:, 2].max()) + 1e-5
+        # without the clamp the same rows are scored somewhere else entirely
+        free = JointRegressor("gaussian", max_epochs=40, clip_features=False, device="cpu")
+        lp_free = free.fit(x, y).predict(glitch).log_prob(y[:5])
+        assert not torch.allclose(lp_free, lp_glitch)
+
+    def test_rows_inside_the_range_are_untouched(self) -> None:
+        x, y = self._data()
+        model = JointRegressor("gaussian", max_epochs=5, device="cpu").fit(x, y)
+        assert model._x_range is not None and model._x_stats is not None
+        xs = (x - model._x_stats[0]) / model._x_stats[1]
+        inside = ((xs >= model._x_range[0]) & (xs <= model._x_range[1])).all(1)
+        assert int(inside.sum()) >= model.n_train_  # every training row, by construction
+        clamped = model.predict(x[inside][:50]).log_prob(y[inside][:50])
+        model.clip_features = False  # the same fitted networks, no clamp at predict time
+        torch.testing.assert_close(clamped, model.predict(x[inside][:50]).log_prob(y[inside][:50]))

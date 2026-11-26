@@ -32,7 +32,7 @@ from torch import Tensor
 
 from ..losses.known_covariance import KnownCovarianceGaussianNLL, _total_covariance
 from ..metrics.distribution import sample_hpd_level
-from ._common import masked_gaussian_quadratic, target_index
+from ._common import masked_gaussian_quadratic, safe_cholesky, target_index
 
 __all__ = [
     "AffineJoint",
@@ -298,7 +298,7 @@ class GaussianJoint(JointPredictive):
     @classmethod
     def from_covariance(cls, mean: Tensor, covariance: Tensor) -> "GaussianJoint":
         """Build from a covariance ``[n, d, d]`` (or ``[d, d]``)."""
-        return cls(mean, torch.linalg.cholesky(covariance))
+        return cls(mean, safe_cholesky(covariance))
 
     @classmethod
     def from_low_rank(cls, mean: Tensor, cov_factor: Tensor, cov_diag: Tensor) -> "GaussianJoint":
@@ -310,7 +310,7 @@ class GaussianJoint(JointPredictive):
         cov = cov_factor @ cov_factor.mT + torch.diag_embed(cov_diag).to(
             device=cov_factor.device, dtype=cov_factor.dtype
         )
-        return cls(mean, torch.linalg.cholesky(cov))
+        return cls(mean, safe_cholesky(cov))
 
     @classmethod
     def from_known_covariance(
@@ -402,7 +402,7 @@ class GaussianJoint(JointPredictive):
     def marginal(self, dims: Union[int, Sequence[int]]) -> "GaussianJoint":
         idx = torch.as_tensor(target_index(dims, self.event_dim), device=self.loc.device)
         cov = self.covariance()[:, idx][:, :, idx]
-        return GaussianJoint(self.loc[:, idx], torch.linalg.cholesky(cov))
+        return GaussianJoint(self.loc[:, idx], safe_cholesky(cov))
 
     def affine(self, loc: Tensor, scale: Tensor) -> "GaussianJoint":
         r"""The Gaussian of :math:`\mathrm{loc} + \mathrm{scale} \odot Y`, per-target ``[d]``."""
@@ -424,13 +424,13 @@ class GaussianJoint(JointPredictive):
         r = torch.as_tensor(given, device=self.loc.device)
         h = torch.as_tensor(rest, device=self.loc.device)
         cov = self.covariance()
-        chol_rr = torch.linalg.cholesky(cov[:, r][:, :, r])
+        chol_rr = safe_cholesky(cov[:, r][:, :, r])
         cov_hr = cov[:, h][:, :, r]
         gain = torch.cholesky_solve(cov_hr.mT, chol_rr).mT  # Sigma_hr Sigma_rr^{-1}
         resid = (values.to(self.loc) - self.loc[:, r]).unsqueeze(-1)
         mean = self.loc[:, h] + (gain @ resid).squeeze(-1)
         cov_cond = cov[:, h][:, :, h] - gain @ cov_hr.mT
-        return GaussianJoint(mean, torch.linalg.cholesky(cov_cond))
+        return GaussianJoint(mean, safe_cholesky(cov_cond))
 
     def mean(self, n_samples: int = 512) -> Tensor:
         return self.loc

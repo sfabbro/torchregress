@@ -92,7 +92,7 @@ from scipy.stats import chi2
 from torch import Tensor
 
 from ..losses.conformal import _weighted_conformal_thresholds, finite_sample_quantile
-from ._common import masked_gaussian_quadratic
+from ._common import masked_gaussian_quadratic, safe_cholesky
 from .predictive import JointPredictive
 
 __all__ = [
@@ -402,7 +402,7 @@ class MahalanobisScore(ConformalScore):
     def _prepare(self, predictive: JointPredictive) -> _State:
         mean = predictive.mean()
         cov = predictive.covariance()
-        return {"mean": mean, "cov": cov, "chol": torch.linalg.cholesky(cov)}
+        return {"mean": mean, "cov": cov, "chol": safe_cholesky(cov)}
 
     def _evaluate(
         self, predictive: JointPredictive, y: Tensor, mask: Optional[Tensor], state: _State

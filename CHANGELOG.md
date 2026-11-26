@@ -431,6 +431,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `JointRegressor` clamps every feature to the range of its training rows before it enters
+  the networks (`clip_features=True`, the default; `False` restores the old behaviour). On the
+  river-flow set `mt_rf1` one test row has a feature 178 standard deviations out, and its log
+  density was -1.4e11 under the Gaussian head, which made the mean log score meaningless for
+  every head. With the clamp (seed 0, 1,000 test rows): Gaussian 11.1 nats, mixture 9.7 (was
+  30.4), flow 8.9 (13.1), Sklar 7.0 (54.0), against 10.1 for the harness's 3-flow ensemble;
+  regions cover 0.91 to 0.93. Rows inside the training range are untouched, and the clamp is
+  applied to calibration and test rows alike.
+- `GaussianJoint.from_covariance`, `from_low_rank`, `marginal`, `condition` and
+  `MahalanobisScore` factorise through the jittered Cholesky of the package, so a covariance
+  that is positive definite only up to float32 rounding (condition numbers of 1e7 and beyond
+  on `mt_rf1`) no longer raises `linalg.cholesky: not positive-definite`. `JointRegressor()`
+  and its Gaussian head failed that way in the full-size harness run.
 - `SampleMarginals` no longer uses every draw as a quantile knot: a density built from single
   spacings is too low by `1 - gamma` = 0.42 nats per target on average, whatever the number
   of draws (measured -0.40 to -0.44 for 50, 200 and 1,000 Gaussian draws). The default keeps

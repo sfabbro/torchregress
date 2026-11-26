@@ -675,6 +675,13 @@ class JointRegressor:
             within :math:`5 \times 10^{-5}` of its level) and the rows go to
             training instead.
         recalibrate: Fit the per-target scale recalibration.
+        clip_features: Clamp every feature to the range seen in the training rows
+            before it enters the networks (default).  A network has no information
+            beyond that range and extrapolates arbitrarily: one test row with a
+            feature 178 standard deviations out (a sensor glitch in a river-flow
+            data set) had a log density of :math:`-10^{11}` without it.  Rows inside
+            the range are untouched; the clamp is applied to calibration and test
+            rows alike, so the coverage statement of :meth:`region` is unchanged.
         score: Conformity score of :meth:`region`; ``"auto"`` picks the latent norm
             (:class:`~torchregress.joint.LatentScore`) for a Gaussian predictive (whose
             latent ball is its highest-density region), the HPD level
@@ -778,6 +785,7 @@ class JointRegressor:
         conformal_fraction: float = 0.1,
         max_holdout: int = 20_000,
         recalibrate: bool = True,
+        clip_features: bool = True,
         score: Union[str, ConformalScore] = "auto",
         n_folds: int = 3,
         n_members: Optional[int] = None,
@@ -813,6 +821,7 @@ class JointRegressor:
         self.val_fraction, self.recal_fraction = float(val_fraction), float(recal_fraction)
         self.conformal_fraction = float(conformal_fraction)
         self.recalibrate = bool(recalibrate)
+        self.clip_features = bool(clip_features)
         self.score = score
         if int(n_folds) < 2:
             raise ValueError(f"n_folds must be at least 2, got {n_folds}")
@@ -852,6 +861,7 @@ class JointRegressor:
         self._dependence: Optional[Dependence] = None
         self._recalibrator: Optional[ScaleRecalibrator] = None
         self._x_stats: Optional[tuple[Tensor, Tensor]] = None
+        self._x_range: Optional[tuple[Tensor, Tensor]] = None
         self._y_stats: Optional[tuple[Tensor, Tensor]] = None
         self._conformal_rows: Optional[tuple[Tensor, Tensor, Tensor]] = None
         self._conformal_cache: dict[Any, tuple[JointConformal, Optional[JointConformal]]] = {}
@@ -912,7 +922,11 @@ class JointRegressor:
             self.batch_size_ = self.batch_size
 
         dev = self.device
-        xs = ((x - x_mean) / x_std).to(dev)
+        xs = (x - x_mean) / x_std
+        # Standardised range of the training rows; held-out rows are clamped to it here
+        # exactly as new rows are at predict time.
+        self._x_range = (xs[train].amin(0), xs[train].amax(0))
+        xs = self._standardised(x).to(dev)
         ys = torch.where(observed, (y - y_mean) / y_std, torch.zeros_like(y)).to(dev)
         mask = observed.to(dev)
         mask_arg: Optional[Tensor] = mask if has_missing else None
@@ -1243,6 +1257,14 @@ class JointRegressor:
                 total += count(part)
         return total
 
+    def _standardised(self, x: Tensor) -> Tensor:
+        """Standardised features, clamped to the training range when ``clip_features``."""
+        assert self._x_stats is not None
+        xs = (x - self._x_stats[0]) / self._x_stats[1]
+        if self.clip_features and self._x_range is not None:
+            xs = torch.maximum(torch.minimum(xs, self._x_range[1]), self._x_range[0])
+        return xs
+
     def _n_copies(self) -> int:
         """Ensemble copies of each network head (see ``n_members``)."""
         if self.n_members is not None:
@@ -1297,7 +1319,7 @@ class JointRegressor:
         """Stacked predictive in data units, before recalibration."""
         if self._x_stats is None or self._y_stats is None or self.weights_ is None:
             raise RuntimeError("Call fit() first.")
-        xs = ((x - self._x_stats[0]) / self._x_stats[1]).to(self.device)
+        xs = self._standardised(x).to(self.device)
         with torch.no_grad():
             members = [self._member_predictive(name, xs) for name in self.members_]
         inner: JointPredictive

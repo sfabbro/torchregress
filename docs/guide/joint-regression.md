@@ -812,15 +812,15 @@ fig = plot_corner_plot(
 ```
 
 ```text
-gaussian  KL 0.119 +- 0.013 nats, HPD KS p = 0.00013, SBC min p = 0.001
-mixture   KL 0.069 +- 0.008 nats, HPD KS p = 0.77, SBC min p = 0.18
+gaussian  KL 0.119 +- 0.013 nats, HPD KS p = 0.00013, SBC min p = 0.00096
+mixture   KL 0.069 +- 0.008 nats, HPD KS p = 0.77, SBC min p = 0.17
 ```
 
 ![Learned posterior against the exact posterior for one data set](../assets/images/joint/guide/npe_corner_exact.png)
 
 The mixture head is closer (0.07 against 0.12 nats) and its HPD regions hold
 their stated mass over 2,000 data sets; the Gaussian head's do not, and SBC,
-one parameter at a time, also rejects it (smallest p = 0.001). For
+one parameter at a time, also rejects it (smallest p = 0.00096). For
 data set 17 the learned posterior sits slightly low in $a$ and is otherwise
 close to the exact one.
 **Cross-check against your sampler:** overlay its draws with `others=`, and test
@@ -913,6 +913,15 @@ print(
 ```text
 SLSRegion: coverage 0.900, median log volume 0.89
 ```
+
+**Inputs outside the training range.** `JointRegressor` clamps every feature to
+the range of its training rows before it enters the networks (`clip_features=True`).
+A network has no information beyond that range and extrapolates arbitrarily: on a
+river-flow data set one test row had a feature 178 standard deviations out, and its
+log density was $-10^{11}$ before the clamp. Rows inside the range are untouched,
+and calibration and test rows are treated alike, so the coverage statement of
+`region` is the same. A prediction for such a row is still only the prediction at
+the edge of what the model has seen.
 
 **Large data.** Held-out splits are capped at `max_holdout` rows each (20,000 by
 default): more held-out rows add little, so with a million rows 94% of them
