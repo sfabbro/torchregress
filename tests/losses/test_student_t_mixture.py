@@ -29,7 +29,7 @@ def _params(b=5, k=3, p=4, seed=0, dtype=F64, diag=False):
     loc = torch.randn(b, k, p, generator=g, dtype=dtype)
     if diag:
         s = torch.rand(b, k, p, generator=g, dtype=dtype) + 0.3
-        cov = torch.diag_embed(s.square())
+        cov = torch.diag_embed(s.square()).to(device=s.device, dtype=s.dtype)
     else:
         a = torch.randn(b, k, p, p, generator=g, dtype=dtype)
         cov = a @ a.mT / p + 0.3 * torch.eye(p, dtype=dtype)
@@ -529,7 +529,13 @@ class TestQuantilesAndSampling:
         logits, loc, cov = _params(b=2, k=3, p=2, seed=6)
         df = torch.tensor([4.0, 9.0, math.inf], dtype=F64)
         for form in FORMS:
-            c = cov if form != "scale_diag" else torch.diag_embed(cov.diagonal(dim1=-2, dim2=-1))
+            c = (
+                cov
+                if form != "scale_diag"
+                else torch.diag_embed(cov.diagonal(dim1=-2, dim2=-1)).to(
+                    device=cov.device, dtype=cov.dtype
+                )
+            )
             mix = _mixture(logits, loc, c, df, form)
             n = 400_000
             draws = mix.sample((n,))
@@ -581,7 +587,9 @@ class TestQuantilesAndSampling:
 def _tril_param(p, k, b, seed):
     g = torch.Generator().manual_seed(seed)
     raw = torch.randn(b, k, p, p, dtype=F64, generator=g) * 0.3
-    return raw.tril(-1) + torch.diag_embed(torch.rand(b, k, p, dtype=F64, generator=g) + 0.5)
+    return raw.tril(-1) + torch.diag_embed(torch.rand(b, k, p, dtype=F64, generator=g) + 0.5).to(
+        dtype=F64
+    )
 
 
 class TestGradients:

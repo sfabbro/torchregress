@@ -372,7 +372,9 @@ class StudentTMixture(Distribution):
         if self._form == "scale_tril":
             return self._factor
         if self._form == "diag":
-            return torch.diag_embed(self._factor)
+            return torch.diag_embed(self._factor).to(
+                device=self._factor.device, dtype=self._factor.dtype
+            )
         inv = self._precision_inverse()
         r = torch.linalg.qr(inv, mode="r")[1]
         sign = torch.where(r.diagonal(dim1=-2, dim2=-1) < 0, -1.0, 1.0).to(r.dtype)
@@ -412,7 +414,9 @@ class StudentTMixture(Distribution):
     def _sqrt_matrix(self) -> Tensor:
         """A square root ``S_k`` of ``Σ_k`` (not necessarily triangular) ``[..., K, P, P]``."""
         if self._form == "diag":
-            return torch.diag_embed(self._factor)
+            return torch.diag_embed(self._factor).to(
+                device=self._factor.device, dtype=self._factor.dtype
+            )
         if self._form == "scale_tril":
             return self._factor
         return self._precision_inverse().mT
@@ -428,7 +432,12 @@ class StudentTMixture(Distribution):
         observations, censored limits) before calling this. A row whose terms
         are all zero (nothing observed) gives exactly zero.
         """
-        return torch.logsumexp(self.log_weights + component_log_prob, dim=-1)
+        total = torch.logsumexp(self.log_weights + component_log_prob, dim=-1)
+        # ``logsumexp(log_softmax(.))`` is zero only up to rounding (about 1e-16, and
+        # platform dependent). Subtract that residual, evaluated on the same broadcast
+        # layout, so an all-zero row gives exactly zero everywhere.
+        residual = torch.logsumexp(self.log_weights + torch.zeros_like(component_log_prob), dim=-1)
+        return total - residual
 
     def log_prob(self, value: Tensor, mask: Tensor | None = None) -> Tensor:
         """Mixture log density ``[...]`` of ``value [..., P]`` (see :meth:`component_log_prob`)."""
@@ -486,7 +495,7 @@ class StudentTMixture(Distribution):
         # add exactly nothing to the quadratic form or the log-determinant.
         mf = m.to(resid.dtype)
         rows = mf.unsqueeze(-1) * self._sqrt_matrix()
-        cov = rows @ rows.mT + torch.diag_embed(1.0 - mf)
+        cov = rows @ rows.mT + torch.diag_embed(1.0 - mf).to(device=rows.device, dtype=rows.dtype)
         return self._gaussian_form_terms(resid, cov, dim)
 
     def _gaussian_form_terms(self, resid: Tensor, cov: Tensor, dim: Tensor) -> Tensor:
@@ -575,7 +584,7 @@ class StudentTMixture(Distribution):
             vf = v.to(rows.dtype)
             rows = rows * vf.unsqueeze(-1)
             diag = torch.where(v, noise, torch.ones((), dtype=rows.dtype, device=rows.device))
-            cov = rows @ rows.mT + torch.diag_embed(diag)
+            cov = rows @ rows.mT + torch.diag_embed(diag).to(device=rows.device, dtype=rows.dtype)
             return self._gaussian_form_terms(resid, cov, dim)
         # Information form: N^{-1/2} with zero precision on invalid entries.
         w = torch.where(v, torch.rsqrt(torch.where(v, noise, torch.ones_like(noise))), 0.0)

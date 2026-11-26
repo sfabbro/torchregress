@@ -459,7 +459,7 @@ class TestStudentTComponents:
         target = torch.randn(5, 2, dtype=torch.float64)
         logw, means, factor = loss_fn._extract_distribution_parameters(y_pred)
         if cov_type == "diagonal":
-            cov = torch.diag_embed(factor.square())
+            cov = torch.diag_embed(factor.square()).to(device=factor.device, dtype=factor.dtype)
         elif param == "precision":
             cov = torch.linalg.inv(factor @ factor.mT)
         else:

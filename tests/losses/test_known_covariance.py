@@ -84,6 +84,29 @@ class TestScipyParity:
         cov = _total(known[0], scale[0], factor[0]).expand(6, -1, -1)
         np.testing.assert_allclose(res.nll.numpy(), _scipy_nll(residual, cov), atol=1e-11)
 
+    @pytest.mark.parametrize("lead", [False, True])
+    def test_per_row_known_covariance_with_shared_factor(self, lead: bool) -> None:
+        """A shared ``[D, k]`` / ``[1, D, k]`` factor broadcasts over per-row ``[B, D, D]``."""
+        residual, known, scale, factor = _problem()
+        shared = factor[:1] if lead else factor[0]
+        res = known_covariance_gaussian_nll(residual, known, model_scale=scale, model_factor=shared)
+        cov = _total(known, scale, factor[:1])
+        np.testing.assert_allclose(res.nll.numpy(), _scipy_nll(residual, cov), atol=1e-11)
+
+    def test_shared_known_covariance_with_per_row_factor(self) -> None:
+        residual, known, scale, factor = _problem()
+        res = known_covariance_gaussian_nll(
+            residual, known[0], model_scale=scale, model_factor=factor
+        )
+        cov = _total(known[:1], scale, factor)
+        np.testing.assert_allclose(res.nll.numpy(), _scipy_nll(residual, cov), atol=1e-11)
+
+    def test_constant_factor_class_with_per_row_known_covariance(self) -> None:
+        residual, known, _, _ = _problem()
+        loss = KnownCovarianceGaussianNLL(residual.shape[1], rank=2, factor="constant").double()
+        value = loss(torch.zeros_like(residual), residual, known_covariance=known)
+        assert torch.isfinite(value)
+
     def test_whitened_residual_is_the_cholesky_whitening(self) -> None:
         residual, known, scale, factor = _problem()
         res = known_covariance_gaussian_nll(
@@ -405,7 +428,9 @@ class TestNumerics:
         res = known_covariance_gaussian_nll(residual, known, model_scale=floor)
         assert torch.equal(res.jitter, torch.zeros(2, dtype=F64))
         np.testing.assert_allclose(
-            res.nll.numpy(), _scipy_nll(residual, known + torch.diag(floor.square())), atol=1e-10
+            res.nll.numpy(),
+            _scipy_nll(residual, known + torch.diag(floor.square()).to(dtype=known.dtype)),
+            atol=1e-10,
         )
         # Opt-in jitter factorises it and reports the amount used.
         res = known_covariance_gaussian_nll(residual, known, max_jitter=1e-6)

@@ -240,7 +240,14 @@ def _evaluate(
             if masked_any:
                 uf = torch.where(observed.unsqueeze(-1), uf, zero)
             flags.append((~torch.isfinite(uf).all(), "model_factor must be finite where observed"))
-            cov = uf @ uf.mT if cov is None else torch.baddbmm(cov, uf, uf.mT)
+            if cov is None:
+                cov = uf @ uf.mT
+            elif uf.shape[0] == cov.shape[0] or cov.shape[0] == 1:
+                cov = torch.baddbmm(cov, uf, uf.mT)
+            else:
+                # Shared factor with a per-row known covariance: baddbmm does not
+                # broadcast its two factors, so form the one outer product and add it.
+                cov = cov + uf @ uf.mT
         diag_total = diag + (1.0 - maskf) if masked_any else diag
         if cov is None:
             cov = torch.diag_embed(diag_total).to(device=device, dtype=work)
