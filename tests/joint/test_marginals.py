@@ -319,8 +319,8 @@ class TestQuantileTailFloor:
         draws = torch.randn(6, 200, 2, generator=gen, dtype=F64)
         ordered = draws.sort(dim=1).values
         ordered[:, 1] = ordered[:, 0] + 1e-9  # two tied extreme draws
-        free = SampleMarginals(ordered, tail_knots=2, tail_floor=0.0)
-        floored = SampleMarginals(ordered, tail_knots=2)
+        free = SampleMarginals(ordered, tail_knots=2, tail_floor=0.0, n_knots="all")
+        floored = SampleMarginals(ordered, tail_knots=2, n_knots="all")
         # ties are separated by 1e-6 of the knot spread, so the free scale is about 1e-5
         assert float(free.left_scale.max()) < 1e-4
         assert float(floored.left_scale.min()) > 0.05
@@ -365,6 +365,51 @@ class TestSampleMarginals:
         torch.testing.assert_close(
             marg.cdf(draws), (torch.arange(1, 11, dtype=F64) / 11).view(1, 10, 1)
         )
+
+
+class TestSampleMarginalKnots:
+    """One knot per draw biases the log density by 1 - gamma; thinned knots do not."""
+
+    def test_default_keeps_two_root_s_order_statistics(self) -> None:
+        gen = torch.Generator().manual_seed(6)
+        draws = torch.randn(3, 200, 2, generator=gen, dtype=F64)
+        marg = SampleMarginals(draws)
+        assert marg.knots.shape == (3, 2, 28)  # round(2 * sqrt(200))
+        ordered = draws.sort(dim=1).values
+        # the first and the last draw are knots, at levels 1 / 201 and 200 / 201
+        torch.testing.assert_close(marg.knots[..., 0], ordered[:, 0])
+        torch.testing.assert_close(marg.knots[..., -1], ordered[:, -1])
+        levels = marg.levels.reshape(-1)
+        torch.testing.assert_close(levels[[0, -1]], torch.tensor([1 / 201, 200 / 201], dtype=F64))
+        # every knot is an order statistic at its plotting position
+        ranks = (levels * 201).round().long()
+        torch.testing.assert_close(marg.knots, ordered[:, ranks - 1].movedim(1, 2))
+        assert SampleMarginals(draws, n_knots="all").knots.shape[-1] == 200
+        assert SampleMarginals(draws, n_knots=11).knots.shape[-1] == 11
+        assert SampleMarginals(draws[:, :3], n_knots=50).knots.shape[-1] == 3  # capped at S
+
+    def test_log_density_bias(self) -> None:
+        gen = torch.Generator().manual_seed(7)
+        n = 4000
+        draws = torch.randn(n, 200, 1, generator=gen, dtype=F64)
+        y = torch.randn(n, 1, generator=gen, dtype=F64)
+        truth = Normal(torch.zeros((), dtype=F64), torch.ones((), dtype=F64)).log_prob(y)
+        every = (SampleMarginals(draws, n_knots="all").log_prob(y) - truth).mean()
+        thinned = (SampleMarginals(draws).log_prob(y) - truth).mean()
+        # single spacings: E[log density error] = -(1 - Euler gamma) = -0.4228, SE about 0.013
+        assert abs(float(every) + (1 - 0.5772156649)) < 0.05
+        # one knot every 7 draws: about -1 / (2 * 7); the measured value is -0.076
+        assert -0.12 < float(thinned) < -0.03
+        # the CDF is unaffected: PITs of the thinned grid are uniform (variance 1 / 12)
+        pit = SampleMarginals(draws).cdf(y)
+        assert abs(float(pit.mean()) - 0.5) < 0.02 and abs(float(pit.var()) - 1 / 12) < 0.005
+
+    def test_rejects_bad_n_knots(self) -> None:
+        draws = torch.randn(2, 20, 1, dtype=F64)
+        with pytest.raises(ValueError, match="n_knots"):
+            SampleMarginals(draws, n_knots="some")
+        with pytest.raises(ValueError, match="n_knots"):
+            SampleMarginals(draws, n_knots=1)
 
 
 class TestMixtureMarginals:

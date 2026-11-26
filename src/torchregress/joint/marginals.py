@@ -501,31 +501,57 @@ class QuantileMarginals(_PiecewiseMarginals):
 class SampleMarginals(QuantileMarginals):
     r"""Marginals from draws ``[n, S, d]`` (ensembles, generators, forests).
 
-    The order statistics :math:`x_{(1)} \le \dots \le x_{(S)}` of each row and
-    target are read as quantiles at the plotting positions
-    :math:`\tau_k = k / (S + 1)`: the CDF interpolates linearly between them
-    and has exponential tails beyond :math:`x_{(1)}` and :math:`x_{(S)}`
-    (fitted as in :class:`QuantileMarginals`).  Tied draws are separated as in
-    :class:`QuantileMarginals`.
+    Order statistics :math:`x_{(r)}` of each row and target are read as
+    quantiles at the plotting positions :math:`\tau = r / (S + 1)`: the CDF
+    interpolates linearly between the knots and has exponential tails beyond
+    the first and last (fitted and floored as in :class:`QuantileMarginals`).
+    Tied draws are separated as in :class:`QuantileMarginals`.
+
+    **Knots.**  Using every draw as a knot gives a density of
+    :math:`1 / ((S + 1)\,\text{spacing})` on each spacing, and a single
+    spacing is exponentially distributed: the log density of a new point is
+    then too low by :math:`1 - \gamma \approx 0.42` nats per target on average
+    (:math:`\gamma` is Euler's constant), whatever :math:`S`.  With one knot
+    every :math:`m` draws the bias is about :math:`1 / (2m)`.  The default
+    keeps :math:`K = \mathrm{round}(2\sqrt S)` evenly spaced order statistics
+    (28 of 200 draws, :math:`m \approx 7`; the first and last draw are always
+    knots); ``n_knots="all"`` uses every draw (the CDF and draws are
+    unaffected by the bias, so it is fine when no density is needed).
 
     Args:
         samples: ``[n, S, d]`` with ``S >= 2``.
-        tail_knots: As in :class:`QuantileMarginals`.
+        tail_knots: As in :class:`QuantileMarginals` (counted in knots).
         tail_floor: As in :class:`QuantileMarginals`.
+        n_knots: Number of order statistics kept as knots, ``"auto"``
+            (default, :math:`\mathrm{round}(2\sqrt S)`) or ``"all"``.
     """
 
     def __init__(
-        self, samples: Tensor, tail_knots: Optional[int] = None, tail_floor: float = 0.5
+        self,
+        samples: Tensor,
+        tail_knots: Optional[int] = None,
+        tail_floor: float = 0.5,
+        n_knots: Union[int, str] = "auto",
     ) -> None:
         if samples.dim() != 3 or samples.shape[1] < 2:
             raise ValueError(f"samples must be [n, S, d] with S >= 2, got {tuple(samples.shape)}")
         n_draws = int(samples.shape[1])
-        levels = torch.arange(1, n_draws + 1, device=samples.device, dtype=samples.dtype) / (
-            n_draws + 1
-        )
-        super().__init__(
-            levels, samples.movedim(1, 2), tail_knots=tail_knots, tail_floor=tail_floor
-        )
+        if isinstance(n_knots, str):
+            if n_knots not in ("auto", "all"):
+                raise ValueError(f"n_knots must be an integer, 'auto' or 'all', got {n_knots!r}")
+            keep = n_draws if n_knots == "all" else round(2.0 * math.sqrt(n_draws))
+        else:
+            keep = int(n_knots)
+            if keep < 2:
+                raise ValueError(f"n_knots must be at least 2, got {n_knots}")
+        keep = max(2, min(n_draws, keep))
+        ordered = samples.sort(dim=1).values
+        ranks = torch.unique(torch.linspace(1, n_draws, keep, device=samples.device).round().long())
+        levels = ranks.to(samples.dtype) / (n_draws + 1)
+        knots = ordered[:, ranks - 1].movedim(1, 2)
+        if tail_knots is not None:
+            tail_knots = min(int(tail_knots), int(ranks.numel()))
+        super().__init__(levels, knots, tail_knots=tail_knots, tail_floor=tail_floor)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

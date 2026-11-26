@@ -431,6 +431,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `SampleMarginals` no longer uses every draw as a quantile knot: a density built from single
+  spacings is too low by `1 - gamma` = 0.42 nats per target on average, whatever the number
+  of draws (measured -0.40 to -0.44 for 50, 200 and 1,000 Gaussian draws). The default keeps
+  `round(2 sqrt(S))` evenly spaced order statistics (`n_knots="auto"`; measured -0.16, -0.08
+  and -0.04); `n_knots="all"` restores the old grid, whose CDF and draws were never affected.
+  Found in the harness, where the sample-marginals row sat 1.3 nats above the quantile grid it
+  was drawn from on three targets.
 - `QuantileMarginals`, `SampleMarginals` and `BinnedMarginals`: the exponential tail scales
   are floored at `tail_floor` (default 0.5) times the scale of a Gaussian tail matched to the
   interquartile range. Outer knots that almost coincide (noisy extreme quantiles, two close
