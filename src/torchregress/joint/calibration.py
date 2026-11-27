@@ -46,7 +46,7 @@ from scipy.stats import chi2
 from torch import Tensor
 
 from ..utils.distributions import normal_cdf
-from ._common import seeded, target_index
+from ._common import fixed_moment_seed, seeded, target_index
 from .predictive import AffineJoint, GaussianJoint, JointPredictive, SampleJoint
 
 __all__ = [
@@ -170,13 +170,11 @@ class ScaleRecalibrator:
         # objective="variance" and the start of "nll" about the mean; "nll" about the
         # center starts at s = 1 and needs no draws.
         moments = self.objective == "variance" or self.about == "mean"
-        with torch.no_grad(), seeded(_MEAN_SEED):
+        with torch.no_grad(), seeded(_MEAN_SEED), fixed_moment_seed(_MEAN_SEED):
+            # Covariance before the location: Monte Carlo moments then draw once for both.
+            cov = predictive.covariance(self.n_samples).detach() if moments else None
             mean = self._location(predictive)
-            var = (
-                predictive.covariance(self.n_samples).detach().diagonal(dim1=-2, dim2=-1)
-                if moments
-                else torch.ones_like(mean)
-            )
+            var = torch.ones_like(mean) if cov is None else cov.diagonal(dim1=-2, dim2=-1)
         y = y.to(mean)
         resid = torch.where(obs, y - mean, torch.zeros_like(y))
         obs_f = obs.to(mean.dtype)
@@ -283,7 +281,7 @@ class ScaleRecalibrator:
             raise ValueError(f"predictive has d = {predictive.event_dim}, fitted d = {len(self)}")
         # Monte Carlo means are drawn with a fixed seed (the caller's RNG state is
         # restored), so the same predictive always gets the same recalibration.
-        with torch.no_grad(), seeded(_MEAN_SEED):
+        with torch.no_grad(), seeded(_MEAN_SEED), fixed_moment_seed(_MEAN_SEED):
             mean = self._location(predictive)
         scale = self.scale_.to(mean)
         return AffineJoint(predictive, (1.0 - scale) * mean, scale)

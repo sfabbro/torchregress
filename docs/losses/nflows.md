@@ -540,14 +540,18 @@ the mixture: one affine map per block cannot split a mode.
     before switching.
 
 !!! warning "Sample through the loss, not the raw zuko flow"
-    Inverting an autoregressive flow (NSF, MAF, BPF, TarFlow) rebuilds every
-    layer's univariate parameters once per target per layer, and torch's cached
-    inverse transforms keep them in reference cycles until Python's garbage
-    collector runs. `NormalizingFlowLoss.sample` collects them after each
-    block of at most 8192 draws (contexts × samples). Large requests are also
-    faster that way: 51,200 NSF draws at 16 targets took 33 s instead of 84 s.
-    Calling `flow(context).sample(...)` directly skips both: in the benchmark
-    above, repeated raw calls at 16 targets grew one process to about 18 GB on Linux.
+    zuko inverts an autoregressive flow by sweeping each layer once per target,
+    rebuilding the univariate parameters of every target at each sweep, and
+    torch's cached inverse transforms keep them in reference cycles until
+    Python's garbage collector runs. `NormalizingFlowLoss.sample` collects them
+    after each block of at most 8192 draws (contexts × samples). With that
+    inverse (a flow built directly from `zuko.flows`, or TarFlow), 51,200 NSF
+    draws at 16 targets took 33 s through the loss and 84 s through
+    `flow(context).sample(...)`, and repeated raw calls grew one process to
+    about 18 GB on Linux. NSF, MAF and BPF flows built by `create_flow_model`
+    solve each target once per layer instead (the same map; 4 times faster at
+    16 targets, 7 times at 32), so they build $d$ times fewer of these
+    parameters; sampling through the loss still bounds what is alive at once.
 
 ## Flow Architectures
 

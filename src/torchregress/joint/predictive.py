@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import inspect
 import math
+import weakref
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import Any, Optional, Union
@@ -32,7 +33,23 @@ from torch import Tensor
 
 from ..losses.known_covariance import KnownCovarianceGaussianNLL, _total_covariance
 from ..metrics.distribution import sample_hpd_level
-from ._common import masked_gaussian_quadratic, safe_cholesky, target_index
+from ._common import MOMENT_SEED, masked_gaussian_quadratic, safe_cholesky, seeded, target_index
+
+
+def _same_token(kept: Optional[tuple[Any, ...]], token: tuple[Any, ...]) -> bool:
+    """Whether two ``JointPredictive._moment_token`` values describe the same state."""
+    if kept is None or len(kept) != len(token):
+        return False
+    for a, b in zip(kept, token, strict=True):
+        if isinstance(a, weakref.ref) or isinstance(b, weakref.ref):
+            if not (isinstance(a, weakref.ref) and isinstance(b, weakref.ref)):
+                return False
+            if a() is None or a() is not b():
+                return False
+        elif a != b:
+            return False
+    return True
+
 
 __all__ = [
     "AffineJoint",
@@ -167,31 +184,75 @@ class JointPredictive(ABC):
         return ProjectedJoint(self, idx)
 
     # -------------------------------------------------------------- derived
-    def _monte_carlo_moments(self, n_samples: int) -> tuple[Tensor, Tensor]:
-        """Mean ``[n, d]`` and covariance ``[n, d, d]`` from one set of ``n_samples`` draws.
+    def __getstate__(self) -> dict[str, Any]:
+        # Kept moments are not part of the predictive: a copy or a pickle computes its own.
+        state = self.__dict__.copy()
+        state.pop("_moment_cache", None)
+        return state
 
-        Kept on the predictive per ``n_samples``: a predictive is a fixed batch of
-        distributions, so its moments are computed once, ``mean`` and ``covariance``
-        agree with each other, and scores that need them (Mahalanobis, residual and
-        recalibration steps) do not draw again.
+    def _moment_token(self) -> tuple[Any, ...]:
+        """State the kept moments depend on; they are dropped when it changes.
+
+        Items are compared with ``==``, except weak references, which match when they
+        point to the same live object (an ``id`` would be reused once it is freed).
         """
-        cache: dict[int, tuple[Tensor, Tensor]] = self.__dict__.setdefault("_moment_cache", {})
-        if n_samples not in cache:
-            with torch.no_grad():
+        return ()
+
+    def _monte_carlo_moments(
+        self, n_samples: int, covariance: bool
+    ) -> tuple[Tensor, Optional[Tensor]]:
+        """Mean ``[n, d]`` and, if asked, covariance ``[n, d, d]`` from ``n_samples`` draws.
+
+        Kept on the predictive per ``n_samples`` and reused: a predictive is a fixed
+        batch of distributions, so the same object returns the same moments, and
+        scores that need them (Mahalanobis, residual and recalibration steps) do not
+        draw again.  A request for the covariance draws once for both moments; a
+        mean asked for first is kept as it is.  The draws come from the caller's
+        generators, as any other draw (inside
+        :func:`~torchregress.joint._common.fixed_moment_seed` from a fixed seed,
+        kept separately).  Draws that carry gradients are never kept: their moments
+        stay differentiable and are redrawn at every call; moments first computed
+        under ``torch.no_grad()`` are checked once more when gradients are enabled.
+        """
+        seed = MOMENT_SEED.get()
+        token = self._moment_token()
+        cache: dict[Any, Any] = self.__dict__.setdefault("_moment_cache", {})
+        if not _same_token(cache.get("token"), token):
+            cache.clear()  # every kept entry belongs to the previous state
+            cache["token"] = token
+        key = (n_samples, seed)
+        kept = cache.get(key)
+        grad = torch.is_grad_enabled()
+        if kept is not None and (kept["grad_checked"] or not grad):
+            if kept["cov"] is not None or not covariance:
+                return kept["mean"], kept["cov"]
+        if seed is None:
+            draws = self.sample(n_samples)
+        else:
+            with seeded(seed):
                 draws = self.sample(n_samples)
-                mean = draws.mean(dim=1)
-                centred = draws - mean.unsqueeze(1)
-                cache[n_samples] = (mean, centred.mT @ centred / max(n_samples - 1, 1))
-        return cache[n_samples]
+        mean = draws.mean(dim=1)
+        cov: Optional[Tensor] = None
+        if covariance:
+            centred = draws - mean.unsqueeze(1)
+            cov = centred.mT @ centred / max(n_samples - 1, 1)
+        if draws.requires_grad:
+            return mean, cov
+        if kept is not None:  # what was returned before stays what is returned
+            mean = kept["mean"]
+            cov = kept["cov"] if kept["cov"] is not None else cov
+        checked = grad or (kept is not None and kept["grad_checked"])
+        cache[key] = {"mean": mean, "cov": cov, "grad_checked": checked}
+        return mean, cov
 
     def mean(self, n_samples: int = 512) -> Tensor:
         """Predictive mean ``[n, d]``.
 
         Closed form where the head has one; otherwise a Monte Carlo estimate from
-        ``n_samples`` draws, computed once per ``n_samples`` and reused by later calls
-        and by :meth:`covariance`.
+        ``n_samples`` draws, computed once per predictive and ``n_samples`` and
+        reused by later calls (the same object returns the same value).
         """
-        return self._monte_carlo_moments(n_samples)[0]
+        return self._monte_carlo_moments(n_samples, covariance=False)[0].clone()
 
     def center(self, n_samples: int = 512) -> Tensor:
         r"""A location summary ``[n, d]`` that avoids sampling where it can.
@@ -215,10 +276,13 @@ class JointPredictive(ABC):
     def covariance(self, n_samples: int = 512) -> Tensor:
         """Predictive covariance ``[n, d, d]``.
 
-        Closed form where the head has one; otherwise from the same ``n_samples``
-        draws as :meth:`mean`, computed once per ``n_samples``.
+        Closed form where the head has one; otherwise a Monte Carlo estimate from
+        ``n_samples`` draws, computed once per predictive and ``n_samples``; the
+        mean is taken from the same draws unless it was computed before.
         """
-        return self._monte_carlo_moments(n_samples)[1]
+        cov = self._monte_carlo_moments(n_samples, covariance=True)[1]
+        assert cov is not None
+        return cov.clone()
 
     def hpd_level(self, y: Any, n_samples: int = 512) -> Tensor:
         r"""Highest-density level of ``y``: ``[n, d] -> [n]``, ``[n, S, d] -> [n, S]``.
@@ -721,6 +785,12 @@ class SampleJoint(JointPredictive):
             raise ValueError(f"samples must be [n, S, d] with S >= 1, got {tuple(samples.shape)}")
         self.samples = samples
 
+    def _moment_token(self) -> tuple[Any, ...]:
+        # Replacing the stored draws, or editing them in place, makes kept moments stale
+        # (an edit through ``samples.data`` is not tracked by torch and is not seen).
+        version = None if torch.is_inference(self.samples) else self.samples._version
+        return (weakref.ref(self.samples), version)
+
     @property
     def batch_size(self) -> int:
         return int(self.samples.shape[0])
@@ -1061,8 +1131,9 @@ class MixtureJoint(JointPredictive):
     def covariance(self, n_samples: int = 512) -> Tensor:
         # Law of total covariance: mean of the members' covariances plus the
         # covariance of their means.
-        means = torch.stack([m.mean(n_samples) for m in self.members], dim=1)  # [n, K, d]
+        # Covariances first: a member without closed forms then draws once for both.
         covs = torch.stack([m.covariance(n_samples) for m in self.members], dim=1)
+        means = torch.stack([m.mean(n_samples) for m in self.members], dim=1)  # [n, K, d]
         w = self._row_weights(means)
         centre = (w.unsqueeze(-1) * means).sum(1, keepdim=True)
         spread = (means - centre).unsqueeze(-1) * (means - centre).unsqueeze(-2)

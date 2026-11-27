@@ -86,6 +86,12 @@ from .regions import (
 __all__ = ["JointRegressor", "MarginalEngine", "MixtureNetworkEngine", "QuantileNetworkEngine"]
 
 _ENERGY_VAL_DRAWS = 16  # fixed draws per validation row for the energy head
+#: ``method="auto"`` trains the flow head up to this many targets.  A draw from an
+#: autoregressive flow costs one step per target and layer.  At 32 targets (harness design
+#: ``joint_nuisance_d32``, 4,000 rows, seed 0) the default with the flow head is 3.3 nats
+#: from the oracle against 10.6 without it; it fits in 155 s instead of 51 s.  Beyond 32
+#: targets it has not been measured.
+_AUTO_FLOW_MAX_TARGETS = 32
 
 Method = Literal["auto", "gaussian", "mixture", "flow", "sklar", "energy"]
 ArrayLike = Any  # torch.Tensor or anything torch.as_tensor accepts (numpy arrays)
@@ -723,7 +729,8 @@ class JointRegressor:
 
     Missing targets (``NaN`` in ``Y``) are integrated out exactly by the Gaussian and
     mixture heads.  The flow head needs complete rows, so ``"auto"`` leaves it out when
-    targets are missing.
+    targets are missing; it also leaves it out beyond 32 targets, where its cost has not
+    been measured (``method="flow"`` has no such limit).
 
     **The energy head** (``method="energy"``, engression; Shen and Meinshausen 2024)
     is a network :math:`g(x, \varepsilon)`, :math:`\varepsilon \sim \mathcal N(0, I_k)`,
@@ -1384,7 +1391,7 @@ class JointRegressor:
         names = ["gaussian", "mixture"]
         if not has_missing:
             names.append("sklar")
-            if d <= 16:
+            if d <= _AUTO_FLOW_MAX_TARGETS:
                 names.append("flow")
         return names
 

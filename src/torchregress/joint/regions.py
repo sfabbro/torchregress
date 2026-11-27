@@ -409,8 +409,8 @@ class MahalanobisScore(ConformalScore):
     supports_mask = True
 
     def _prepare(self, predictive: JointPredictive) -> _State:
+        cov = predictive.covariance()  # first: Monte Carlo moments then draw once for both
         mean = predictive.mean()
-        cov = predictive.covariance()
         return {"mean": mean, "cov": cov, "chol": safe_cholesky(cov)}
 
     def _evaluate(
@@ -482,8 +482,8 @@ class MaxResidualScore(ConformalScore):
     supports_mask = True
 
     def _prepare(self, predictive: JointPredictive) -> _State:
-        mean = predictive.mean()
         std = predictive.covariance().diagonal(dim1=-2, dim2=-1).sqrt()
+        mean = predictive.mean()
         return {"mean": mean, "std": std}
 
     def _evaluate(

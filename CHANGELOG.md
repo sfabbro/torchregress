@@ -374,23 +374,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Sampling is faster at many targets. The maps and distributions are the same (flow draws
-  and mixture quantiles agree with the previous code to floating-point rounding); a seeded
-  result that follows a Monte Carlo moment estimate can differ within Monte Carlo error,
-  because the estimate now uses one set of draws instead of several. Three pieces, found by
-  profiling the harness's `joint_regression`
+  and mixture quantiles agree with the previous code to floating-point rounding). Monte
+  Carlo moments are now drawn once per predictive instead of at every call, so a seeded
+  result that uses them (a Mahalanobis or residual score of a predictive without closed-form
+  moments, `ScaleRecalibrator` about the mean) can differ from earlier versions within Monte
+  Carlo error. Three pieces, found by profiling the harness's `joint_regression`
   suite, where 98% of the evaluation time of `JointRegressor()` at 8 targets was the inverse
   of the autoregressive flow:
   - Flows built by `create_flow_model` (`"nsf"`, `"maf"`, `"bpf"`) invert each autoregressive
     layer with every conditioner unit and every target's univariate transform evaluated once,
     instead of zuko's `d` sweeps that each run the whole conditioner and rebuild all `d`
-    transforms. Same map, parameters, masks and state-dict keys; conditioners that are not a
-    plain masked MLP (residual blocks, a custom adjacency) keep zuko's inverse. One spline
+    transforms. Same map, parameters, masks and state-dict keys (one difference: a `nan` or
+    `inf` input coordinate reaches only the coordinates that depend on it, where zuko's
+    sweeps return the whole row as `nan`); conditioners that are not a plain masked MLP
+    (residual blocks, a custom adjacency) keep zuko's inverse. One spline
     layer on 4,096 rows (context 128, hidden 128-128, CPU): 2.6 times faster at 8 targets,
     4.4 at 16, 6.8 at 32 (Bernstein flows 3.5, 6.5, 10.6; affine MAF 1.4, 1.6, 1.8).
   - `JointPredictive.mean` and `covariance` without a closed form are computed once per
-    predictive and sample size, from one set of draws, and reused (they were redrawn on every
-    call, three times for one Mahalanobis score of a mixture); `ProjectedJoint` takes its
-    moments from the predictive it projects.
+    predictive object and sample size and reused (the same object returns the same moments,
+    unless its draws carry gradients);
+    asking for the covariance draws once for both. They were redrawn on every call, three
+    times for one Mahalanobis score of a mixture. The draws still come from the caller's
+    generators, so calibration and test predictives keep independent Monte Carlo noise and
+    conformal guarantees are unchanged. Returned tensors are copies; draws that carry
+    gradients are never kept; replacing or editing `SampleJoint.samples` drops its kept
+    moments. `ScaleRecalibrator` keeps its fixed-seed moments apart from these, so its fit
+    and transform do not depend on earlier calls. `ProjectedJoint` takes its moments from
+    the predictive it projects.
   - `MixtureMarginals.icdf` / `from_normal_scores` (and `StudentTMixture.marginal_quantile`
     when every `df` is infinite) solve Gaussian mixtures with the range of the components'
     own quantiles as bracket and closed-form Gaussian CDF and density, instead of the
@@ -401,6 +411,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and 1,000 calibration rows (six scores, volumes, interest regions): `JointRegressor()` at 8
   targets 532 s before, 58 s after; `JointRegressor("sklar")` with mixture marginals at 32
   targets 129 s with the first two changes, 39 s with all three.
+- `JointRegressor(method="auto")` trains its flow head up to 32 targets (it stopped at 16,
+  because of the cost of sampling, which the change above removes). On the harness design
+  `joint_nuisance_d32` (32 targets, 4,000 rows, seed 0) the default goes from 10.6 to 3.3 nats
+  from the oracle and from an energy score of 2.701 to 2.578 (oracle 2.561); the stack puts
+  0.997 of its weight on the flow copies. It fits in 155 s instead of 51 s. Fitted models
+  with 17 to 32 targets change; `method="flow"` never had a limit. Beyond 32 targets the flow
+  head is still left out of `"auto"` (not measured).
 - `JointRegressor(method="auto")` now trains three independently initialised copies of each
   network head (Gaussian, mixture, flow) and averages them with equal weights before
   stacking across head types: a deep ensemble (`n_members=None`: 3 for `"auto"`, 1 for a
@@ -476,6 +493,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Seeded blocks inside `torchregress.joint` (`JointRegressor.fit`, `ScaleRecalibrator.fit`
+  and `transform`) restore the MPS generator as well as the CPU and CUDA ones. On a Mac with
+  MPS they left it reset to the block's seed, so the caller's next MPS draws repeated.
 - `JointRegressor` clamps every feature to the range of its training rows before it enters
   the networks (`clip_features=True`, the default; `False` restores the old behaviour). On the
   river-flow set `mt_rf1` one test row has a feature 178 standard deviations out, and its log

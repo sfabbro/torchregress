@@ -390,46 +390,188 @@ class TestMonteCarloMoments:
         torch.manual_seed(0)
         mean, tril = _gaussian(n=3, d=4)
         joint = _CountingJoint(GaussianJoint(mean, tril))
-        first = joint.mean(4000)
         cov = joint.covariance(4000)
-        assert joint.calls == 1
-        assert joint.mean(4000) is first and joint.covariance(4000) is cov  # reused, not redrawn
-        assert joint.calls == 1
+        first = joint.mean(4000)
+        assert joint.calls == 1  # the covariance's draws also gave the mean
+        torch.testing.assert_close(joint.mean(4000), first, rtol=0, atol=0)
+        torch.testing.assert_close(joint.covariance(4000), cov, rtol=0, atol=0)
+        assert joint.calls == 1  # reused, not redrawn
         # the estimates are those of the draws: right to Monte Carlo error
         truth = tril @ tril.mT
         torch.testing.assert_close(first, mean, rtol=0, atol=0.25)
         torch.testing.assert_close(cov, truth, rtol=0, atol=0.25 * float(truth.abs().max()))
-        # a positive semi-definite matrix about the same mean
         assert float(torch.linalg.eigvalsh(cov).min()) > 0
 
+    def test_the_covariance_is_only_formed_when_asked_for(self) -> None:
+        joint = _CountingJoint(GaussianJoint(*_gaussian(n=3, d=4)))
+        mean = joint.mean(256)
+        kept = joint.__dict__["_moment_cache"][(256, None)]
+        assert kept["cov"] is None and joint.calls == 1
+        cov = joint.covariance(256)
+        assert cov.shape == (3, 4, 4) and joint.calls == 2
+        # the mean returned before stays the mean, whatever the later draws were
+        torch.testing.assert_close(joint.mean(256), mean, rtol=0, atol=0)
+        assert joint.calls == 2
+
+    def test_moments_are_drawn_from_the_callers_generator_once_per_object(self) -> None:
+        mean, tril = _gaussian(n=3, d=4)
+        first, second = (_CountingJoint(GaussianJoint(mean, tril)) for _ in range(2))
+        torch.manual_seed(11)
+        a = first.mean(512)
+        torch.manual_seed(11)
+        b = second.mean(512)
+        torch.testing.assert_close(a, b, rtol=0, atol=0)  # reproducible through the seed
+        torch.manual_seed(12)
+        third = _CountingJoint(GaussianJoint(mean, tril))
+        assert not torch.equal(third.mean(512), a)  # and random otherwise: no shared noise
+        torch.manual_seed(13)
+        torch.testing.assert_close(first.mean(512), a, rtol=0, atol=0)  # kept on the object
+
+    def test_scale_recalibration_does_not_depend_on_earlier_moment_calls(self) -> None:
+        from torchregress.joint import ScaleRecalibrator
+
+        gen = torch.Generator().manual_seed(4)
+        store = torch.randn(40, 300, 3, generator=gen, dtype=F64)
+        y = 1.3 * torch.randn(40, 3, generator=gen, dtype=F64)
+        first = SampleJoint(store)
+        recal = ScaleRecalibrator(objective="variance", n_samples=128).fit(first, y)
+        second = SampleJoint(store)
+        torch.manual_seed(123)
+        second.mean(128)  # an earlier, differently seeded caller
+        again = ScaleRecalibrator(objective="variance", n_samples=128).fit(second, y)
+        torch.testing.assert_close(again.scale_, recal.scale_, rtol=0, atol=0)
+        # the transform itself (location and scale of the affine map), not a Monte Carlo
+        # summary of its output
+        moved, reference = recal.transform(second), recal.transform(first)
+        torch.testing.assert_close(moved.loc, reference.loc, rtol=0, atol=0)
+        torch.testing.assert_close(moved.scale, reference.scale, rtol=0, atol=0)
+
     def test_another_sample_size_draws_again(self) -> None:
-        torch.manual_seed(0)
         joint = _CountingJoint(GaussianJoint(*_gaussian(n=2, d=3)))
         small, large = joint.mean(64), joint.mean(256)
         assert joint.calls == 2 and not torch.equal(small, large)
 
-    def test_wrappers_and_mixtures_reuse_the_members_moments(self) -> None:
-        torch.manual_seed(0)
-        members = [_CountingJoint(GaussianJoint(*_gaussian(n=4, d=3, seed=s))) for s in (1, 2)]
-        mixture = MixtureJoint(members, torch.tensor([0.3, 0.7], dtype=F64))
-        wrapped = AffineJoint(
-            mixture, torch.ones(4, 3, dtype=F64), torch.full((4, 3), 2.0, dtype=F64)
-        )
-        wrapped.mean()
-        cov = wrapped.covariance()
-        wrapped.marginal([0, 2]).covariance()
-        assert [m.calls for m in members] == [1, 1]
-        # law of total covariance of the two members, scaled by 2 in every direction
-        means = torch.stack([m.mean() for m in members], dim=1)
-        covs = torch.stack([m.covariance() for m in members], dim=1)
-        w = torch.tensor([0.3, 0.7], dtype=F64).view(1, 2, 1)
-        centre = (w * means).sum(1, keepdim=True)
-        spread = (means - centre).unsqueeze(-1) * (means - centre).unsqueeze(-2)
-        expected = 4.0 * (w.unsqueeze(-1) * (covs + spread)).sum(1)
-        torch.testing.assert_close(cov, expected)
+    def test_returned_moments_are_copies(self) -> None:
+        joint = _CountingJoint(GaussianJoint(*_gaussian(n=2, d=3)))
+        cov = joint.covariance(128)
+        reference = cov.clone()
+        cov.diagonal(dim1=-2, dim2=-1).add_(1.0)
+        joint.mean(128).zero_()
+        torch.testing.assert_close(joint.covariance(128), reference, rtol=0, atol=0)
+        assert float(joint.mean(128).abs().sum()) > 0
 
-    def test_closed_form_moments_do_not_sample(self) -> None:
-        mean, tril = _gaussian()
-        joint = GaussianJoint(mean, tril)
-        torch.testing.assert_close(joint.mean(), mean)
-        assert "_moment_cache" not in joint.__dict__
+    def test_differentiable_draws_keep_their_gradient_and_are_not_kept(self) -> None:
+        store = torch.randn(4, 50, 3, dtype=F64, requires_grad=True)
+        joint = SampleJoint(store)
+        mean = joint.mean(50)
+        assert mean.requires_grad
+        # nothing kept (only the state token): no graph is retained
+        assert set(joint.__dict__["_moment_cache"]) == {"token"}
+        (grad,) = torch.autograd.grad(mean.sum(), store)
+        torch.testing.assert_close(grad, torch.full_like(store, 1 / 50))
+        assert joint.covariance(50).requires_grad
+
+    def test_replacing_or_editing_the_stored_draws_forgets_their_moments(self) -> None:
+        joint = SampleJoint(torch.randn(4, 50, 3, dtype=F64))
+        before = joint.mean(50)
+        joint.samples = joint.samples + 10.0
+        torch.testing.assert_close(joint.mean(50), before + 10.0)
+        joint.samples.add_(1.0)
+        torch.testing.assert_close(joint.mean(50), before + 11.0)
+
+    def test_moments_checked_under_no_grad_are_checked_again_with_gradients(self) -> None:
+        store = torch.randn(4, 50, 3, dtype=F64, requires_grad=True)
+        joint = SampleJoint(store)
+        with torch.no_grad():
+            detached = joint.mean(50)
+        assert not detached.requires_grad
+        assert joint.mean(50).requires_grad  # not the value kept under no_grad
+        fixed = _CountingJoint(GaussianJoint(*_gaussian(n=2, d=3)))
+        with torch.no_grad():
+            value = fixed.mean(64)
+        again = fixed.mean(64)  # draws once more to see that there is no gradient to keep
+        assert fixed.calls == 2 and torch.equal(again, value)
+        fixed.mean(64)
+        assert fixed.calls == 2
+
+    def test_copies_of_a_predictive_with_kept_moments_compute_their_own(self) -> None:
+        import copy
+        import pickle
+
+        torch.manual_seed(0)
+        joint = SampleJoint(torch.randn(4, 50, 3, dtype=F64))
+        joint.mean(20)  # a random subset of the stored draws, kept on the original
+        for clone in (pickle.loads(pickle.dumps(joint)), copy.deepcopy(joint)):
+            torch.testing.assert_close(clone.samples, joint.samples)
+            torch.testing.assert_close(clone.mean(50), joint.samples.mean(1))
+            assert torch.isfinite(clone.mean(20)).all() and clone.covariance(20).shape == (4, 3, 3)
+            torch.testing.assert_close(clone.mean(20), clone.mean(20), rtol=0, atol=0)
+        legacy = SampleJoint.__new__(SampleJoint)  # an object pickled before the cache existed
+        legacy.__dict__["samples"] = joint.samples.clone()
+        torch.testing.assert_close(legacy.mean(50), joint.samples.mean(1))
+
+    def test_a_reused_tensor_id_does_not_bring_old_moments_back(self) -> None:
+        # Replace the draws twice without a moment call in between: the third tensor
+        # usually gets the first one's freed id, and both have version 0.
+        torch.manual_seed(0)
+        stale = 0
+        for _ in range(50):
+            joint = SampleJoint(torch.randn(4, 20, 2))
+            old = joint.mean(20)
+            joint.samples = torch.randn(4, 20, 2)
+            joint.samples = torch.randn(4, 20, 2)
+            stale += int(torch.equal(joint.mean(20), old))
+            torch.testing.assert_close(joint.mean(20), joint.samples.mean(1))
+        assert stale == 0
+
+    def test_replacing_the_draws_drops_every_kept_entry(self) -> None:
+        joint = SampleJoint(torch.randn(4, 30, 2))
+        joint.mean(8), joint.covariance(16), joint.mean(30)
+        assert len(joint.__dict__["_moment_cache"]) == 4  # the token and three entries
+        joint.samples = torch.randn(4, 30, 2)
+        joint.mean(30)
+        assert len(joint.__dict__["_moment_cache"]) == 2
+
+    def test_a_no_grad_call_does_not_undo_the_gradient_check(self) -> None:
+        joint = _CountingJoint(GaussianJoint(*_gaussian(n=2, d=3)))
+        with torch.no_grad():
+            joint.mean(64)
+        joint.mean(64)  # checked once with gradients enabled
+        with torch.no_grad():
+            joint.covariance(64)  # adds the covariance
+        calls = joint.calls
+        joint.mean(64), joint.covariance(64)
+        assert joint.calls == calls
+
+
+class TestSeededBlock:
+    def test_restores_the_cpu_generator(self) -> None:
+        from torchregress.joint._common import seeded
+
+        torch.manual_seed(5)
+        state = torch.random.get_rng_state()
+        with seeded(0):
+            inside = torch.randn(3)
+        assert torch.equal(torch.random.get_rng_state(), state)
+        with seeded(0):
+            torch.testing.assert_close(torch.randn(3), inside, rtol=0, atol=0)
+
+    @pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS unavailable")
+    def test_restores_the_mps_generator(self) -> None:
+        from torchregress.joint._common import seeded
+
+        torch.manual_seed(5)
+        expected = torch.randn(4, device="mps").cpu()
+        torch.manual_seed(5)
+        with seeded(0):
+            torch.randn(4, device="mps")
+        torch.testing.assert_close(torch.randn(4, device="mps").cpu(), expected, rtol=0, atol=0)
+        # and through the recalibrator, the one place that fixes the seed of moments
+        from torchregress.joint import ScaleRecalibrator
+
+        store = torch.randn(20, 100, 2)
+        recal = ScaleRecalibrator(objective="variance", n_samples=64)
+        recal.fit(SampleJoint(store), torch.randn(20, 2))
+        torch.manual_seed(5)
+        recal.transform(SampleJoint(store))
+        torch.testing.assert_close(torch.randn(4, device="mps").cpu(), expected, rtol=0, atol=0)

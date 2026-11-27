@@ -217,12 +217,38 @@ if HAS_ZUKO:
         ``1 + max(order of its inputs)`` otherwise, propagated through the masks.  The
         parameters of a coordinate of order ``k`` depend on units of rank at most
         ``k`` only.  Returns the per-layer unit indices by rank and the output rows by
-        order, cached on the layer for ``device``.
+        order.  The plan is kept on the layer and rebuilt when the device, the order or
+        a mask differs from the ones it was built from (``load_state_dict`` can replace
+        them).  It is built outside inference mode, so that an inverse first called
+        under ``torch.inference_mode()`` leaves index tensors a later differentiable
+        inverse can use.
         """
-        cached = getattr(layer, "_grouped_plan", None)
-        if cached is not None and cached["device"] == device:
-            return cast(Optional[dict[str, Any]], cached["plan"])
         modules = list(layer.hyper)
+        masks = [m.mask for m in modules if isinstance(m, _MaskedLinearBase)]
+        cached = getattr(layer, "_grouped_plan", None)
+        if (
+            cached is not None
+            and cached["device"] == device
+            and (layer.order is None) == (cached["order"] is None)
+            and (layer.order is None or torch.equal(layer.order, cached["order"]))
+            and len(masks) == len(cached["masks"])
+            and all(torch.equal(a, b) for a, b in zip(masks, cached["masks"], strict=True))
+        ):
+            return cast(Optional[dict[str, Any]], cached["plan"])
+        with torch.inference_mode(False):
+            plan = _build_conditioner_plan(layer, modules, device)
+            layer._grouped_plan = {
+                "device": device,
+                "order": None if layer.order is None else layer.order.clone(),
+                "masks": [mask.clone() for mask in masks],
+                "plan": plan,
+            }
+        return plan
+
+    def _build_conditioner_plan(
+        layer: Any, modules: list[Any], device: torch.device
+    ) -> Optional[dict[str, Any]]:
+        """The plan of :func:`_conditioner_plan` for the layer as it is now."""
         plan: Optional[dict[str, Any]] = None
         plain = (
             layer.order is not None
@@ -252,7 +278,6 @@ if HAS_ZUKO:
                     "groups": groups,
                     "rows": [(g.unsqueeze(-1) * total + offsets).reshape(-1) for g in groups],
                 }
-        layer._grouped_plan = {"device": device, "plan": plan}
         return plan
 
     class _GroupedAutoregressiveTransform(_AutoregressiveBase):
@@ -275,8 +300,11 @@ if HAS_ZUKO:
         The map is the same: the masks make the parameters of order ``k``
         independent of everything not known at sweep ``k``.  Coordinates and units
         not solved yet are held at zero instead of the intermediate values of
-        zuko's sweeps.  A conditioner of another shape (residual blocks, a custom
-        adjacency) uses zuko's inverse.
+        zuko's sweeps; the one visible difference is for a non-finite input, where
+        zuko's last sweep spreads a ``nan`` or ``inf`` coordinate to the whole row
+        (``0 * nan`` in the masked product) and this inverse only to the coordinates
+        that depend on it.  A conditioner of another shape (residual blocks, a
+        custom adjacency) uses zuko's inverse.
         """
 
         def __init__(self, layer: Any, c: Optional[Tensor]) -> None:
@@ -293,12 +321,14 @@ if HAS_ZUKO:
             last = linears[-1]
             last_weight = last.mask * last.weight
             weights = [linear.mask * linear.weight for linear in linears[:-1]]
+            if c is not None:
+                # zuko broadcasts the context against ``y``; so does this inverse.
+                batch = torch.broadcast_shapes(y.shape[:-1], c.shape[:-1])
+                y = y.expand(*batch, y.shape[-1])
             x = torch.zeros_like(y)
             hidden: list[Optional[Tensor]] = [None] * len(weights)
             for k in range(layer.passes):
                 group = plan["groups"][k]
-                if group.numel() == 0:
-                    continue
                 below = layer._conditioner_input(x)
                 if c is not None:
                     below = torch.cat(_broadcast(below, c, ignore=1), dim=-1)
@@ -313,6 +343,8 @@ if HAS_ZUKO:
                         )
                         state = state.index_copy(-1, units, activations[index](value))
                     hidden[index] = below = state
+                if group.numel() == 0:  # units of this rank are evaluated all the same
+                    continue
                 rows = plan["rows"][k]
                 phi = torch.nn.functional.linear(below, last_weight[rows], last.bias[rows])
                 phi = _unpack(phi.unflatten(-1, (-1, int(layer.total))), layer.shapes)

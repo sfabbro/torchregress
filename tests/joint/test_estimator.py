@@ -366,3 +366,28 @@ class TestFeatureClipping:
         clamped = model.predict(x[inside][:50]).log_prob(y[inside][:50])
         model.clip_features = False  # the same fitted networks, no clamp at predict time
         torch.testing.assert_close(clamped, model.predict(x[inside][:50]).log_prob(y[inside][:50]))
+
+
+class TestAutoHeads:
+    """Which heads ``method="auto"`` trains."""
+
+    @staticmethod
+    def _fit(d: int, missing: bool = False) -> JointRegressor:
+        gen = torch.Generator().manual_seed(d)
+        x = torch.randn(160, 3, generator=gen)
+        y = x @ torch.randn(3, d, generator=gen) + 0.5 * torch.randn(160, d, generator=gen)
+        if missing:
+            y[::7, 0] = float("nan")
+        model = JointRegressor(hidden=(8,), max_epochs=2, patience=1, n_members=1, seed=0)
+        return model.fit(x, y)
+
+    def test_flow_head_is_trained_up_to_32_targets(self) -> None:
+        assert self._fit(32).members_ == ["gaussian", "mixture", "sklar", "flow"]
+
+    def test_no_flow_head_beyond_32_targets(self) -> None:
+        model = self._fit(33)
+        assert model.members_ == ["gaussian", "mixture", "sklar"]
+        assert model.predict(torch.zeros(2, 3)).sample(4).shape == (2, 4, 33)
+
+    def test_missing_targets_leave_the_complete_row_heads_out(self) -> None:
+        assert self._fit(4, missing=True).members_ == ["gaussian", "mixture"]

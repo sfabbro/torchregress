@@ -500,7 +500,7 @@ Here $\mathbf m$ and $\Sigma$ are the predictive mean and covariance.
 |:--|:--|:--|:--|
 | `"gaussian"` | $\mathcal N(\boldsymbol\mu(\mathbf x), L(\mathbf x) L(\mathbf x)^\top)$; low rank 8 plus diagonal beyond 32 targets | exact | always |
 | `"mixture"` | mixture density network, 5 components; full covariances up to $d = 8$ | exact | always |
-| `"flow"` | conditional neural spline flow | rows dropped | complete targets, $d \le 16$ |
+| `"flow"` | conditional neural spline flow | rows dropped | complete targets, $d \le 32$ |
 | `"sklar"` | quantile- or mixture-network marginals, chosen on validation rows, joined by a dependence model (section 4.3) | complete rows for the dependence | complete targets |
 | `"energy"` | engression generator $g(\mathbf x, \boldsymbol\varepsilon)$ trained by the energy score; draws only | energy score of the observed sub-vector | never |
 
@@ -516,7 +516,7 @@ $$
 $$
 
 an unbiased estimate of a proper score. It draws in one forward pass (1,000 rows
-by 200 draws: 0.09 s at $d = 16$ against 15 s for the flow head on a 4-core
+by 200 draws: 0.08 s at $d = 16$ against 2.9 s for the flow head on a 4-core
 laptop CPU, 0.2 s at $d = 64$), so it scales to many targets. What it cannot do:
 it has **no density**, so no log score, no HPD or latent region (`region` uses the
 sample-ball score), no stacking in `"auto"`, and recalibration uses the variance
@@ -1039,7 +1039,9 @@ steps per layer. The flows built by `create_flow_model` do each piece of that
 work once (a conditioner unit is evaluated in the step where its inputs become
 known, and only the spline of the target being solved is built), which is 4
 times faster than sweeping the whole layer $d$ times at 16 targets and 7 times
-at 32. Three habits keep the rest cheap: ask for moments from the predictive you
+at 32. `"auto"` therefore trains its flow head up to 32 targets: on a synthetic
+design with 32 targets and 4,000 rows the default is 3.3 nats from the true
+density with it and 10.6 without it (one seed). Three habits keep the rest cheap: ask for moments from the predictive you
 already have (`mean()` and `covariance()` are computed once per predictive and
 reused by every score that needs them); calibrate a region for the targets you
 report with `interest=` instead of projecting a $d$-dimensional one

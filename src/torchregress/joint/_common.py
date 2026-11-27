@@ -7,6 +7,7 @@ import math
 import warnings
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Literal, Optional, Union
 
@@ -206,8 +207,37 @@ def safe_cholesky(cov: Tensor, max_rel_jitter: float = 1e-2) -> Tensor:
 
 @contextmanager
 def seeded(seed: int) -> Generator[None]:
-    """Run a block with the torch RNGs seeded by ``seed``, restoring the caller's state after."""
+    """Run a block with the torch RNGs seeded by ``seed``, restoring the caller's state after.
+
+    ``torch.manual_seed`` seeds the CPU, CUDA and MPS generators; ``fork_rng`` saves and
+    restores the first two, the MPS state is saved and restored here.
+    """
     devices = list(range(torch.cuda.device_count())) if torch.cuda.is_available() else []
-    with torch.random.fork_rng(devices=devices):
-        torch.manual_seed(seed)
+    mps_state = torch.mps.get_rng_state() if torch.backends.mps.is_available() else None
+    try:
+        with torch.random.fork_rng(devices=devices):
+            torch.manual_seed(seed)
+            yield
+    finally:
+        if mps_state is not None:
+            torch.mps.set_rng_state(mps_state)
+
+
+#: Seed of Monte Carlo predictive moments inside :func:`fixed_moment_seed`; ``None`` (the
+#: default) draws them from the caller's generators.
+MOMENT_SEED: ContextVar[Optional[int]] = ContextVar("torchregress_joint_moment_seed", default=None)
+
+
+@contextmanager
+def fixed_moment_seed(seed: int) -> Generator[None]:
+    """Within the block, Monte Carlo ``mean`` / ``covariance`` of predictives use ``seed``.
+
+    They are then a function of the predictive alone (kept apart from the moments drawn
+    from the caller's generators), which is what a fitted transform needs to give the
+    same output for the same predictive.
+    """
+    token = MOMENT_SEED.set(seed)
+    try:
         yield
+    finally:
+        MOMENT_SEED.reset(token)
