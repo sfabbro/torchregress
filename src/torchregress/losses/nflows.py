@@ -27,12 +27,15 @@ try:
         RealNVP,
         UnconditionalDistribution,
     )
+    from zuko.nn import MaskedLinear  # type: ignore[import-untyped]
     from zuko.transforms import (  # type: ignore[import-untyped]
+        AutoregressiveTransform,
         BoundedBernsteinTransform,
         MonotonicAffineTransform,
         MonotonicRQSTransform,
         MonotonicTransform,
     )
+    from zuko.utils import broadcast, unpack  # type: ignore[import-untyped]
 
     from .tarflow import TransformerFlow
 
@@ -44,7 +47,8 @@ except ImportError:
     GeneralCouplingTransform = MaskedAutoregressiveTransform = None  # type: ignore[assignment]
     DiagNormal = UnconditionalDistribution = None  # type: ignore[assignment]
     BoundedBernsteinTransform = MonotonicRQSTransform = MonotonicTransform = None  # type: ignore[assignment]
-    MonotonicAffineTransform = None  # type: ignore[assignment]
+    MonotonicAffineTransform = AutoregressiveTransform = MaskedLinear = None  # type: ignore[assignment]
+    broadcast = unpack = None  # type: ignore[assignment]
     TransformerFlow = None  # type: ignore[assignment,misc]
 
 from ..utils.pytorch_compat import _collect_transform_cycles
@@ -129,6 +133,10 @@ def _soft_clip(x: Tensor, bound: float) -> Tensor:
 
 
 _MAFBase: Any = MAF
+_AutoregressiveBase: Any = AutoregressiveTransform
+_MaskedLinearBase: Any = MaskedLinear
+_broadcast: Any = broadcast
+_unpack: Any = unpack
 _RealNVPBase: Any = RealNVP
 _FlowBase: Any = Flow
 _ARTransformBase: Any = MaskedAutoregressiveTransform
@@ -189,7 +197,158 @@ if HAS_ZUKO:
                 **kwargs,
             )
 
-    class _SoftClippedAutoregressiveTransform(_ARTransformBase):
+    #: Activations applied unit by unit, so a subset of a layer can be evaluated alone.
+    _ELEMENTWISE_ACTIVATIONS: tuple[type, ...] = (
+        torch.nn.ReLU,
+        torch.nn.ELU,
+        torch.nn.SiLU,
+        torch.nn.GELU,
+        torch.nn.Tanh,
+        torch.nn.LeakyReLU,
+        torch.nn.Softplus,
+        torch.nn.Sigmoid,
+    )
+
+    def _conditioner_plan(layer: Any, device: torch.device) -> Optional[dict[str, Any]]:
+        """Evaluation order of a MADE conditioner's units, or ``None`` if not a plain MADE.
+
+        ``rank`` of a unit is the number of autoregressive sweeps after which all the
+        coordinates it depends on are known: 0 for a unit that sees the context only,
+        ``1 + max(order of its inputs)`` otherwise, propagated through the masks.  The
+        parameters of a coordinate of order ``k`` depend on units of rank at most
+        ``k`` only.  Returns the per-layer unit indices by rank and the output rows by
+        order, cached on the layer for ``device``.
+        """
+        cached = getattr(layer, "_grouped_plan", None)
+        if cached is not None and cached["device"] == device:
+            return cast(Optional[dict[str, Any]], cached["plan"])
+        modules = list(layer.hyper)
+        plan: Optional[dict[str, Any]] = None
+        plain = (
+            layer.order is not None
+            and len(modules) % 2 == 1
+            and all(isinstance(m, _MaskedLinearBase) for m in modules[0::2])
+            and all(isinstance(m, _ELEMENTWISE_ACTIVATIONS) for m in modules[1::2])
+        )
+        if plain:
+            order = layer.order.to(device)
+            features, total = int(order.numel()), int(layer.total)
+            linears, activations = modules[0::2], modules[1::2]
+            rank = torch.zeros(linears[0].mask.shape[1], dtype=torch.long, device=device)
+            rank[:features] = order + 1
+            units = []
+            for linear in linears:
+                mask = linear.mask.to(device)
+                rank = (mask * rank).amax(dim=-1)  # [units of this layer]
+                units.append([(rank == k).nonzero().squeeze(-1) for k in range(layer.passes)])
+            out_rank = rank.reshape(features, total)
+            if bool((out_rank <= order.unsqueeze(-1)).all()):
+                offsets = torch.arange(total, device=device)
+                groups = [(order == k).nonzero().squeeze(-1) for k in range(layer.passes)]
+                plan = {
+                    "linears": linears,
+                    "activations": activations,
+                    "hidden_units": units[:-1],
+                    "groups": groups,
+                    "rows": [(g.unsqueeze(-1) * total + offsets).reshape(-1) for g in groups],
+                }
+        layer._grouped_plan = {"device": device, "plan": plan}
+        return plan
+
+    class _GroupedAutoregressiveTransform(_AutoregressiveBase):
+        r"""Autoregressive transform whose inverse evaluates every unit and spline once.
+
+        zuko inverts ``y_i = f(x_i | x_{<i})`` with ``passes`` sweeps of
+        ``x <- meta(x).inv(y)``: every sweep runs the whole conditioner and rebuilds
+        and inverts the univariate transform of all ``d`` coordinates, although
+        sweep ``k`` only fixes the coordinates of autoregressive order ``k``.  For a
+        plain MADE conditioner (masked linear layers and element-wise activations)
+        this inverse does each piece of that work once:
+
+        - a hidden unit is evaluated in the sweep in which the coordinates it
+          depends on become known (its rank, see :func:`_conditioner_plan`) and
+          kept afterwards, so the ``passes`` sweeps together cost about one
+          conditioner pass;
+        - the output layer and the univariate transform are evaluated for the
+          coordinates of order ``k`` only.
+
+        The map is the same: the masks make the parameters of order ``k``
+        independent of everything not known at sweep ``k``.  Coordinates and units
+        not solved yet are held at zero instead of the intermediate values of
+        zuko's sweeps.  A conditioner of another shape (residual blocks, a custom
+        adjacency) uses zuko's inverse.
+        """
+
+        def __init__(self, layer: Any, c: Optional[Tensor]) -> None:
+            super().__init__(partial(layer.meta, c), layer.passes)
+            self._layer = layer
+            self._context = c
+
+        def _inverse(self, y: Tensor) -> Tensor:
+            layer, c = self._layer, self._context
+            plan = _conditioner_plan(layer, y.device)
+            if plan is None:
+                return cast(Tensor, super()._inverse(y))
+            linears, activations = plan["linears"], plan["activations"]
+            last = linears[-1]
+            last_weight = last.mask * last.weight
+            weights = [linear.mask * linear.weight for linear in linears[:-1]]
+            x = torch.zeros_like(y)
+            hidden: list[Optional[Tensor]] = [None] * len(weights)
+            for k in range(layer.passes):
+                group = plan["groups"][k]
+                if group.numel() == 0:
+                    continue
+                below = layer._conditioner_input(x)
+                if c is not None:
+                    below = torch.cat(_broadcast(below, c, ignore=1), dim=-1)
+                for index, weight in enumerate(weights):
+                    units = plan["hidden_units"][index][k]
+                    state = hidden[index]
+                    if state is None:
+                        state = below.new_zeros(*below.shape[:-1], weight.shape[0])
+                    if units.numel() > 0:
+                        value = torch.nn.functional.linear(
+                            below, weight[units], linears[index].bias[units]
+                        )
+                        state = state.index_copy(-1, units, activations[index](value))
+                    hidden[index] = below = state
+                rows = plan["rows"][k]
+                phi = torch.nn.functional.linear(below, last_weight[rows], last.bias[rows])
+                phi = _unpack(phi.unflatten(-1, (-1, int(layer.total))), layer.shapes)
+                solved = layer.univariate(*phi)._inverse(y[..., group])
+                x = x.index_copy(-1, group, solved)
+            return x
+
+    class _GroupedInverseAutoregressiveTransform(_ARTransformBase):
+        """zuko's MADE transform with the inverse of :class:`_GroupedAutoregressiveTransform`.
+
+        Same parameters, masks, state-dict keys, forward map and log-determinant;
+        only the inverse (sampling) is computed differently.
+        """
+
+        def _conditioner_input(self, x: Tensor) -> Tensor:
+            """What the conditioner sees of the autoregressive inputs (``meta`` must agree)."""
+            return x
+
+        def forward(self, c: Optional[Tensor] = None) -> Any:
+            return _GroupedAutoregressiveTransform(self, c)
+
+    def _use_grouped_inverse(flow: Any) -> Any:
+        """Give every plain zuko MADE layer of ``flow`` the grouped inverse, in place.
+
+        Layers of another class (coupling, element-wise, transformer, or a subclass
+        with its own ``meta``) are left as they are.
+        """
+        layers = getattr(getattr(flow, "transform", None), "transforms", None)
+        if layers is None:
+            return flow
+        for layer in layers:
+            if type(layer) is _ARTransformBase:
+                layer.__class__ = _GroupedInverseAutoregressiveTransform
+        return flow
+
+    class _SoftClippedAutoregressiveTransform(_GroupedInverseAutoregressiveTransform):
         """MADE transform whose conditioner sees soft-clipped autoregressive inputs.
 
         The univariate parameters of ``x_i`` are a function of
@@ -208,8 +367,11 @@ if HAS_ZUKO:
             super().__init__(*args, **kwargs)
             self.conditioner_bound = float(conditioner_bound)
 
+        def _conditioner_input(self, x: Tensor) -> Tensor:
+            return _soft_clip(x, self.conditioner_bound)
+
         def meta(self, c: Optional[Tensor], x: Tensor) -> Any:
-            return super().meta(c, _soft_clip(x, self.conditioner_bound))
+            return super().meta(c, self._conditioner_input(x))
 
     class _SoftClippedCouplingTransform(_CouplingTransformBase):
         """Coupling transform whose conditioner sees soft-clipped conditioning inputs.
@@ -362,6 +524,9 @@ else:
             raise ImportError(
                 "BoundedNSF requires the 'zuko' package. Install with: pip install zuko"
             )
+
+    def _use_grouped_inverse(flow: Any) -> Any:
+        return flow
 
 
 def create_flow_model(
@@ -525,6 +690,8 @@ def create_flow_model(
             hidden_features=hidden,
             **kwargs,
         )
+    # Sampling: each coordinate's univariate transform is solved once per layer.
+    _use_grouped_inverse(flow)
     # Store context dim in a stable attribute used by NormalizingFlowLoss.
     setattr(flow, "context", context_dim)
     return cast(Module, flow)

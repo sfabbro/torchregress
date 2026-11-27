@@ -373,6 +373,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ScaleRecalibrator(..., about="mean" | "center")` takes its per-target scaling about either.
 ### Changed
 
+- Sampling is faster at many targets. The maps and distributions are the same (flow draws
+  and mixture quantiles agree with the previous code to floating-point rounding); a seeded
+  result that follows a Monte Carlo moment estimate can differ within Monte Carlo error,
+  because the estimate now uses one set of draws instead of several. Three pieces, found by
+  profiling the harness's `joint_regression`
+  suite, where 98% of the evaluation time of `JointRegressor()` at 8 targets was the inverse
+  of the autoregressive flow:
+  - Flows built by `create_flow_model` (`"nsf"`, `"maf"`, `"bpf"`) invert each autoregressive
+    layer with every conditioner unit and every target's univariate transform evaluated once,
+    instead of zuko's `d` sweeps that each run the whole conditioner and rebuild all `d`
+    transforms. Same map, parameters, masks and state-dict keys; conditioners that are not a
+    plain masked MLP (residual blocks, a custom adjacency) keep zuko's inverse. One spline
+    layer on 4,096 rows (context 128, hidden 128-128, CPU): 2.6 times faster at 8 targets,
+    4.4 at 16, 6.8 at 32 (Bernstein flows 3.5, 6.5, 10.6; affine MAF 1.4, 1.6, 1.8).
+  - `JointPredictive.mean` and `covariance` without a closed form are computed once per
+    predictive and sample size, from one set of draws, and reused (they were redrawn on every
+    call, three times for one Mahalanobis score of a mixture); `ProjectedJoint` takes its
+    moments from the predictive it projects.
+  - `MixtureMarginals.icdf` / `from_normal_scores` (and `StudentTMixture.marginal_quantile`
+    when every `df` is infinite) solve Gaussian mixtures with the range of the components'
+    own quantiles as bracket and closed-form Gaussian CDF and density, instead of the
+    Student-t bounds and incomplete-beta evaluation: 3.4 times faster on 200 rows x 256 draws
+    x 32 targets x 5 components, identical output.
+
+  Measured on a laptop CPU (4 threads) with the harness's evaluation of one row on 100 test
+  and 1,000 calibration rows (six scores, volumes, interest regions): `JointRegressor()` at 8
+  targets 532 s before, 58 s after; `JointRegressor("sklar")` with mixture marginals at 32
+  targets 129 s with the first two changes, 39 s with all three.
 - `JointRegressor(method="auto")` now trains three independently initialised copies of each
   network head (Gaussian, mixture, flow) and averages them with equal weights before
   stacking across head types: a deep ensemble (`n_members=None`: 3 for `"auto"`, 1 for a

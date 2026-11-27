@@ -992,6 +992,21 @@ def _gather_component(
     return expanded.gather(len(shape), index).squeeze(len(shape))
 
 
+def _gaussian_mixture_log_tail_and_log_pdf(
+    x: Tensor, logw: Tensor, loc: Tensor, scale: Tensor, upper: Tensor
+) -> tuple[Tensor, Tensor]:
+    r"""``log F`` (``log(1 - F)`` where ``upper``) and ``log f`` of a Gaussian mixture.
+
+    ``x [E, 1]``, parameters ``[E, K]`` with positive scales, ``upper [E, 1]``.  The
+    Gaussian case of :meth:`StudentTMixture._log_cdf_and_log_pdf` without the
+    Student-t normaliser and incomplete-beta evaluation.
+    """
+    z = (x - loc) / scale
+    log_tail = torch.logsumexp(logw + torch.special.log_ndtr(torch.where(upper, -z, z)), dim=-1)
+    log_pdf = torch.logsumexp(logw - 0.5 * z.square() - torch.log(scale) - 0.5 * _LOG_2PI, dim=-1)
+    return log_tail, log_pdf
+
+
 def _mixture_tail_quantile(
     tail: Tensor,
     upper: Tensor,
@@ -1012,19 +1027,32 @@ def _mixture_tail_quantile(
     exact mixture density and are replaced by bisection whenever they leave the
     bracket or fail to halve the step before last, so it converges for multimodal
     mixtures and heavy tails alike.  Stops when every step is below
-    ``tol * (|x| + w·scale)`` or after ``max_iter`` iterations.  Shared by
-    :meth:`StudentTMixture.marginal_quantile` and
+    ``tol * (|x| + w·scale)`` or after ``max_iter`` iterations.  When every ``df`` is
+    infinite and every scale positive (a Gaussian mixture) the bracket is the range of
+    the components' own quantiles and the CDF and density are evaluated in closed
+    Gaussian form.  Shared by :meth:`StudentTMixture.marginal_quantile` and
     :class:`~torchregress.joint.MixtureMarginals`.
     """
     q = torch.where(upper, 1.0 - tail, tail).unsqueeze(-1)
-    # Bracket: every component's CDF is <= q at lo and >= q at hi.
-    lo = (loc - _t_tail_bound(q, df) * scale).amin(-1)
-    hi = (loc + _t_tail_bound(1.0 - q, df) * scale).amax(-1)
+    zq = torch.special.ndtri(q)
+    # A Gaussian mixture (every df infinite, no point mass) needs no Student-t
+    # machinery: its component quantiles are closed form and bracket the root, and
+    # log F and log f are a logsumexp of log_ndtr and of Gaussian log densities.
+    gaussian = bool(torch.isinf(df).all()) and bool((scale > 0).all())
+    if gaussian:
+        # Level q on the lower side is ndtri(q); on the upper side, where q rounds
+        # to 1, it is -ndtri(tail), exact relative to the tail mass.
+        zq = torch.where(upper.unsqueeze(-1), -torch.special.ndtri(tail.unsqueeze(-1)), zq)
+        component_quantiles = loc + zq * scale
+        lo, hi = component_quantiles.amin(-1), component_quantiles.amax(-1)
+    else:
+        # Bracket: every component's CDF is <= q at lo and >= q at hi.
+        lo = (loc - _t_tail_bound(q, df) * scale).amin(-1)
+        hi = (loc + _t_tail_bound(1.0 - q, df) * scale).amax(-1)
     w = logw.exp()
     ref = (w * scale).sum(-1)
     # Start: weighted average of approximate component quantiles (normal
     # quantile plus the first Cornish-Fisher term of the t; exact at nu = inf).
-    zq = torch.special.ndtri(q)
     inv_nu = torch.where(torch.isinf(df), torch.zeros_like(df), 1.0 / df)
     tq = zq + (zq**3 + zq) * inv_nu / 4.0
     x = torch.minimum(torch.maximum((w * (loc + tq * scale)).sum(-1), lo), hi)
@@ -1035,14 +1063,19 @@ def _mixture_tail_quantile(
             break
         xa, lo_a, hi_a = x[active], lo[active], hi[active]
         up_a = upper[active]
-        log_tail, log_pdf = StudentTMixture._log_cdf_and_log_pdf(
-            xa.unsqueeze(-1),
-            logw[active],
-            loc[active],
-            scale[active],
-            df[active],
-            up_a.unsqueeze(-1),
-        )
+        if gaussian:
+            log_tail, log_pdf = _gaussian_mixture_log_tail_and_log_pdf(
+                xa.unsqueeze(-1), logw[active], loc[active], scale[active], up_a.unsqueeze(-1)
+            )
+        else:
+            log_tail, log_pdf = StudentTMixture._log_cdf_and_log_pdf(
+                xa.unsqueeze(-1),
+                logw[active],
+                loc[active],
+                scale[active],
+                df[active],
+                up_a.unsqueeze(-1),
+            )
         # g = F(x) − q in both forms: (1 − q) − (1 − F) on the upper side.
         p_tail = log_tail.exp()
         g = torch.where(up_a, tail[active] - p_tail, p_tail - tail[active])

@@ -360,3 +360,76 @@ def test_mixture_draws_pick_members_independently_per_row() -> None:
     # Draws of the two members are interleaved at random within a row.
     first_half = (draws[:, :32, 0] > 50).sum(1).double().mean()
     assert abs(float(first_half) - 9.6) < 4 * 2.6 / 20
+
+
+class _CountingJoint(JointPredictive):
+    """Draws-only predictive that counts its ``sample`` calls."""
+
+    def __init__(self, base: GaussianJoint) -> None:
+        self.base = base
+        self.calls = 0
+
+    @property
+    def batch_size(self) -> int:
+        return self.base.batch_size
+
+    @property
+    def event_dim(self) -> int:
+        return self.base.event_dim
+
+    def sample(self, n_samples: int) -> torch.Tensor:
+        self.calls += 1
+        return self.base.sample(n_samples)
+
+    def log_prob(self, y: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
+        return self.base.log_prob(y, mask)
+
+
+class TestMonteCarloMoments:
+    def test_mean_and_covariance_share_one_set_of_draws(self) -> None:
+        torch.manual_seed(0)
+        mean, tril = _gaussian(n=3, d=4)
+        joint = _CountingJoint(GaussianJoint(mean, tril))
+        first = joint.mean(4000)
+        cov = joint.covariance(4000)
+        assert joint.calls == 1
+        assert joint.mean(4000) is first and joint.covariance(4000) is cov  # reused, not redrawn
+        assert joint.calls == 1
+        # the estimates are those of the draws: right to Monte Carlo error
+        truth = tril @ tril.mT
+        torch.testing.assert_close(first, mean, rtol=0, atol=0.25)
+        torch.testing.assert_close(cov, truth, rtol=0, atol=0.25 * float(truth.abs().max()))
+        # a positive semi-definite matrix about the same mean
+        assert float(torch.linalg.eigvalsh(cov).min()) > 0
+
+    def test_another_sample_size_draws_again(self) -> None:
+        torch.manual_seed(0)
+        joint = _CountingJoint(GaussianJoint(*_gaussian(n=2, d=3)))
+        small, large = joint.mean(64), joint.mean(256)
+        assert joint.calls == 2 and not torch.equal(small, large)
+
+    def test_wrappers_and_mixtures_reuse_the_members_moments(self) -> None:
+        torch.manual_seed(0)
+        members = [_CountingJoint(GaussianJoint(*_gaussian(n=4, d=3, seed=s))) for s in (1, 2)]
+        mixture = MixtureJoint(members, torch.tensor([0.3, 0.7], dtype=F64))
+        wrapped = AffineJoint(
+            mixture, torch.ones(4, 3, dtype=F64), torch.full((4, 3), 2.0, dtype=F64)
+        )
+        wrapped.mean()
+        cov = wrapped.covariance()
+        wrapped.marginal([0, 2]).covariance()
+        assert [m.calls for m in members] == [1, 1]
+        # law of total covariance of the two members, scaled by 2 in every direction
+        means = torch.stack([m.mean() for m in members], dim=1)
+        covs = torch.stack([m.covariance() for m in members], dim=1)
+        w = torch.tensor([0.3, 0.7], dtype=F64).view(1, 2, 1)
+        centre = (w * means).sum(1, keepdim=True)
+        spread = (means - centre).unsqueeze(-1) * (means - centre).unsqueeze(-2)
+        expected = 4.0 * (w.unsqueeze(-1) * (covs + spread)).sum(1)
+        torch.testing.assert_close(cov, expected)
+
+    def test_closed_form_moments_do_not_sample(self) -> None:
+        mean, tril = _gaussian()
+        joint = GaussianJoint(mean, tril)
+        torch.testing.assert_close(joint.mean(), mean)
+        assert "_moment_cache" not in joint.__dict__

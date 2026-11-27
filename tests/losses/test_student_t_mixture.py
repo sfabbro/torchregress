@@ -18,7 +18,11 @@ import torch
 from scipy import stats
 
 from torchregress.losses import StudentTMixture
-from torchregress.losses.student_t_mixture import _lgamma_ratio, _t_tail_bound
+from torchregress.losses.student_t_mixture import (
+    _lgamma_ratio,
+    _mixture_tail_quantile,
+    _t_tail_bound,
+)
 
 F64 = torch.float64
 FORMS = ("scale_tril", "precision_tril", "scale_diag")
@@ -811,3 +815,68 @@ def test_device_matches_cpu():
     for a, b in zip(run("cpu"), run(device), strict=True):
         assert b.device.type == torch.device(device).type
         torch.testing.assert_close(b.cpu(), a, rtol=1e-10, atol=1e-10)
+
+
+class TestGaussianQuantilePath:
+    """All-infinite ``df``: closed-form Gaussian bracket and CDF instead of the Student-t ones."""
+
+    @staticmethod
+    def _problem(separated: bool, n: int = 400, k: int = 4, seed: int = 3):
+        gen = torch.Generator().manual_seed(seed)
+        logw = torch.log_softmax(torch.randn(n, k, generator=gen, dtype=F64), dim=-1)
+        loc = torch.randn(n, k, generator=gen, dtype=F64) * (6.0 if separated else 1.0)
+        scale = torch.rand(n, k, generator=gen, dtype=F64) * (0.2 if separated else 1.5) + 0.02
+        tails = torch.tensor([1e-12, 1e-6, 1e-3, 0.1, 0.5], dtype=F64)
+        tail = tails[torch.randint(0, 5, (n,), generator=gen)]
+        upper = torch.rand(n, generator=gen) < 0.5
+        return tail, upper, logw, loc, scale
+
+    @pytest.mark.parametrize("separated", [False, True])
+    def test_equals_the_student_t_path_on_the_same_mixture(self, separated):
+        tail, upper, logw, loc, scale = self._problem(separated)
+        inf = torch.full_like(loc, math.inf)
+        gaussian = _mixture_tail_quantile(tail, upper, logw, loc, scale, inf, 1e-13, 200)
+        # A fifth component of weight zero and finite df changes nothing in the mixture
+        # and sends the same problem through the Student-t bracket and evaluation.
+        pad = torch.zeros(len(tail), 1, dtype=F64)
+        general = _mixture_tail_quantile(
+            tail,
+            upper,
+            torch.cat([logw, pad - math.inf], dim=-1),
+            torch.cat([loc, pad], dim=-1),
+            torch.cat([scale, pad + 1.0], dim=-1),
+            torch.cat([inf, pad + 5.0], dim=-1),
+            1e-13,
+            200,
+        )
+        torch.testing.assert_close(gaussian, general, rtol=1e-9, atol=1e-9)
+
+    @pytest.mark.parametrize("separated", [False, True])
+    def test_roots_reproduce_the_tail_mass(self, separated):
+        tail, upper, logw, loc, scale = self._problem(separated)
+        x = _mixture_tail_quantile(
+            tail, upper, logw, loc, scale, torch.full_like(loc, math.inf), 1e-13, 200
+        )
+        z = (x.unsqueeze(-1) - loc) / scale
+        signed = torch.where(upper.unsqueeze(-1), -z, z)
+        mass = torch.logsumexp(logw + torch.special.log_ndtr(signed), dim=-1).exp()
+        torch.testing.assert_close(mass, tail, rtol=1e-8, atol=0)
+        # inside the range of the components' own quantiles (the bracket)
+        zq = torch.where(upper, -torch.special.ndtri(tail), torch.special.ndtri(tail))
+        comp = loc + zq.unsqueeze(-1) * scale
+        assert bool((x >= comp.amin(-1) - 1e-9).all() and (x <= comp.amax(-1) + 1e-9).all())
+
+    def test_single_gaussian_is_the_closed_form_quantile(self):
+        tail = torch.tensor([1e-12, 1e-4, 0.3, 0.3, 1e-9], dtype=F64)
+        upper = torch.tensor([False, True, False, True, True])
+        loc = torch.tensor([[0.3], [-2.0], [5.0], [0.0], [1.0]], dtype=F64)
+        scale = torch.tensor([[0.5], [3.0], [1e-3], [1.0], [2.0]], dtype=F64)
+        x = _mixture_tail_quantile(
+            tail, upper, torch.zeros(5, 1, dtype=F64), loc, scale, loc + math.inf, 1e-13, 100
+        )
+        ref = np.where(
+            upper.numpy(),
+            stats.norm.isf(tail.numpy(), loc[:, 0].numpy(), scale[:, 0].numpy()),
+            stats.norm.ppf(tail.numpy(), loc[:, 0].numpy(), scale[:, 0].numpy()),
+        )
+        np.testing.assert_allclose(x.numpy(), ref, rtol=1e-11, atol=1e-12)

@@ -50,12 +50,12 @@ Method                     | NLL    | NLLGap | Energy | Variogram | Cov90  | Log
 ---------------------------+--------+--------+--------+-----------+--------+----------+----------+---------+---------
 oracle                     | 2.0742 | 0.0000 | 0.7454 | 0.3175    | -      | -        | 0.7140   | -       | -
 independent targets        | 3.0644 | 0.9902 | 0.7820 | 0.3752    | -      | -        | 0.7640   | -       | -
-JointRegressor('gaussian') | 2.6452 | 0.5710 | 0.7697 | 0.3427    | 0.9160 | 2.5761   | 0.7660   | 0.9535  | 0.1346
-JointRegressor('mixture')  | 2.2532 | 0.1790 | 0.7524 | 0.3224    | 0.9150 | 2.2486   | 0.7330   | 0.6579  | 0.4692
-JointRegressor('flow')     | 2.3586 | 0.2844 | 0.7623 | 0.3241    | 0.9000 | 2.3047   | 0.6650   | 2.8450  | 13.6507
-JointRegressor('sklar')    | 2.4612 | 0.3871 | 0.7621 | 0.3287    | 0.9060 | 2.4660   | 0.7160   | 10.5547 | 15.9251
-JointRegressor('energy')   | -      | -      | 0.7611 | 0.3313    | 0.9060 | 2.9808   | 0.7230   | 3.4634  | 0.5475
-JointRegressor('auto')     | 2.1862 | 0.1120 | 0.7477 | 0.3165    | 0.8970 | 2.0491   | 0.7340   | 53.0935 | 17.6631
+JointRegressor('gaussian') | 2.6452 | 0.5710 | 0.7697 | 0.3427    | 0.9160 | 2.5761   | 0.7660   | 1.0078  | 0.1382
+JointRegressor('mixture')  | 2.2532 | 0.1790 | 0.7524 | 0.3224    | 0.9150 | 2.2486   | 0.7330   | 0.6567  | 0.4702
+JointRegressor('flow')     | 2.3586 | 0.2844 | 0.7623 | 0.3241    | 0.9000 | 2.3047   | 0.6650   | 2.8884  | 8.3420
+JointRegressor('sklar')    | 2.4612 | 0.3871 | 0.7621 | 0.3287    | 0.9060 | 2.4660   | 0.7160   | 7.8973  | 4.3360
+JointRegressor('energy')   | -      | -      | 0.7610 | 0.3314    | 0.9030 | 2.9601   | 0.7220   | 1.6258  | 0.4057
+JointRegressor('auto')     | 2.1862 | 0.1120 | 0.7477 | 0.3165    | 0.8970 | 2.0491   | 0.7340   | 26.4998 | 13.7786
 ```
 
 Reading it, for this problem and this seed:
@@ -63,7 +63,7 @@ Reading it, for this problem and this seed:
 - Dropping the correlations costs 0.42 nats per row against the same Gaussian head (0.99 against 0.57), and it shows in the variogram score (0.375 against 0.343) much more than in the energy score.
 - The stacked default (three copies of each network head) has the smallest gap to the oracle (0.11 nats) and the smallest region. The mixture head alone is at 0.18 nats; it is the closest single head because the truth is a mixture.
 - Every conformal region is within two standard errors of 0.90 (one standard error is about 0.018 with 400 calibration rows and 1,000 test rows). Per-target 90% intervals taken together cover 67% to 77%.
-- The energy head needs no density family and evaluates in under half a second where the flow needs twelve, but it has no log density and its region is the largest.
+- The energy head needs no density family and evaluates in under half a second where the flow needs eight, but it has no log density and its region is the largest.
 - The Sklar route picks mixture marginals and the conditional-mixture dependence rung on its validation rows and ends at 0.39 nats, between the single Gaussian (0.57) and the flow (0.28): the two modes move all three targets together, and that shared mode has to be learned by the dependence model from the normal scores.
 
 !!! warning "One problem, one seed"

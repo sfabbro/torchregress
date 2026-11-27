@@ -1032,6 +1032,22 @@ model = JointRegressor(max_holdout=20_000, batch_size="auto").fit(X, Y)  # the d
 model.n_train_, model.batch_size_
 ```
 
+**Many targets.** Densities are one network pass whatever $d$ is; draws are what
+grows. An autoregressive flow maps $z$ to $y$ one target at a time, target $j$
+needing the conditioner's output for the targets before it, so a draw costs $d$
+steps per layer. The flows built by `create_flow_model` do each piece of that
+work once (a conditioner unit is evaluated in the step where its inputs become
+known, and only the spline of the target being solved is built), which is 4
+times faster than sweeping the whole layer $d$ times at 16 targets and 7 times
+at 32. Three habits keep the rest cheap: ask for moments from the predictive you
+already have (`mean()` and `covariance()` are computed once per predictive and
+reused by every score that needs them); calibrate a region for the targets you
+report with `interest=` instead of projecting a $d$-dimensional one
+([§3.6](#36-targets-of-interest-and-nuisance-targets)); and remember which
+scores draw: the latent norm of a single Gaussian or flow and the Mahalanobis
+score of a Gaussian need none, the highest-density score draws for every
+calibration and test row ([§4.1](#41-region-scores)).
+
 **Plots.** `plot_corner_plot` and `plot_joint_diagnostics` take any joint
 predictive or region; options, contour conventions and a gallery are in
 [joint predictive plots](../methods/visualization.md#4-joint-predictive-plots-corner-plots-and-diagnostics).

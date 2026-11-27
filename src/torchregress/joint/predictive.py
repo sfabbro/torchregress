@@ -167,9 +167,31 @@ class JointPredictive(ABC):
         return ProjectedJoint(self, idx)
 
     # -------------------------------------------------------------- derived
+    def _monte_carlo_moments(self, n_samples: int) -> tuple[Tensor, Tensor]:
+        """Mean ``[n, d]`` and covariance ``[n, d, d]`` from one set of ``n_samples`` draws.
+
+        Kept on the predictive per ``n_samples``: a predictive is a fixed batch of
+        distributions, so its moments are computed once, ``mean`` and ``covariance``
+        agree with each other, and scores that need them (Mahalanobis, residual and
+        recalibration steps) do not draw again.
+        """
+        cache: dict[int, tuple[Tensor, Tensor]] = self.__dict__.setdefault("_moment_cache", {})
+        if n_samples not in cache:
+            with torch.no_grad():
+                draws = self.sample(n_samples)
+                mean = draws.mean(dim=1)
+                centred = draws - mean.unsqueeze(1)
+                cache[n_samples] = (mean, centred.mT @ centred / max(n_samples - 1, 1))
+        return cache[n_samples]
+
     def mean(self, n_samples: int = 512) -> Tensor:
-        """Predictive mean ``[n, d]`` (Monte Carlo unless the head overrides it)."""
-        return self.sample(n_samples).mean(dim=1)
+        """Predictive mean ``[n, d]``.
+
+        Closed form where the head has one; otherwise a Monte Carlo estimate from
+        ``n_samples`` draws, computed once per ``n_samples`` and reused by later calls
+        and by :meth:`covariance`.
+        """
+        return self._monte_carlo_moments(n_samples)[0]
 
     def center(self, n_samples: int = 512) -> Tensor:
         r"""A location summary ``[n, d]`` that avoids sampling where it can.
@@ -191,10 +213,12 @@ class JointPredictive(ABC):
         return self.mean(n_samples)
 
     def covariance(self, n_samples: int = 512) -> Tensor:
-        """Predictive covariance ``[n, d, d]`` (Monte Carlo unless overridden)."""
-        draws = self.sample(n_samples)
-        centred = draws - draws.mean(dim=1, keepdim=True)
-        return centred.mT @ centred / max(n_samples - 1, 1)
+        """Predictive covariance ``[n, d, d]``.
+
+        Closed form where the head has one; otherwise from the same ``n_samples``
+        draws as :meth:`mean`, computed once per ``n_samples``.
+        """
+        return self._monte_carlo_moments(n_samples)[1]
 
     def hpd_level(self, y: Any, n_samples: int = 512) -> Tensor:
         r"""Highest-density level of ``y``: ``[n, d] -> [n]``, ``[n, S, d] -> [n, S]``.
@@ -760,8 +784,16 @@ class ProjectedJoint(JointPredictive):
     def sample(self, n_samples: int) -> Tensor:
         return self.base.sample(n_samples)[:, :, self.dims]
 
+    def mean(self, n_samples: int = 512) -> Tensor:
+        return self.base.mean(n_samples)[:, self.dims]
+
     def center(self, n_samples: int = 512) -> Tensor:
         return self.base.center(n_samples)[:, self.dims]
+
+    def covariance(self, n_samples: int = 512) -> Tensor:
+        # The moments of a projection are the projected moments of the base, which the
+        # base computes once (in closed form where it can).
+        return self.base.covariance(n_samples)[:, self.dims][:, :, self.dims]
 
 
 class MaskedMarginalJoint(JointPredictive):
