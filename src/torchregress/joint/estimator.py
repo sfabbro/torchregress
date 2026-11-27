@@ -24,6 +24,11 @@ What ``fit`` does, in order:
 
 Steps 4 and 5 use different rows: a recalibrator fitted on the conformal rows would break
 the exchangeability the coverage statement rests on.
+
+With ``cv=K`` (cross-fitting) the rows are not split once: ``K`` fold models each train
+on all rows but one fold, stacking and recalibration use the out-of-fold densities of
+every row, ``predict`` averages the fold models and ``region`` is cross-conformal (a
+weaker guarantee, see :class:`~torchregress.joint.CrossConformalRegion`).
 """
 
 from __future__ import annotations
@@ -31,6 +36,7 @@ from __future__ import annotations
 import copy
 import math
 import warnings
+from collections import Counter
 from collections.abc import Sequence
 from typing import Any, Literal, Optional, Union
 
@@ -68,6 +74,7 @@ from .predictive import (
 )
 from .regions import (
     ConformalScore,
+    CrossConformalRegion,
     HPDScore,
     JointConformal,
     JointRegion,
@@ -674,6 +681,9 @@ class JointRegressor:
             held-out rows add little (a conformal quantile from 20,000 rows is
             within :math:`5 \times 10^{-5}` of its level) and the rows go to
             training instead.
+        cv: ``None`` (default): one split, as described below.  An integer
+            :math:`K \ge 2`: cross-fitting for small data sets, see
+            **Cross-fitting** below.  ``K`` fits instead of one.
         recalibrate: Fit the per-target scale recalibration.
         clip_features: Clamp every feature to the range seen in the training rows
             before it enters the networks (default).  A network has no information
@@ -743,6 +753,38 @@ class JointRegressor:
     ``n_val_``, ``n_recal_``, ``n_conformal_`` and ``n_train_``.  :meth:`calibrate`
     replaces the conformal rows with data you supply.
 
+    **Cross-fitting** (``cv=K``).  One seeded permutation cuts the ``N`` rows into
+    ``K`` folds (sizes differ by at most one; ``folds_`` holds the fold of each
+    row).  Fold model :math:`k` is a ``JointRegressor`` with the same settings
+    fitted on the other ``K - 1`` folds, with its own standardisation, feature
+    clamp and an inner validation split (``val_fraction`` of its rows, at most
+    ``max_holdout``) for early stopping only: it never sees fold :math:`k`.  No
+    recalibration or conformal rows are held out.  ``n_members=None`` means one
+    copy of each head per fold model (the ``K`` fold models are the ensemble).
+    Then:
+
+    * **Stacking** on the out-of-fold log density of every row (each row scored by
+      the fold model that did not see it; ``validation_log_score_`` is the
+      out-of-fold mean per head).  The energy head gets an out-of-fold energy
+      score instead and is not stacked.
+    * **Prediction**: :meth:`predict` is the equal-weight average of the ``K``
+      stacked fold predictives, one flat :class:`~torchregress.joint.MixtureJoint`
+      over (fold, head) components with weights ``w_head / K``, each component
+      carrying the recalibration of its fold.
+    * **Recalibration**: one :class:`~torchregress.joint.ScaleRecalibrator` fitted
+      on the out-of-fold predictive of every complete row and applied to every
+      fold model, each scaled about its own center.  No rows are left to accept or
+      reject the factors on: factors within 2% of one are skipped, and with a
+      density the ``"nll"`` objective never returns factors that score worse
+      than leaving the predictive alone on those rows (an in-sample statement).
+    * **Regions**: cross-conformal (:meth:`region`).  The fold models used for its
+      scores are stacked with their own inner-validation weights and not
+      recalibrated, so that fold model :math:`k` depends on no row of fold
+      :math:`k`, as the guarantee requires.  The training rows are kept on the
+      estimator to compute the out-of-fold scores.
+
+    The cost is ``K`` fits and ``K`` times the scoring work at :meth:`region`.
+
     Attributes:
         members_: Names of the fitted heads.
         weights_: Stacking weights (``[K]``).
@@ -754,9 +796,19 @@ class JointRegressor:
             each head without a density (``"energy"``), in the units of the data and
             over the observed targets of each row, from fixed draws (16 per row).
         n_train_, n_val_, n_recal_, n_conformal_: Rows in each split
-            (``n_conformal_`` follows :meth:`calibrate`).
+            (``n_conformal_`` follows :meth:`calibrate`).  With ``cv``: the
+            training and inner validation rows of one fold model (the smallest
+            over the folds), and ``N`` recalibration and conformal rows (every row,
+            out of fold).
+        folds_: Fold of each training row ``[N]`` (``cv`` only, else ``None``).
+        fold_choices_: Per-fold choices of the Sklar route with ``cv``:
+            ``{"marginal_engine": [...], "dependence": [...]}`` (``marginal_engine_``
+            and ``dependence_`` are then the most frequent choice, and
+            ``marginal_scores_`` and ``dependence_scores_`` the means over the
+            folds of each fold model's inner validation scores); empty otherwise.
         batch_size_: Minibatch size used by the last :meth:`fit`.
-        n_parameters_: Number of network parameters of the fitted model (all copies).
+        n_parameters_: Number of network parameters of the fitted model (all copies,
+            all fold models).
         dependence_scores_: Validation log score of each dependence rung (Sklar route).
         dependence_: Name of the rung the validation gate chose (Sklar route).
         marginal_scores_: Mean held-out sum of marginal log densities of each marginal
@@ -784,6 +836,7 @@ class JointRegressor:
         recal_fraction: float = 0.05,
         conformal_fraction: float = 0.1,
         max_holdout: int = 20_000,
+        cv: Optional[int] = None,
         recalibrate: bool = True,
         clip_features: bool = True,
         score: Union[str, ConformalScore] = "auto",
@@ -816,6 +869,9 @@ class JointRegressor:
             batch_size if isinstance(batch_size, str) else int(batch_size)
         )
         self.max_holdout = int(max_holdout)
+        if cv is not None and (isinstance(cv, bool) or int(cv) != cv or int(cv) < 2):
+            raise ValueError(f"cv must be None or an integer of at least 2, got {cv!r}")
+        self.cv: Optional[int] = None if cv is None else int(cv)
         self.batch_size_: Optional[int] = None
         self.lr, self.weight_decay = float(lr), float(weight_decay)
         self.val_fraction, self.recal_fraction = float(val_fraction), float(recal_fraction)
@@ -865,6 +921,18 @@ class JointRegressor:
         self._y_stats: Optional[tuple[Tensor, Tensor]] = None
         self._conformal_rows: Optional[tuple[Tensor, Tensor, Tensor]] = None
         self._conformal_cache: dict[Any, tuple[JointConformal, Optional[JointConformal]]] = {}
+        # Cross-fitting (cv): fold of each row, the fold models, the training rows
+        # (x, filled y, observed) kept for out-of-fold region scores, their cache.
+        self.folds_: Optional[Tensor] = None
+        self.fold_choices_: dict[str, list[Optional[str]]] = {}
+        self._fold_models: list[JointRegressor] = []
+        self._cross_rows: Optional[tuple[Tensor, Tensor, Tensor]] = None
+        self._cross_cache: dict[Any, Any] = {}
+        # A fold model: no recalibration or conformal rows, the head names of the
+        # outer model, its own stacking weights kept for the cross-conformal scores.
+        self._holdout = True
+        self._forced_names: Optional[list[str]] = None
+        self._own_weights: Optional[Tensor] = None
 
     # ----------------------------------------------------------------- fit
     def fit(self, X: ArrayLike, Y: ArrayLike) -> "JointRegressor":
@@ -889,17 +957,23 @@ class JointRegressor:
         observed = torch.isfinite(y)
         if not bool(observed.any(dim=0).all()):
             raise ValueError("every target needs at least one observed value")
-        if n < 50:
+        if n < 50 and self._holdout:
             raise ValueError("at least 50 rows are needed to hold out calibration splits")
+        if n < 16:
+            raise ValueError("a fold model needs at least 16 rows")
         self.n_features_in_, self.n_targets_ = int(x.shape[1]), int(d)
         has_missing = not bool(observed.all())
+        self._fold_models, self.folds_, self.fold_choices_ = [], None, {}
+        self._cross_rows, self._cross_cache = None, {}
+        if self.cv is not None:
+            return self._fit_crossfit(x, y, observed, has_missing)
 
         gen = torch.Generator().manual_seed(self.seed)
         perm = torch.randperm(n, generator=gen)
         cap = self.max_holdout
         n_val = min(cap, max(8, int(round(self.val_fraction * n))))
-        n_rec = min(cap, max(8, int(round(self.recal_fraction * n))))
-        n_conf = min(cap, max(8, int(round(self.conformal_fraction * n))))
+        n_rec = min(cap, max(8, int(round(self.recal_fraction * n)))) if self._holdout else 0
+        n_conf = min(cap, max(8, int(round(self.conformal_fraction * n)))) if self._holdout else 0
         val, rec = perm[:n_val], perm[n_val : n_val + n_rec]
         conf, train = perm[n_val + n_rec : n_val + n_rec + n_conf], perm[n_val + n_rec + n_conf :]
 
@@ -1030,6 +1104,7 @@ class JointRegressor:
         else:
             stacked = torch.stack(log_density, dim=1).double()
             self.weights_ = _stack(stacked).to(torch.float32).cpu()
+        self._own_weights = self.weights_
 
         self._recalibrator, self.scale_ = None, None
         complete_rec = rec[observed[rec].all(1)]
@@ -1078,6 +1153,183 @@ class JointRegressor:
         self._conformal_cache = {}
         return self
 
+    # ----------------------------------------------------------- cross-fitting
+    def _fold_model(self, k: int, names: list[str]) -> "JointRegressor":
+        """Unfitted model of fold ``k``: same budget, no recalibration or conformal rows."""
+        model = JointRegressor(
+            self.method,
+            marginals=self.marginals,
+            hidden=self.hidden,
+            n_components=self.n_components,
+            rank=self.rank,
+            max_epochs=self.max_epochs,
+            patience=self.patience,
+            batch_size=self.batch_size,
+            lr=self.lr,
+            weight_decay=self.weight_decay,
+            val_fraction=self.val_fraction,
+            recal_fraction=self.recal_fraction,
+            conformal_fraction=self.conformal_fraction,
+            max_holdout=self.max_holdout,
+            recalibrate=False,
+            clip_features=self.clip_features,
+            score=self.score,
+            n_folds=self.n_folds,
+            n_members=1 if self.n_members is None else self.n_members,
+            noise_dim=self.noise_dim,
+            energy_draws=self.energy_draws,
+            device=self.device,
+            seed=self.seed + 1009 * (k + 1),
+        )
+        model._holdout = False
+        model._forced_names = list(names)
+        return model
+
+    def _fit_crossfit(
+        self, x: Tensor, y: Tensor, observed: Tensor, has_missing: bool
+    ) -> "JointRegressor":
+        """Fold models, out-of-fold stacking and recalibration (``cv = K``)."""
+        assert self.cv is not None
+        n, d = y.shape
+        k_folds = self.cv
+        if k_folds > n:
+            raise ValueError(f"cv = {k_folds} exceeds the {n} rows: every fold needs a row")
+        gen = torch.Generator().manual_seed(self.seed)
+        perm = torch.randperm(n, generator=gen)
+        folds = torch.empty(n, dtype=torch.long)
+        for k in range(k_folds):
+            folds[perm[k::k_folds]] = k
+        names = self._member_names(d, has_missing)
+        models: list[JointRegressor] = []
+        for k in range(k_folds):
+            rows = (folds != k).nonzero().squeeze(1)
+            models.append(self._fold_model(k, names).fit(x[rows], y[rows]))
+        self._fold_models, self.folds_, self.members_ = models, folds, names
+        dev = self.device
+        filled = torch.where(observed, y, torch.zeros_like(y))
+
+        # Out-of-fold log densities (data units) of each head, NaN where not scored.
+        log_density = torch.full((n, len(names)), math.nan, dtype=torch.float64)
+        energy_sum: dict[str, float] = {}
+        energy_rows: dict[str, int] = {}
+        for k, model in enumerate(models):
+            rows = (folds == k).nonzero().squeeze(1)
+            assert model._y_stats is not None
+            mu, sd = model._y_stats
+            xs = model._standardised(x[rows]).to(dev)
+            obs = observed[rows].to(dev)
+            ys = torch.where(obs, (filled[rows].to(dev) - mu.to(dev)) / sd.to(dev), 0.0)
+            log_sd = sd.log().to(dev)
+            for h, name in enumerate(names):
+                if name == "energy":
+                    head = model._heads[name][0]
+                    assert isinstance(head, _EnergyHead)
+                    noise_gen = torch.Generator().manual_seed(self.seed + h)
+                    eps = head.noise(int(rows.numel()), _ENERGY_VAL_DRAWS, xs, noise_gen)
+                    with torch.no_grad():
+                        es = _masked_energy_score(
+                            head.generate(xs, eps) * sd.to(dev),
+                            ys * sd.to(dev),
+                            obs if has_missing else None,
+                        )
+                    energy_sum[name] = energy_sum.get(name, 0.0) + float(es.sum())
+                    energy_rows[name] = energy_rows.get(name, 0) + int(obs.any(-1).sum())
+                    continue
+                masked = has_missing and name != "sklar" and model._heads[name][0].supports_missing
+                sel = (
+                    torch.arange(rows.numel(), device=dev)
+                    if masked or not has_missing
+                    else obs.all(1).nonzero().squeeze(1)
+                )
+                if sel.numel() == 0:
+                    continue
+                with torch.no_grad():
+                    lp = model._member_predictive(name, xs[sel]).log_prob(
+                        ys[sel], obs[sel] if masked else None
+                    )
+                seen = obs[sel] if masked else torch.ones_like(obs[sel])
+                jac = (seen.to(lp.dtype) * log_sd.to(lp.dtype)).sum(-1)
+                log_density[rows[sel.cpu()], h] = (lp - jac).double().cpu()
+        self.validation_log_score_ = {
+            name: float(log_density[:, h][~torch.isnan(log_density[:, h])].mean())
+            for h, name in enumerate(names)
+            if name != "energy"
+        }
+        self.validation_energy_score_ = {
+            name: energy_sum[name] / max(energy_rows[name], 1) for name in energy_sum
+        }
+        if len(names) == 1:
+            self.weights_ = torch.ones(1)
+        else:
+            self.weights_ = _stack(log_density).to(torch.float32).cpu()
+
+        # Sizes, choices of the Sklar route (per fold, the most frequent reported).
+        self.n_train_ = min(int(m.n_train_ or 0) for m in models)
+        self.n_val_ = min(int(m.n_val_ or 0) for m in models)
+        self.n_recal_ = self.n_conformal_ = n
+        self.batch_size_ = max(int(m.batch_size_ or 0) for m in models)
+        self.fold_choices_ = {}
+        if "sklar" in names:
+            self.fold_choices_ = {
+                "marginal_engine": [m.marginal_engine_ for m in models],
+                "dependence": [m.dependence_ for m in models],
+            }
+        self.marginal_engine_ = _most_frequent([m.marginal_engine_ for m in models])
+        self.dependence_ = _most_frequent([m.dependence_ for m in models])
+        self.marginal_scores_ = _mean_tables([m.marginal_scores_ for m in models])
+        self.dependence_scores_ = _mean_tables([m.dependence_scores_ for m in models])
+
+        # One recalibration from the out-of-fold predictive of every complete row.
+        self._recalibrator, self.scale_ = None, None
+        blocks: list[JointPredictive] = []
+        targets: list[Tensor] = []
+        for k, model in enumerate(models):
+            rows = ((folds == k) & observed.all(1)).nonzero().squeeze(1)
+            if rows.numel() > 0:
+                blocks.append(self._fold_base(k, x[rows]))
+                targets.append(y[rows])
+        n_complete = sum(int(t.shape[0]) for t in targets)
+        if self.recalibrate and n_complete >= 8:
+            base = _RowBlockJoint(blocks)
+            recalibrator = ScaleRecalibrator(
+                objective="nll" if base.has_density else "variance",
+                n_samples=256,
+                about="center" if base.has_density else "mean",
+            )
+            recalibrator.fit(base, torch.cat(targets))
+            fitted = recalibrator.scale_
+            assert fitted is not None
+            self.scale_ = torch.ones_like(fitted.detach().cpu())
+            # No rows are left to accept or reject the factors on: only the 2% rule
+            # (and, for densities, the recalibrator never scoring worse than s = 1).
+            if float(fitted.log().abs().max()) > 0.02:
+                self._recalibrator = recalibrator
+                self.scale_ = fitted.detach().cpu()
+        self._conformal_rows = None
+        self._cross_rows = (x, filled, observed)
+        self._cross_cache = {}
+        return self
+
+    def _fold_base(self, k: int, x: Tensor, *, own: bool = False) -> JointPredictive:
+        """Stacked predictive of fold model ``k`` in data units, before recalibration.
+
+        ``own=True`` uses the fold model's own stacking weights (fitted on its inner
+        validation rows) instead of the out-of-fold weights: the cross-conformal
+        scores need a fold model that depends on no row of its fold.
+        """
+        model = self._fold_models[k]
+        weights = model._own_weights if own else self.weights_
+        assert weights is not None
+        return model._base_predictive(x, weights=weights)
+
+    def _fold_predictives(self, x: Tensor) -> list[JointPredictive]:
+        """Recalibrated stacked predictive of every fold model for the rows of ``x``."""
+        out = []
+        for k in range(len(self._fold_models)):
+            base = self._fold_base(k, x)
+            out.append(base if self._recalibrator is None else self._recalibrator.transform(base))
+        return out
+
     def calibrate(self, X: ArrayLike, Y: ArrayLike) -> "JointRegressor":
         """Replace the conformal rows with calibration data ``X [N, p]``, ``Y [N, d]``.
 
@@ -1086,6 +1338,11 @@ class JointRegressor:
         guarantee of :meth:`region` rests on their exchangeability with test
         rows under the fitted model.  ``NaN`` marks a missing target (``±inf`` is
         an error).  Clears the cached calibrations; returns ``self``.
+
+        With ``cv`` the external rows replace the cross-conformal calibration:
+        :meth:`region` is then the split conformal region of the averaged
+        predictive of :meth:`predict` on these rows, with the
+        :math:`1 - \alpha` guarantee (refit to go back to cross-conformal).
         """
         if self.n_features_in_ is None or self.n_targets_ is None:
             raise RuntimeError("Call fit() first.")
@@ -1108,10 +1365,14 @@ class JointRegressor:
         filled = torch.where(observed, y, torch.zeros_like(y))
         self._conformal_rows = (x, filled, observed)
         self._conformal_cache = {}
+        # External rows replace the cross-conformal calibration (cv): split conformal.
+        self._cross_rows, self._cross_cache = None, {}
         self.n_conformal_ = int(x.shape[0])
         return self
 
     def _member_names(self, d: int, has_missing: bool) -> list[str]:
+        if self._forced_names is not None:
+            return list(self._forced_names)
         if self.method != "auto":
             if self.method == "flow" and has_missing:
                 warnings.warn(
@@ -1241,6 +1502,8 @@ class JointRegressor:
         """
         if self.weights_ is None:
             raise RuntimeError("Call fit() first.")
+        if self._fold_models:
+            return sum(model.n_parameters_ for model in self._fold_models)
 
         def count(holder: object) -> int:
             modules = [holder] if isinstance(holder, nn.Module) else list(vars(holder).values())
@@ -1315,10 +1578,15 @@ class JointRegressor:
         for param in head.parameters():
             param.requires_grad_(False)
 
-    def _base_predictive(self, x: Tensor) -> JointPredictive:
-        """Stacked predictive in data units, before recalibration."""
+    def _base_predictive(self, x: Tensor, weights: Optional[Tensor] = None) -> JointPredictive:
+        """Stacked predictive in data units, before recalibration.
+
+        ``weights`` replaces the stacking weights ``weights_`` (fold models of
+        ``cv``, whose weights come from the out-of-fold densities).
+        """
         if self._x_stats is None or self._y_stats is None or self.weights_ is None:
             raise RuntimeError("Call fit() first.")
+        stack_w = self.weights_ if weights is None else weights
         xs = self._standardised(x).to(self.device)
         with torch.no_grad():
             members = [self._member_predictive(name, xs) for name in self.members_]
@@ -1326,11 +1594,11 @@ class JointRegressor:
         if len(members) == 1:
             inner = members[0]
         else:
-            keep = self.weights_ > 1e-4
+            keep = stack_w > 1e-4
             if not bool(keep.any()):
-                keep = self.weights_ == self.weights_.max()
+                keep = stack_w == stack_w.max()
             kept = [m for m, k in zip(members, keep.tolist()) if k]
-            weights = self.weights_[keep] / self.weights_[keep].sum()
+            weights = stack_w[keep] / stack_w[keep].sum()
             # One flat mixture: the copies of an ensembled head share its stacking weight.
             flat: list[JointPredictive] = []
             flat_w: list[float] = []
@@ -1351,6 +1619,8 @@ class JointRegressor:
         x = torch.as_tensor(X, dtype=torch.float32)
         if x.dim() != 2 or x.shape[1] != self.n_features_in_:
             raise ValueError(f"X must be [n, {self.n_features_in_}]")
+        if self._fold_models:
+            return _average(self._fold_predictives(x))
         base = self._base_predictive(x)
         return base if self._recalibrator is None else self._recalibrator.transform(base)
 
@@ -1414,6 +1684,27 @@ class JointRegressor:
           conformal rows.  It is *not* a guarantee for complete rows passed
           with an all-true mask.
 
+        **Cross-conformal** (``cv=K``, no :meth:`calibrate`).  Every training row
+        :math:`i` is scored by the fold model that did not see it,
+        :math:`s_i = s(\hat p_{k(i)}(\cdot \mid x_i), y_i)`; a candidate
+        :math:`y` at :math:`x` gets the ``K`` scores
+        :math:`t_k(y) = s(\hat p_k(\cdot \mid x), y)` and
+
+        .. math::
+            R_\alpha(x) = \Big\{ y : \frac{1 + \sum_{i=1}^N
+            \mathbf 1[s_i \ge t_{k(i)}(y)]}{N + 1} > \alpha \Big\}
+
+        (Vovk 2015), a :class:`~torchregress.joint.CrossConformalRegion`.  For
+        exchangeable rows Barber et al. (2021, Theorem 4 and Remark 1) prove
+        :math:`P(Y \in R_\alpha(X)) \ge 1 - 2\alpha - \min\{2(1 - 1/K)/(N/K + 1),
+        (1 - K/N)/(K + 1)\}`, not :math:`1 - \alpha`; realised coverage is
+        typically close to :math:`1 - \alpha`.  The score is chosen per fold
+        predictive as above (``region.score.bases``, one per fold) with the same number of draws
+        for training and test rows.  With missing targets the two calibrations
+        above (complete rows; ``contains(y, mask=)``) are kept, from out-of-fold
+        scores and with this weaker bound in place of :math:`1 - \alpha`.  The
+        out-of-fold scores are cached per (``interest``, ``score``).
+
         Args:
             X: Features ``[n, p]``.
             alpha: Miscoverage level(s).
@@ -1421,12 +1712,14 @@ class JointRegressor:
                 sub-vector, with the other (nuisance) targets integrated out of the
                 predictive before calibration.
         """
-        if self._conformal_rows is None:
-            raise RuntimeError("Call fit() first.")
         dims = None if interest is None else tuple(int(i) for i in interest)
         levels = (
             (float(alpha),) if isinstance(alpha, (int, float)) else tuple(float(a) for a in alpha)
         )
+        if self._cross_rows is not None:
+            return self._cross_region(X, alpha, levels, dims)
+        if self._conformal_rows is None:
+            raise RuntimeError("Call fit() first.")
         key = (levels, dims, isinstance(alpha, (int, float)), self.score)
         x_cal, y_cal, m_cal = self._conformal_rows
 
@@ -1472,6 +1765,87 @@ class JointRegressor:
             region.mask_region = masked_conformal.region(test)
         return region
 
+    def _cross_region(
+        self,
+        X: ArrayLike,
+        alpha: Union[float, Sequence[float]],
+        levels: tuple[float, ...],
+        dims: Optional[tuple[int, ...]],
+    ) -> JointRegion:
+        """Cross-conformal region from the out-of-fold scores of the training rows."""
+        assert self._cross_rows is not None and self.folds_ is not None
+        x_cal, y_cal, m_cal = self._cross_rows
+        folds = self.folds_
+        n_folds = len(self._fold_models)
+
+        def restrict(pred: JointPredictive) -> JointPredictive:
+            return pred if dims is None else pred.marginal(list(dims))
+
+        def fold_scores(
+            scores_k: Sequence[ConformalScore], rows: Tensor, masked: bool
+        ) -> list[Tensor]:
+            out = []
+            for k, score in enumerate(scores_k):
+                idx = (rows & (folds == k)).nonzero().squeeze(1)
+                if idx.numel() == 0:
+                    out.append(torch.empty(0))
+                    continue
+                pred = restrict(self._fold_base(k, x_cal[idx], own=True))
+                score.check(pred)
+                if masked:
+                    score.check_mask(pred)
+                y_k = pred.as_input(y_c[idx])
+                m_k = m_c[idx].to(y_k.device) if masked else None
+                with torch.no_grad():
+                    s = score._evaluate(pred, y_k, m_k, score._prepare(pred))
+                if m_k is not None:
+                    s = s[m_k.any(-1)]  # rows with nothing observed carry no score
+                out.append(s.detach().cpu())
+            return out
+
+        y_c = y_cal if dims is None else y_cal[:, list(dims)]
+        m_c = m_cal if dims is None else m_cal[:, list(dims)]
+        complete = m_c.all(1)
+        n_complete = int(complete.sum())
+        need = math.ceil(1.0 / min(levels) - 1.0 - 1e-9)
+        if n_complete < max(need, 1):
+            raise ValueError(
+                f"only {n_complete} training rows have every target observed; a "
+                f"complete-row region at alpha = {min(levels)} needs at least {max(need, 1)}"
+            )
+        key = (dims, self.score)
+        if key not in self._cross_cache:
+            # Chosen per fold predictive (the fold models' own stacks may differ).
+            score = [
+                self._score_for(restrict(self._fold_base(k, x_cal[:1], own=True)), False)
+                for k in range(n_folds)
+            ]
+            scores = fold_scores(score, complete, False)
+            masked_score: Optional[ConformalScore] = None
+            masked_scores: list[Tensor] = []
+            if not bool(complete.all()) and (
+                not isinstance(self.score, ConformalScore) or self.score.supports_mask
+            ):
+                masked_score = (
+                    self.score
+                    if isinstance(self.score, ConformalScore) and self.score.supports_mask
+                    else MahalanobisScore()
+                )
+                masked_scores = fold_scores([masked_score] * n_folds, m_c.any(1), True)
+            self._cross_cache[key] = (score, scores, masked_score, masked_scores)
+        score, scores, masked_score, masked_scores = self._cross_cache[key]
+        x = torch.as_tensor(X, dtype=torch.float32)
+        if x.dim() != 2 or x.shape[1] != self.n_features_in_:
+            raise ValueError(f"X must be [n, {self.n_features_in_}]")
+        tests = [restrict(self._fold_base(k, x, own=True)) for k in range(n_folds)]
+        proposal = _average(tests)
+        region = CrossConformalRegion(proposal, score, alpha, tests, scores)
+        if masked_score is not None:
+            region.mask_region = CrossConformalRegion(
+                proposal, masked_score, alpha, tests, masked_scores, masked=True
+            )
+        return region
+
 
 def _is_gaussian(predictive: JointPredictive) -> bool:
     """A Gaussian predictive, possibly through per-target affine maps (units, scale)."""
@@ -1501,3 +1875,130 @@ def _stack(log_density: Tensor) -> Tensor:
     else:
         weights[usable] = _stacking_weights(sub[rows])
     return weights
+
+
+def _most_frequent(values: Sequence[Optional[str]]) -> Optional[str]:
+    """The most frequent non-``None`` value (the first one seen among ties), or ``None``."""
+    present = [v for v in values if v is not None]
+    if not present:
+        return None
+    counts = Counter(present)
+    top = max(counts.values())
+    return next(v for v in present if counts[v] == top)
+
+
+def _mean_tables(tables: Sequence[dict[str, float]]) -> dict[str, float]:
+    """Key-wise mean of score tables (keys of the first table present in every one)."""
+    if not tables or not tables[0]:
+        return {}
+    keys = [k for k in tables[0] if all(k in t for t in tables)]
+    return {k: sum(t[k] for t in tables) / len(tables) for k in keys}
+
+
+def _compose(part: JointPredictive, loc: Tensor, scale: Tensor) -> JointPredictive:
+    """``loc + scale * Y`` for ``Y ~ part``, one wrapper deep (Gaussians stay Gaussian)."""
+    if isinstance(part, GaussianJoint):
+        return part.affine(loc, scale)
+    if isinstance(part, AffineJoint):
+        inner_loc, inner_scale = part.loc.to(loc), part.scale.to(scale)
+        return AffineJoint(part.base, loc + scale * inner_loc, scale * inner_scale)
+    return AffineJoint(part, loc, scale)
+
+
+def _flatten(pred: JointPredictive) -> list[tuple[JointPredictive, float]]:
+    """Components and weights of nested mixtures and affine maps, as one flat mixture."""
+    if isinstance(pred, MixtureJoint) and pred.weights.dim() == 1:
+        out: list[tuple[JointPredictive, float]] = []
+        for member, weight in zip(pred.members, pred.weights.tolist()):
+            out += [(part, weight * w) for part, w in _flatten(member)]
+        return out
+    if isinstance(pred, AffineJoint):
+        return [(_compose(part, pred.loc, pred.scale), w) for part, w in _flatten(pred.base)]
+    return [(pred, 1.0)]
+
+
+def _average(preds: Sequence[JointPredictive]) -> JointPredictive:
+    """Equal-weight average of predictives as one flat :class:`MixtureJoint`."""
+    parts: list[JointPredictive] = []
+    weights: list[float] = []
+    for pred in preds:
+        for part, w in _flatten(pred):
+            if w > 0.0:
+                parts.append(part)
+                weights.append(w / len(preds))
+    if len(parts) == 1:
+        return parts[0]
+    w64 = torch.tensor(weights, dtype=torch.float64)
+    w32 = (w64 / w64.sum()).to(torch.float32)
+    return MixtureJoint(parts, w32.to(parts[0].device))
+
+
+class _RowBlockJoint(JointPredictive):
+    """Rows ``0..a`` from predictive A, ``a..b`` from B, ...: blocks stacked along the rows.
+
+    The out-of-fold predictive of cross-fitting (each row predicted by the fold
+    model that did not see it).  Capabilities are those every block has.
+    """
+
+    def __init__(self, blocks: Sequence[JointPredictive]) -> None:
+        if not blocks:
+            raise ValueError("at least one block is required")
+        d = blocks[0].event_dim
+        if any(b.event_dim != d for b in blocks):
+            raise ValueError("blocks must agree on d")
+        self.blocks = list(blocks)
+        self._sizes = [b.batch_size for b in blocks]
+        self.has_density = all(b.has_density for b in blocks)
+        self.has_latent = all(b.has_latent for b in blocks)
+        self.exact_marginals = all(b.exact_marginals for b in blocks)
+
+    @property
+    def batch_size(self) -> int:
+        return sum(self._sizes)
+
+    @property
+    def event_dim(self) -> int:
+        return self.blocks[0].event_dim
+
+    @property
+    def dtype(self) -> torch.dtype:
+        return self.blocks[0].dtype
+
+    @property
+    def device(self) -> torch.device:
+        return self.blocks[0].device
+
+    def _split(self, t: Tensor) -> tuple[Tensor, ...]:
+        return torch.split(t, self._sizes, dim=0)
+
+    def sample(self, n_samples: int) -> Tensor:
+        return torch.cat([b.sample(n_samples) for b in self.blocks], dim=0)
+
+    def log_prob(self, y: Tensor, mask: Optional[Tensor] = None) -> Tensor:
+        y = self._check(y)
+        masks: Sequence[Optional[Tensor]] = (
+            [None] * len(self.blocks) if mask is None else self._split(self._check_mask(y, mask))
+        )
+        return torch.cat(
+            [b.log_prob(part, m) for b, part, m in zip(self.blocks, self._split(y), masks)], dim=0
+        )
+
+    def to_latent(self, y: Tensor) -> Tensor:
+        y = self._check(y)
+        return torch.cat([b.to_latent(p) for b, p in zip(self.blocks, self._split(y))], dim=0)
+
+    def from_latent(self, z: Tensor) -> Tensor:
+        z = self._check(z)
+        return torch.cat([b.from_latent(p) for b, p in zip(self.blocks, self._split(z))], dim=0)
+
+    def marginal(self, dims: Union[int, Sequence[int]]) -> "_RowBlockJoint":
+        return _RowBlockJoint([b.marginal(dims) for b in self.blocks])
+
+    def mean(self, n_samples: int = 512) -> Tensor:
+        return torch.cat([b.mean(n_samples) for b in self.blocks], dim=0)
+
+    def center(self, n_samples: int = 512) -> Tensor:
+        return torch.cat([b.center(n_samples) for b in self.blocks], dim=0)
+
+    def covariance(self, n_samples: int = 512) -> Tensor:
+        return torch.cat([b.covariance(n_samples) for b in self.blocks], dim=0)

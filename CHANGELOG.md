@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Cross-fitting for small data: `JointRegressor(cv=K)`. `K` fold models are fitted, each on
+  the other `K - 1` folds (inner validation split for early stopping only, one copy per head
+  unless `n_members` is given); the stacking weights and the scale recalibration are fitted on
+  the out-of-fold predictive of every row; `predict` is the equal-weight average of the fold
+  models; `region` returns a `torchregress.joint.CrossConformalRegion` (cross-conformal
+  prediction, Vovk 2015) built from the out-of-fold scores of every training row, with coverage
+  at least `1 - 2 alpha - min{2(1 - 1/K)/(N/K + 1), (1 - K/N)/(K + 1)}` for exchangeable data
+  (Barber, Candès, Ramdas, Tibshirani 2021, Theorem 4 and Remark 1), not `1 - alpha`.
+  `calibrate` keeps working (split conformal on the external rows). New attributes `folds_` and
+  `fold_choices_`. On 200 synthetic data sets of 120 rows (`d = 2`, `K = 5`, `alpha = 0.2`,
+  Gaussian head) the cross-conformal region covered 0.807 on average with a standard deviation
+  of 0.046 across data sets, against 0.846 and 0.107 for the default single split (12 conformal
+  rows); the proven bound is 0.536. On two small real data sets (193 and 410 training rows,
+  four seeds, `JointRegressor()` against `JointRegressor(cv=5)`) the range of realised 90%
+  coverage went from 0.75-0.97 to 0.92-0.96 and from 0.87-0.96 to 0.97-0.99 (conservative),
+  and the log score did not change beyond the spread across seeds. `cv=None` (the default)
+  leaves every fitted number unchanged.
 - `JointRegressor.n_parameters_`: number of network parameters of the fitted model (every
   ensemble copy, and the Sklar route's engine and dependence networks).
 - Dependence ladder rung 4, `torchregress.joint.MixtureDependence(n_components=3, ...)`: a

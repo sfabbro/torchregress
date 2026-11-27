@@ -683,6 +683,96 @@ $\mathbf x$.
 predictive, not zero. `VarianceTemperatureScaler` and `PITCalibrator` are the
 one-target versions.
 
+### 4.5 Small data: cross-fitting
+
+In plain words: with a few hundred rows, one fixed cut into training,
+validation, recalibration and conformal rows wastes data twice. The networks
+train on 75% of the rows, and the 90% region rests on a few dozen conformal
+rows, so its realised coverage swings from one data set to the next.
+`JointRegressor(cv=K)` cuts the rows into $K$ folds and fits $K$ fold models,
+each on the other $K - 1$ folds (with an inner validation split for early
+stopping only). Every row is then scored by the model that did not see it:
+those out-of-fold densities choose the stacking weights and the scale
+recalibration, `predict` averages the $K$ fold models, and `region` is
+cross-conformal (Vovk 2015).
+
+With out-of-fold scores $s_i = s(\hat p_{k(i)}(\cdot \mid \mathbf x_i), \mathbf y_i)$,
+$k(i)$ the fold of row $i$, and the $K$ scores
+$t_k(\mathbf y) = s(\hat p_k(\cdot \mid \mathbf x), \mathbf y)$ of a candidate,
+
+$$
+R_\alpha(\mathbf x) = \Big\{\mathbf y : \frac{1 + \sum_{i=1}^N \mathbf 1\big[s_i \ge t_{k(i)}(\mathbf y)\big]}{N + 1} > \alpha\Big\}.
+$$
+
+**If** the rows are exchangeable, the folds have equal size $N/K$ and each fold
+model treats its training rows symmetrically, **then** (Barber et al. 2021,
+Theorem 4 and Remark 1)
+
+$$
+P\big(\mathbf Y \in R_\alpha(\mathbf X)\big) \;\ge\; 1 - 2\alpha - \min\Big\{\frac{2(1 - 1/K)}{N/K + 1}, \frac{1 - K/N}{K + 1}\Big\} \;\ge\; 1 - 2\alpha - \sqrt{2/N}.
+$$
+
+That is the proved statement, weaker than the $1 - \alpha$ of a split region.
+In practice coverage sits near $1 - \alpha$ and varies much less from one data
+set to the next: on 200 synthetic data sets of 120 rows ($d = 2$, $K = 5$,
+$\alpha = 0.2$, Gaussian head; `tests/joint/test_crossfit.py`) the
+cross-conformal region covered 0.807 on average (standard deviation 0.046
+across data sets, of which 0.028 is the binomial noise of 200 test points)
+against 0.846 (standard deviation 0.107) for the default split with 12
+conformal rows; the proved bound there is 0.536.
+
+```python
+x_small, y_small = simulate(300, seed=2)  # a small data set
+for cv in (None, 5):
+    m = JointRegressor("gaussian", cv=cv, device="cpu").fit(x_small, y_small)
+    inside = m.region(x_new, alpha=0.1).contains(y_new).float().mean()
+    print(
+        f"cv={cv}: {m.n_train_} rows train each model, {m.n_conformal_} calibrate; "
+        f"log score {m.predict(x_new).log_prob(y_new).mean():.3f}, coverage {inside:.3f}"
+    )
+```
+
+```text
+cv=None: 225 rows train each model, 30 calibrate; log score -1.459, coverage 0.834
+cv=5: 216 rows train each model, 300 calibrate; log score -1.162, coverage 0.896
+```
+
+With 300 rows the single split trains on 225 and calibrates on 30, so its
+region rests on 30 scores; with `cv=5` every row calibrates. The density gains
+too. For the default `JointRegressor()` against `JointRegressor(cv=5)` on a
+two-target problem with a known Gaussian density (5 seeds, paired, 2,000 test
+rows), the mean gap to the true log density was 0.263 ± 0.066 nats against
+0.125 ± 0.016 at $N = 150$ (paired difference 0.138 ± 0.065), and 0.069 ± 0.016
+against 0.041 ± 0.003 at $N = 400$ (0.028 ± 0.016). Fitting took 2.5 s against
+6.7 s at $N = 150$ and 6.2 s against 16.1 s at $N = 400$ (laptop CPU), and a
+region for 500 rows about 0.5 s against 1.6 to 1.9 s.
+
+| | `cv=None` (default) | `cv=K` |
+|:--|:--|:--|
+| Fits | one per head | $K$ per head (one copy each unless `n_members` is set) |
+| Region | split conformal, $\ge 1 - \alpha$ | cross-conformal, $\ge 1 - 2\alpha - O(K/N)$ proved, near $1 - \alpha$ in practice |
+| Region cost | one score per row | $K$ scores per row, and the training rows are kept on the estimator |
+| Use when | thousands of rows or more | a few hundred rows, where held-out splits are a large share of the data |
+
+!!! warning "On real small data: steadier, and sometimes conservative"
+    On two small real data sets with the default `JointRegressor()` against
+    `JointRegressor(cv=5)` (four seeds, 90% regions): with 193 training rows
+    (`mt_jura`) the realised coverage ranged over 0.75 to 0.97 for the single
+    split and 0.92 to 0.96 with cross-fitting; with 410 rows (`mt_enb`) it was
+    0.87 to 0.96 against 0.97 to 0.99, so there the cross-conformal region is
+    larger than it needs to be. The log score did not change beyond the spread
+    across seeds on either set (5.84 against 5.81, and 2.17 against 2.23; ten
+    folds gave 5.74 and 2.14 over three seeds). Expect steadier coverage from
+    `cv`; do not count on a better density.
+
+!!! info "What the fold models use"
+    The fold models that score region candidates are stacked with their own
+    inner-validation weights and are not recalibrated, so that fold model $k$
+    depends on no row of fold $k$, as the theorem requires. `predict` uses the
+    out-of-fold weights and scale factors. `calibrate(X, Y)` with fresh rows
+    replaces the cross-conformal region by the split conformal region of the
+    averaged predictive, with the $1 - \alpha$ guarantee.
+
 ## 5. If you know MCMC, HMC or simulation-based inference
 
 Training on simulated pairs (data $\to$ parameters) makes the joint predictive
@@ -923,6 +1013,12 @@ and calibration and test rows are treated alike, so the coverage statement of
 `region` is the same. A prediction for such a row is still only the prediction at
 the edge of what the model has seen.
 
+**Small data.** A few hundred rows: `JointRegressor(cv=5)` fits five fold
+models instead of one split, so every row trains and calibrates
+([§4.5](#45-small-data-cross-fitting)). Five times the fits and five scores per
+candidate at `region`; the proved coverage is $1 - 2\alpha$ minus a small term,
+not $1 - \alpha$.
+
 **Large data.** Held-out splits are capped at `max_holdout` rows each (20,000 by
 default): more held-out rows add little, so with a million rows 94% of them
 train the heads instead of 75%. With `batch_size="auto"` (the default) the batch
@@ -986,3 +1082,5 @@ predictive or region; options, contour conventions and a gallery are in
 | 26 | Shen, X. and Meinshausen, N. "Engression: extrapolation through the lens of distributional regression." *JRSS-B*, 2024 ([arXiv:2307.00835](https://arxiv.org/abs/2307.00835)). |
 | 27 | Gneiting, T. and Raftery, A. E. "Strictly proper scoring rules, prediction, and estimation." *JASA* 102, 2007. |
 | 28 | Lakshminarayanan, B., Pritzel, A. and Blundell, C. "Simple and scalable predictive uncertainty estimation using deep ensembles." *NeurIPS*, 2017. |
+| 29 | Vovk, V. "Cross-conformal predictors." *Annals of Mathematics and Artificial Intelligence* 74, 2015. |
+| 30 | Barber, R. F., Candès, E. J., Ramdas, A. and Tibshirani, R. J. "Predictive inference with the jackknife+." *Annals of Statistics* 49, 2021 ([arXiv:1905.02928](https://arxiv.org/abs/1905.02928)). |

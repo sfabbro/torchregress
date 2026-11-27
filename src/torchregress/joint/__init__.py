@@ -60,6 +60,7 @@ from .predictive import (
 )
 from .regions import (
     ConformalScore,
+    CrossConformalRegion,
     DensityScore,
     HPDScore,
     JointConformal,
@@ -79,6 +80,7 @@ __all__ = [
     "CopulaSplineJoint",
     "CoverageByMask",
     "CoverageGap",
+    "CrossConformalRegion",
     "DensityScore",
     "Dependence",
     "DependenceError",

@@ -174,6 +174,7 @@ EXPECTED_EXPORTS = {
         "CopulaSplineJoint",
         "CoverageByMask",
         "CoverageGap",
+        "CrossConformalRegion",
         "DensityScore",
         "Dependence",
         "DependenceError",
@@ -568,7 +569,7 @@ EXPECTED_SIGNATURES = {
         "weight_decay: 'float' = 1e-05, "
         "val_fraction: 'float' = 0.1, recal_fraction: 'float' = 0.05, "
         "conformal_fraction: 'float' = 0.1, max_holdout: 'int' = 20000, "
-        "recalibrate: 'bool' = True, clip_features: 'bool' = True, "
+        "cv: 'Optional[int]' = None, recalibrate: 'bool' = True, clip_features: 'bool' = True, "
         "score: 'Union[str, ConformalScore]' = 'auto', n_folds: 'int' = 3, "
         "n_members: 'Optional[int]' = None, "
         "noise_dim: 'Optional[int]' = None, energy_draws: 'int' = 2, "
@@ -585,6 +586,13 @@ EXPECTED_SIGNATURES = {
     ),
     "joint.JointConformal": (
         "(score: 'ConformalScore', alpha: 'Union[float, Sequence[float]]' = 0.1) -> 'None'"
+    ),
+    "joint.CrossConformalRegion": (
+        "(predictive: 'JointPredictive', "
+        "score: 'Union[ConformalScore, Sequence[ConformalScore]]', "
+        "alpha: 'Union[float, Sequence[float]]', "
+        "fold_predictives: 'Sequence[JointPredictive]', fold_scores: 'Sequence[Tensor]', *, "
+        "masked: 'bool' = False) -> 'None'"
     ),
     "joint.JointConformal.calibrate": (
         "(self, predictive: 'JointPredictive', y: 'Tensor', *, "
