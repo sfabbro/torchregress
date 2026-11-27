@@ -184,16 +184,26 @@ class _MixtureHead(_Head):
 
     supports_missing = True
 
-    def __init__(self, in_dim: int, d: int, hidden: Sequence[int], n_components: int) -> None:
+    def __init__(
+        self, in_dim: int, d: int, hidden: Sequence[int], n_components: int, max_std: float
+    ) -> None:
         super().__init__()
         covariance = "full" if d <= 8 else "diagonal"
+        # No component centred outside the range of the (standardised) training targets,
+        # and none with an average variance beyond that range squared: ``max_std`` bounds
+        # both.  A component of small weight with a huge spread or a far-away mean costs
+        # the likelihood nothing and ruins the draws.  Components within the bounds are
+        # exactly what they were.
+        self.bound = float(max_std)
         self.mdn = MixtureDensityLoss(
-            n_components=n_components, n_features=d, covariance_type=covariance
+            n_components=n_components, n_features=d, covariance_type=covariance, max_std=max_std
         )
         self.net = mlp(in_dim, hidden, self.mdn.expected_output_size)
 
     def predictive(self, x: Tensor) -> DistributionJoint:
-        return DistributionJoint(self.mdn.distribution(self.net(x)))
+        log_weights, means, factor = self.mdn._extract_distribution_parameters(self.net(x))
+        means = means.clamp(-self.bound, self.bound)
+        return DistributionJoint(self.mdn._mixture((log_weights, means, factor)))
 
     def loss(self, x: Tensor, y: Tensor, mask: Optional[Tensor]) -> Tensor:
         return -self.predictive(x).log_prob(y, mask).mean()
@@ -562,6 +572,10 @@ class MixtureNetworkEngine(_NetworkEngine):
     spread is a spike on a few training points rather than a feature of the
     conditional distribution, and the floor keeps the log density bounded when values
     repeat.
+    No component is wider than 1.25 times the largest deviation of its target from
+    the training mean, and none is centred further than that from the mean: beyond
+    the range of the data a component of small weight costs the likelihood nothing and
+    gives absurd draws.
 
     Args:
         n_components: Mixture components per target, ``K``.
@@ -573,6 +587,8 @@ class MixtureNetworkEngine(_NetworkEngine):
     """
 
     _name = "mixture engine"
+    #: Default for engines saved before the mean range existed (their instances lack it).
+    _mean_range: Optional[tuple[Tensor, Tensor]] = None
 
     def __init__(
         self,
@@ -594,6 +610,7 @@ class MixtureNetworkEngine(_NetworkEngine):
             raise ValueError("min_std must be positive")
         self.n_components = int(n_components)
         self.min_std = float(min_std)
+        self._mean_range: Optional[tuple[Tensor, Tensor]] = None
         self._mdn = MixtureDensityLoss(
             n_components=self.n_components,
             n_features=1,
@@ -617,17 +634,42 @@ class MixtureNetworkEngine(_NetworkEngine):
         raw_std = inverse_softplus(torch.full((k,), std - self.min_std, dtype=torch.float64))
         return torch.cat([torch.zeros(k, dtype=torch.float64), means, raw_std])
 
+    def _bounded(self, params: Tensor) -> Any:
+        """The mixtures of ``params`` (batch ``[b, d]``, one feature) with means kept in range."""
+        log_weights, means, stds = self._mdn._extract_distribution_parameters(params)
+        if self._mean_range is not None:
+            lo, hi = self._mean_range  # [d, 1, 1] each
+            means = torch.maximum(torch.minimum(means, hi.to(means)), lo.to(means))
+        return self._mdn._mixture((log_weights, means, stds))
+
     def _mixture(self, params: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         """Log weights, means and standard deviations ``[b, d, K]``."""
-        mix = self._mdn.distribution(params)  # batch [b, d], one feature
+        mix = self._bounded(params)
         return mix.log_weights, mix.loc[..., 0], mix.component_scale[..., 0]
 
     def _entry_loss(self, params: Tensor, y: Tensor) -> Tensor:
-        return -self._mdn.distribution(params).log_prob(y.unsqueeze(-1))
+        return -self._bounded(params).log_prob(y.unsqueeze(-1))
 
     def _marginals(self, params: Tensor) -> MixtureMarginals:
         log_w, loc, scale = self._mixture(params)
         return MixtureMarginals(log_w.exp(), loc, scale)
+
+    def _fit(self, x: Tensor, y: Tensor, mask: Optional[Tensor]) -> "_NetworkEngine":
+        # No component wider than the range of its own target, and none centred outside
+        # it: the range is 1.25 times the largest deviation from the target's mean among
+        # the observed training values.  A component of small weight beyond it costs the
+        # likelihood nothing and ruins the draws.
+        observed = torch.ones_like(y, dtype=torch.bool) if mask is None else mask
+        count = observed.sum(0).clamp_min(1)
+        centre = torch.where(observed, y, torch.zeros_like(y)).sum(0) / count
+        spread = torch.where(observed, (y - centre).abs(), torch.zeros_like(y)).amax(0)
+        bound = (1.25 * spread).clamp_min(2.0 * self.min_std)
+        self._mdn.max_std = bound.reshape(-1, 1, 1)  # stds are [b, d, K, 1]
+        self._mean_range = (
+            (centre - bound).reshape(-1, 1, 1),  # means are [b, d, K, 1]
+            (centre + bound).reshape(-1, 1, 1),
+        )
+        return super()._fit(x, y, mask)
 
     def fit(self, x: Tensor, y: Tensor, mask: Optional[Tensor] = None) -> "MixtureNetworkEngine":
         """Fit on ``x [N, p]`` and ``y [N, d]``; the caller's torch RNG state is left as it was."""
@@ -1403,7 +1445,8 @@ class JointRegressor:
             rank = self.rank if self.rank is not None else (None if d <= 32 else 8)
             return _GaussianHead(in_dim, d, self.hidden, rank)
         if name == "mixture":
-            return _MixtureHead(in_dim, d, self.hidden, self.n_components)
+            spread = recommended_tail_bound(y[mask].detach().cpu())
+            return _MixtureHead(in_dim, d, self.hidden, self.n_components, max_std=spread)
         bound = recommended_tail_bound(y[mask.all(1)].detach().cpu())
         return _FlowHead(in_dim, d, self.hidden, bound, n_transforms=3)
 

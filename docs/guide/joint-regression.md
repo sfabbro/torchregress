@@ -499,7 +499,7 @@ Here $\mathbf m$ and $\Sigma$ are the predictive mean and covariance.
 | `method` | Head | Missing targets | In `"auto"` |
 |:--|:--|:--|:--|
 | `"gaussian"` | $\mathcal N(\boldsymbol\mu(\mathbf x), L(\mathbf x) L(\mathbf x)^\top)$; low rank 8 plus diagonal beyond 32 targets | exact | always |
-| `"mixture"` | mixture density network, 5 components; full covariances up to $d = 8$ | exact | always |
+| `"mixture"` | mixture density network, 5 components; full covariances up to $d = 8$; no component centred beyond $B$ or with an average variance above $B^2$, where $B$ is 1.25 times the largest standardised training target, kept between 5 and 25 | exact | always |
 | `"flow"` | conditional neural spline flow | rows dropped | complete targets, $d \le 32$ |
 | `"sklar"` | quantile- or mixture-network marginals, chosen on validation rows, joined by a dependence model (section 4.3) | complete rows for the dependence | complete targets |
 | `"energy"` | engression generator $g(\mathbf x, \boldsymbol\varepsilon)$ trained by the energy score; draws only | energy score of the observed sub-vector | never |
@@ -903,7 +903,7 @@ fig = plot_corner_plot(
 
 ```text
 gaussian  KL 0.119 +- 0.013 nats, HPD KS p = 0.00013, SBC min p = 0.00096
-mixture   KL 0.069 +- 0.008 nats, HPD KS p = 0.77, SBC min p = 0.17
+mixture   KL 0.067 +- 0.008 nats, HPD KS p = 0.74, SBC min p = 0.53
 ```
 
 ![Learned posterior against the exact posterior for one data set](../assets/images/joint/guide/npe_corner_exact.png)

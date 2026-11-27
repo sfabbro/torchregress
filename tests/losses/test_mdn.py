@@ -557,3 +557,160 @@ class TestStudentTComponents:
         mc = torch.quantile(samples, torch.tensor([0.05, 0.95], dtype=samples.dtype), dim=0)
         torch.testing.assert_close(lower, mc[0], rtol=0.05, atol=0.02)
         torch.testing.assert_close(upper, mc[1], rtol=0.05, atol=0.02)
+
+
+class TestMaxStd:
+    """Upper bound on the spread of every component (``max_std``)."""
+
+    FORMS = [("diagonal", "precision"), ("full", "precision"), ("full", "covariance")]
+
+    @staticmethod
+    def _loss(covariance: str, form: str, max_std, d: int = 3, k: int = 4) -> MixtureDensityLoss:
+        return MixtureDensityLoss(
+            n_components=k,
+            n_features=d,
+            covariance_type=covariance,
+            full_parameterization=form,
+            max_std=max_std,
+        )
+
+    @staticmethod
+    def _largest(loss: MixtureDensityLoss, out: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Largest standard deviation of any component, and largest root-mean variance."""
+        _, _, factor = loss._extract_distribution_parameters(out)
+        if loss.covariance_type == "diagonal":
+            return factor.amax(), factor.square().mean(-1).sqrt().amax()
+        if loss.full_parameterization == "precision":
+            eye = torch.eye(factor.shape[-1], dtype=factor.dtype)
+            factor = torch.linalg.solve_triangular(factor, eye.expand_as(factor), upper=False).mT
+        cov = factor @ factor.mT
+        top = torch.linalg.eigvalsh(cov)[..., -1].amax().sqrt()
+        mean = (cov.diagonal(dim1=-2, dim2=-1).mean(-1)).amax().sqrt()
+        return top, mean
+
+    @pytest.mark.parametrize(("covariance", "form"), FORMS)
+    def test_no_component_is_wider_than_the_bound(self, covariance: str, form: str) -> None:
+        gen = torch.Generator().manual_seed(0)
+        bounded = self._loss(covariance, form, 4.0)
+        free = self._loss(covariance, form, None)
+        # outputs far from zero: near-singular precisions, huge and tiny scales
+        out = 6.0 * torch.randn(
+            64, bounded.expected_output_size, generator=gen, dtype=torch.float64
+        )
+        _, free_mean = self._largest(free, out)
+        top, mean = self._largest(bounded, out)
+        assert float(free_mean) > 2 * 4.0  # the unbounded head does go beyond the bound
+        assert float(mean) <= 4.0 * (1 + 1e-9)  # average variance over the features
+        assert float(top) <= 4.0 * math.sqrt(3) * (1 + 1e-9)  # hence every direction
+        if covariance == "diagonal":
+            assert float(top) <= 4.0
+
+    @pytest.mark.parametrize(("covariance", "form"), FORMS)
+    def test_components_within_the_bound_are_untouched(self, covariance: str, form: str) -> None:
+        gen = torch.Generator().manual_seed(1)
+        bounded = self._loss(covariance, form, 50.0)
+        free = self._loss(covariance, form, None)
+        out = 0.3 * torch.randn(32, bounded.expected_output_size, generator=gen)
+        y = torch.randn(32, 3, generator=gen)
+        for a, b in zip(
+            bounded._extract_distribution_parameters(out),
+            free._extract_distribution_parameters(out),
+            strict=True,
+        ):
+            assert torch.equal(a, b)
+        assert torch.equal(bounded(out, y), free(out, y))
+
+    @pytest.mark.parametrize("form", ["precision", "covariance"])
+    def test_a_component_beyond_the_bound_keeps_its_shape(self, form: str) -> None:
+        gen = torch.Generator().manual_seed(4)
+        bounded = self._loss("full", form, 1.0, d=3, k=2)
+        free = self._loss("full", form, None, d=3, k=2)
+        out = torch.randn(6, bounded.expected_output_size, generator=gen, dtype=torch.float64)
+        out[:, 2 + 2 * 3 :] *= 0.2 if form == "precision" else 5.0  # wide components
+        _, _, f_b = bounded._extract_distribution_parameters(out)
+        _, _, f_f = free._extract_distribution_parameters(out)
+        ratio = f_b / f_f
+        lower = torch.tril(torch.ones(3, 3, dtype=torch.bool))
+        # one factor per component: the same matrix up to a scalar
+        per_component = ratio[..., lower].reshape(6, 2, -1)
+        spread = per_component.amax(-1) - per_component.amin(-1)
+        assert float(spread.abs().amax()) < 1e-9
+        assert bool((per_component[..., 0] != 1).any())  # and the bound was active
+
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+    @pytest.mark.parametrize("form", ["precision", "covariance"])
+    def test_draws_stay_in_range_for_nearly_singular_factors(self, form: str, dtype) -> None:
+        torch.manual_seed(2)
+        bounded = self._loss("full", form, 3.0, d=2, k=3)
+        free = self._loss("full", form, None, d=2, k=3)
+        out = torch.zeros(4, bounded.expected_output_size, dtype=dtype)
+        # one component with its precision diagonal at the min_std floor (1e-3), or with
+        # a scale of softplus(40) = 40, and a huge off-diagonal entry
+        tril_start = 3 + 3 * 2
+        out[:, tril_start] = -40.0 if form == "precision" else 40.0
+        out[:, tril_start + 1] = 1e4
+        wild = free.distribution(out).sample((4000,))
+        tame = bounded.distribution(out).sample((4000,))
+        assert float(wild.abs().amax()) > (1e3 if form == "precision" else 100.0)
+        assert float(tame.abs().amax()) < 3.0 * math.sqrt(2) * 8  # eight bounded deviations
+        mix = bounded.distribution(out)
+        draws = mix.sample((20000,))
+        assert bool(torch.isfinite(mix.log_prob(draws)).all())
+        cov = torch.cov(draws[:, 0].T.double())
+        assert float(cov.diagonal().mean()) <= 3.0**2 * 1.1
+
+    def test_gradients_are_finite_and_reach_a_bounded_component(self) -> None:
+        gen = torch.Generator().manual_seed(3)
+        for covariance, form in self.FORMS:
+            loss = self._loss(covariance, form, 2.0)
+            out = (5.0 * torch.randn(16, loss.expected_output_size, generator=gen)).requires_grad_()
+            y = torch.randn(16, 3, generator=gen)
+            loss(out, y).backward()
+            assert bool(torch.isfinite(out.grad).all())
+            if covariance == "full":
+                assert float(out.grad[:, 4 + 4 * 3 :].abs().sum()) > 0
+
+    def test_one_bound_per_feature_for_diagonal_components(self) -> None:
+        loss = self._loss("diagonal", "precision", torch.tensor([1.0, 2.0, 30.0]))
+        out = torch.full((5, loss.expected_output_size), 20.0)
+        _, _, stds = loss._extract_distribution_parameters(out)
+        torch.testing.assert_close(
+            stds.amax(dim=(0, 1)), torch.tensor([1.0, 2.0, 20.0 + 1e-3]), rtol=1e-4, atol=1e-4
+        )
+
+    def test_rejects_bad_bounds(self) -> None:
+        with pytest.raises(ValueError, match="max_std"):
+            self._loss("diagonal", "precision", 0.0)
+        with pytest.raises(ValueError, match="max_std"):
+            self._loss("diagonal", "precision", float("inf"))
+        with pytest.raises(ValueError, match="one max_std"):
+            self._loss("full", "precision", torch.tensor([1.0, 2.0, 3.0]))
+
+    @pytest.mark.parametrize("offdiag", [10.0, 100.0, 1e4])
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+    def test_a_precision_factor_whose_inverse_overflows_is_still_bounded(
+        self, dtype, offdiag: float
+    ) -> None:
+        # Eight features: with the diagonal at the floor and large off-diagonals the
+        # inverse of the precision factor grows like (offdiag / 1e-3)^7 and overflows
+        # float32, where an "is the norm finite" test would let the component through.
+        torch.manual_seed(5)
+        d, k = 8, 2
+        bounded = self._loss("full", "precision", 3.0, d=d, k=k)
+        out = torch.zeros(3, bounded.expected_output_size, dtype=dtype)
+        i, j = torch.tril_indices(d, d)
+        start = k + k * d
+        out[:, start : start + len(i)] = torch.where(i == j, -50.0, offdiag).to(dtype)
+        top, mean = self._largest(bounded, out.double())
+        assert float(mean) <= 3.0 * (1 + 1e-6)
+        draws = bounded.distribution(out).sample((2000,))
+        assert bool(torch.isfinite(draws).all())
+        assert float(draws.abs().amax()) < 3.0 * math.sqrt(d) * 8
+        mix = bounded.distribution(out)
+        assert bool(torch.isfinite(mix.log_prob(draws)).all())
+
+    def test_objects_saved_before_the_bound_existed_still_work(self) -> None:
+        loss = self._loss("full", "precision", None)
+        del loss.__dict__["max_std"]  # what an older pickle restores
+        out = torch.zeros(2, loss.expected_output_size)
+        assert bool(torch.isfinite(loss(out, torch.zeros(2, 3))))

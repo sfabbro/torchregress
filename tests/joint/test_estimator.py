@@ -391,3 +391,62 @@ class TestAutoHeads:
 
     def test_missing_targets_leave_the_complete_row_heads_out(self) -> None:
         assert self._fit(4, missing=True).members_ == ["gaussian", "mixture"]
+
+
+class TestComponentSpreadBound:
+    """Mixture components are no wider than the range of the training targets."""
+
+    @staticmethod
+    def _data(n: int = 300, d: int = 3, seed: int = 0) -> tuple[torch.Tensor, torch.Tensor]:
+        gen = torch.Generator().manual_seed(seed)
+        x = torch.randn(n, 4, generator=gen)
+        y = x[:, :d] + 0.3 * torch.randn(n, d, generator=gen)
+        return x, y
+
+    @pytest.mark.parametrize(("d", "seed"), [(3, 0), (8, 0), (8, 1), (8, 2), (12, 0)])
+    def test_mixture_head_draws_stay_in_range_far_outside_the_training_features(
+        self, d: int, seed: int
+    ) -> None:
+        # d <= 8: full covariances in the precision form (a nearly singular factor, whose
+        # inverse overflows float32 at eight targets); d = 12: diagonal components.
+        gen = torch.Generator().manual_seed(seed)
+        x = torch.randn(400, 4, generator=gen)
+        y = x @ torch.randn(4, d, generator=gen) + 0.3 * torch.randn(400, d, generator=gen)
+        model = JointRegressor(
+            "mixture", hidden=(16,), max_epochs=30, patience=5, clip_features=False, seed=seed
+        ).fit(x, y)
+        far = 1e4 * torch.ones(8, 4)  # the network extrapolates linearly to absurd outputs
+        torch.manual_seed(0)
+        draws = model.predict(far).sample(2000)
+        reach = ((draws - y.mean(0)) / y.std(0)).abs().amax()
+        head = model._heads["mixture"][0]
+        assert 5.0 <= head.bound <= 25.0
+        # Means within the bound B, total standard deviation at most B sqrt(d): a draw
+        # beyond B + 8 B sqrt(d) has probability about 1e-15 (the recalibration factors
+        # stay within a few percent of one and are covered by the factor 1.5).
+        assert bool(torch.isfinite(draws).all())
+        assert float(reach) < 1.5 * head.bound * (1 + 8 * math.sqrt(d))
+
+    def test_engines_saved_before_the_bound_existed_still_predict(self) -> None:
+        from torchregress.joint import MixtureNetworkEngine
+
+        x, y = self._data(d=2)
+        engine = MixtureNetworkEngine(hidden=(8,), max_epochs=3, patience=1, seed=0).fit(x, y)
+        del engine.__dict__["_mean_range"], engine._mdn.__dict__["max_std"]
+        assert bool(torch.isfinite(engine.predict(x[:4]).scale).all())
+
+    def test_mixture_marginal_engine_bounds_each_target_by_its_own_range(self) -> None:
+        from torchregress.joint import MixtureNetworkEngine
+
+        x, y = self._data(d=2)
+        y = y * torch.tensor([1.0, 50.0])  # two targets on different scales
+        engine = MixtureNetworkEngine(hidden=(16,), max_epochs=20, patience=5, seed=0).fit(x, y)
+        bound = 1.25 * (y - y.mean(0)).abs().amax(0)
+        far = engine.predict(1e4 * torch.ones(8, 4))
+        scales = far.scale  # [n, d, K]
+        assert bool((scales.amax(dim=(0, 2)) <= bound * (1 + 1e-6)).all())
+        reach = (far.loc - y.mean(0).view(1, 2, 1)).abs().amax(dim=(0, 2))
+        assert bool((reach <= bound * (1 + 1e-6)).all())
+        assert float(scales[:, 1].amax()) > float(bound[0])  # each target has its own bound
+        inside = engine.predict(x[:16]).scale
+        assert bool((inside.amax(dim=(0, 2)) < bound).all())

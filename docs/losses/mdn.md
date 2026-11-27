@@ -50,6 +50,7 @@ loss_fn = MixtureDensityLoss(
 | `covariance_type` | `str` | `"diagonal"` | `"diagonal"` or `"full"` |
 | `full_parameterization` | `str` | `"precision"` | For `"full"`: the triangular factor parameterises the precision or the covariance (see [below](#full-covariance-precision-or-covariance-factor)) |
 | `min_std` | `float` | `1e-3` | Minimum std for stability |
+| `max_std` | `float`, `Tensor` or `None` | `None` | Upper bound on the spread of every component: each standard deviation for diagonal components (one value per feature allowed), the root of the average variance over the features for full ones; `None` leaves it unbounded |
 | `df` | `float` | `math.inf` | Component degrees of freedom: `math.inf` is Gaussian, finite gives Student-$t$ components (see [below](#student-t-components)) |
 | `learn_df` | `bool` | `False` | Learn one shared `df = df · exp(raw_df)` (log scale, starting exactly at the finite `df`) |
 
@@ -198,6 +199,7 @@ While MDNs are highly expressive, they present several training and optimization
    Computing the NLL directly via $p(y \mid x) = \sum_k \pi_k \mathcal{N}(y \mid \mu_k, \sigma_k^2)$ involves exponentials that can easily underflow or overflow. **torchregress** internally utilizes the `log-sum-exp` trick:
    $$\log p(y \mid x) = \text{log-sum-exp}\left(\log \pi_k + \log \mathcal{N}(y \mid \mu_k, \sigma_k^2)\right)$$
    Always use a non-zero `min_std` (e.g., $10^{-3}$) to prevent variance collapse ($\sigma_k^2 \rightarrow 0$), which causes division by zero.
+   The opposite failure is quieter: a component of small weight $\pi_k$ can take an enormous spread at almost no cost in likelihood, and then a few draws per thousand are absurd (sample-based scores, moments and region volumes all suffer). Set `max_std` to about the range of the standardised targets to rule it out: components within the bound are unchanged; a full-covariance component whose average variance $\operatorname{tr}\Sigma_k / d$ exceeds `max_std`$^2$ is shrunk as a whole to that total, so no direction exceeds `max_std`$\sqrt d$. `JointRegressor` sets it from the training targets.
 
 2. **Computational Scaling**:
    The forward pass cost is $\mathcal{O}(K \cdot d)$ for diagonal covariance and $\mathcal{O}(K \cdot d^2)$ for full covariance per sample. NLL evaluation adds determinant and solve operations that scale as $\mathcal{O}(d^3)$ for full covariance. For large $K$ or high-dimensional targets, prefer diagonal covariance or consider flow-based alternatives.

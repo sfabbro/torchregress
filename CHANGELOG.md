@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `MixtureDensityLoss(max_std=...)`: an upper bound on the spread of every component
+  (`None`, the default, leaves it unbounded). Diagonal components have every standard
+  deviation clamped (a tensor gives one bound per feature); a full-covariance component whose
+  average variance `trace(Sigma_k) / n_features` exceeds `max_std**2` is shrunk as a whole to
+  that total, in either parametrisation, without a decomposition and with gradients.
+  Components within the bound are returned exactly as before.
 - Cross-fitting for small data: `JointRegressor(cv=K)`. `K` fold models are fitted, each on
   the other `K - 1` folds (inner validation split for early stopping only, one copy per head
   unless `n_members` is given); the stacking weights and the scale recalibration are fitted on
@@ -493,6 +499,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `JointRegressor`: absurd draws from mixture components of small weight. The mixture head
+  and the mixture marginal engine put no upper limit on a component's spread or on how far
+  its mean could sit from the data, and the likelihood hardly penalises a low-weight
+  component for either. On the harness job `density_parity / mt_rf1` (8 targets, three seeds)
+  the default had the best log score of 16 rows in every seed but an energy score of 6.63 in
+  seed 2, against 0.09 in the other two: one stacked mixture copy gave draws 17,000 standard
+  deviations out on a test row. Both now bound each component by the range of the training
+  targets: no mean further than 1.25 times the largest standardised target (between 5 and 25
+  standard deviations, as for the flow's spline domain) and no average variance beyond that
+  squared (`MixtureDensityLoss(max_std=...)`); the engine uses each target's own range. On
+  that job the energy scores become 0.088, 0.089 and 0.081, the share of rows with a draw
+  beyond 1,000 standard deviations goes from 0.1-0.2% to zero, and the log scores from
+  -17.75, -17.31, -18.03 to -17.55, -17.59, -17.86 (still the best row); training time is
+  unchanged. Fitted mixture heads change wherever a component was beyond the bounds, which
+  includes ordinary data: the guide's posterior example moves from a KL of 0.069 to 0.067
+  (± 0.008), the comparison example's stacked row by 0.0005 nats.
 - Seeded blocks inside `torchregress.joint` (`JointRegressor.fit`, `ScaleRecalibrator.fit`
   and `transform`) restore the MPS generator as well as the CPU and CUDA ones. On a Mac with
   MPS they left it reset to the block's seed, so the caller's next MPS draws repeated.

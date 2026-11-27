@@ -19,7 +19,7 @@ from torch import nn
 
 from .base import DistributionLoss
 from .loss_registry import register_regression_loss
-from .student_t_mixture import StudentTMixture
+from .student_t_mixture import StudentTMixture, _work_dtype
 
 TensorTriplet = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
 
@@ -49,6 +49,20 @@ class MixtureDensityLoss(DistributionLoss):
             training data (train NLL 0.42 vs -3.45, test 3.32 vs 0.31).  The
             output layout is the same for both.
         min_std (float): Floor added to every diagonal scale (softplus + min_std)
+        max_std (float or Tensor, optional): Upper bound on the spread of every
+            component; ``None`` (default) leaves it unbounded.  The network output is
+            otherwise free to give a component of small weight an enormous spread: the
+            likelihood hardly sees it, but its draws are absurd (a draw 16,000 standard
+            deviations out on one test row of a river-flow benchmark).  Diagonal
+            components: every standard deviation is clamped at ``max_std`` (a tensor
+            broadcastable to ``[..., n_components, n_features]`` gives one bound per
+            feature).  Full components (a float): the average variance over the
+            features, ``trace(Sigma_k) / n_features``, is at most ``max_std**2``, so
+            no direction has a standard deviation above
+            ``max_std * sqrt(n_features)``; a component beyond that is shrunk as a
+            whole.  Components within the bound are returned exactly as without it.
+            With Student-t components (finite ``df``) the bound is on the scale matrix,
+            not on the variance (which is larger, or infinite for ``df <= 2``).
         eps (float): Floor on the mixture variance in ``predict_mean_std``
         df (float): Degrees of freedom of the components. ``math.inf`` (default) is
             the Gaussian MDN; a finite ``df > 0`` gives multivariate Student-t
@@ -90,6 +104,9 @@ class MixtureDensityLoss(DistributionLoss):
         >>> loss = loss_fn(y_pred, target)
     """
 
+    #: Default for objects saved before ``max_std`` existed (their instances lack it).
+    max_std: float | torch.Tensor | None = None
+
     def __init__(
         self,
         n_components: int,
@@ -101,6 +118,7 @@ class MixtureDensityLoss(DistributionLoss):
         full_parameterization: str = "precision",
         df: float = math.inf,
         learn_df: bool = False,
+        max_std: float | torch.Tensor | None = None,
     ):
         super().__init__(reduction=reduction)
         df = float(df)
@@ -122,6 +140,13 @@ class MixtureDensityLoss(DistributionLoss):
                 f"{full_parameterization!r}"
             )
         self.min_std = min_std
+        if max_std is not None:
+            bound = torch.as_tensor(max_std)
+            if not bool((bound > min_std).all()) or not bool(torch.isfinite(bound).all()):
+                raise ValueError("max_std must be finite and larger than min_std")
+            if covariance_type.lower() == "full" and bound.numel() != 1:
+                raise ValueError("full components take one max_std for every direction")
+        self.max_std = max_std
         self.eps = eps
         self.log_2pi = math.log(2 * math.pi)
 
@@ -189,6 +214,8 @@ class MixtureDensityLoss(DistributionLoss):
             # Apply softplus with shift for better numerical stability
             # This ensures stds are always positive and not too close to zero
             stds = F.softplus(log_stds) + self.min_std
+            if self.max_std is not None:
+                stds = torch.minimum(stds, torch.as_tensor(self.max_std).to(stds))
 
             return log_weights, means, stds
         else:  # 'full'
@@ -253,7 +280,65 @@ class MixtureDensityLoss(DistributionLoss):
             ).expand_as(L_offdiag)
             L_matrices = torch.where(diag_mask, L_diag, L_offdiag)
 
-            return log_weights, means, L_matrices
+            return log_weights, means, self._bound_factor(L_matrices)
+
+    def _bound_factor(self, factor: torch.Tensor) -> torch.Tensor:
+        r"""Apply ``max_std`` to full components ``[..., C, F, F]`` (see the class docstring).
+
+        The total variance of a component, :math:`\operatorname{tr}\Sigma_k`, is the
+        squared Frobenius norm of its covariance factor, or of the inverse of its
+        precision factor.  A component with
+        :math:`\operatorname{tr}\Sigma_k > F\,\texttt{max\_std}^2` is shrunk as a
+        whole to that total (its shape is kept): the covariance factor is multiplied
+        by, or the precision factor divided by,
+        :math:`\texttt{max\_std}\sqrt{F / \operatorname{tr}\Sigma_k}`.  No
+        decomposition is needed, the factor stays triangular, and the gradient flows
+        through the shrinkage.  Components within the bound are returned as they are.
+
+        The norm is taken in float64 (float32 on MPS), where a nearly singular
+        precision factor still has a finite inverse.  A precision factor that is beyond
+        the bound and too ill-conditioned for its own dtype (its norm times that of
+        its inverse above ``0.01 / eps``, or a non-finite norm) cannot be rescued by a
+        scalar: triangular solves with it are noise.  It is replaced by the isotropic
+        component at the bound, ``I / max_std``.
+        """
+        if self.max_std is None:
+            return factor
+        bound = float(torch.as_tensor(self.max_std))
+        limit = bound * math.sqrt(factor.shape[-1])
+        precision = self.full_parameterization == "precision"
+        work = _work_dtype(factor.device)
+
+        def total_std(f: torch.Tensor) -> torch.Tensor:
+            f = f.to(work)
+            if precision:
+                eye = torch.eye(f.shape[-1], dtype=f.dtype, device=f.device)
+                f = torch.linalg.solve_triangular(f, eye.expand_as(f), upper=False)
+            return f.square().sum(dim=(-2, -1)).sqrt()
+
+        with torch.no_grad():
+            finite = torch.isfinite(factor).all(dim=-1).all(dim=-1)
+            norm = total_std(factor)
+            bad = finite & ~(norm <= limit)  # a non-finite norm is beyond any bound
+        if not bool(bad.any()):
+            return factor
+        chosen = factor[bad]
+        spread = total_std(chosen)  # with gradient
+        ratio = (spread / limit).to(factor.dtype)[:, None, None]
+        fixed = chosen * ratio if precision else chosen / ratio
+        if precision:
+            conditioning = (
+                chosen.detach().to(work).square().sum(dim=(-2, -1)).sqrt() * spread.detach()
+            )
+            hopeless = ~torch.isfinite(fixed).all(dim=-1).all(dim=-1) | ~(
+                conditioning <= 0.01 / torch.finfo(factor.dtype).eps
+            )
+            if bool(hopeless.any()):
+                eye = torch.eye(factor.shape[-1], dtype=factor.dtype, device=factor.device)
+                fixed = torch.where(hopeless[:, None, None], eye / bound, fixed)
+        out = factor.clone()
+        out[bad] = fixed
+        return out
 
     @property
     def df(self) -> float | torch.Tensor:
