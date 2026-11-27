@@ -509,10 +509,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   targets: no mean further than 1.25 times the largest standardised target (between 5 and 25
   standard deviations, as for the flow's spline domain) and no average variance beyond that
   squared (`MixtureDensityLoss(max_std=...)`); the engine uses each target's own range. On
-  that job the energy scores become 0.088, 0.089 and 0.081, the share of rows with a draw
+  that job the energy scores become 0.091, 0.090 and 0.086, the share of rows with a draw
   beyond 1,000 standard deviations goes from 0.1-0.2% to zero, and the log scores from
-  -17.75, -17.31, -18.03 to -17.55, -17.59, -17.86 (still the best row); training time is
-  unchanged. Fitted mixture heads change wherever a component was beyond the bounds, which
+  -17.75, -17.31, -18.03 to -17.54, -17.51, -17.69 (still the best row in every seed); the
+  fits took 330 to 470 s against 290 to 350 s. Fitted mixture heads change wherever a
+  component was beyond the bounds, which
   includes ordinary data: the guide's posterior example moves from a KL of 0.069 to 0.067
   (± 0.008), the comparison example's stacked row by 0.0005 nats.
 - Seeded blocks inside `torchregress.joint` (`JointRegressor.fit`, `ScaleRecalibrator.fit`
