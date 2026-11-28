@@ -34,6 +34,7 @@ weaker guarantee, see :class:`~torchregress.joint.CrossConformalRegion`).
 from __future__ import annotations
 
 import copy
+import inspect
 import math
 import warnings
 from collections import Counter
@@ -49,7 +50,7 @@ from ..losses.nflows import NormalizingFlowLoss, create_flow_model, recommended_
 from ..metrics.distribution import energy_score
 from ..utils.distributions import inverse_softplus
 from ..utils.quantile import pinball_residual
-from ._common import mlp, safe_cholesky, seeded
+from ._common import mlp, safe_cholesky, seeded, target_index, to_tensor
 from ._common import train as train_module
 from .calibration import ScaleRecalibrator
 from .dependence import (
@@ -128,7 +129,31 @@ def _auto_batch_size(n_train: int) -> int:
     return batch
 
 
-ArrayLike = Any  # torch.Tensor or anything torch.as_tensor accepts (numpy arrays)
+ArrayLike = Any  # a tensor, a NumPy array, nested lists, or a pandas or polars frame or series
+
+
+def _float_tensor(data: ArrayLike, name: str) -> Tensor:
+    """``data`` as a float32 tensor (a tensor stays on its device)."""
+    try:
+        return to_tensor(data).to(torch.float32)
+    except (TypeError, ValueError, RuntimeError) as exc:
+        raise TypeError(
+            f"{name} must hold numbers (a tensor, a NumPy array, nested lists, or a pandas "
+            f"or polars frame with numeric columns), got {type(data).__name__}: {exc}"
+        ) from exc
+
+
+def _targets(data: ArrayLike) -> Tensor:
+    """Targets as a float32 ``[N, d]`` tensor; a one-dimensional ``Y`` is one target."""
+    y = _float_tensor(data, "Y")
+    return y.unsqueeze(1) if y.dim() == 1 else y
+
+
+def _rows_error(x: Tensor, y: Tensor) -> ValueError:
+    return ValueError(
+        "X must be [N, p] and Y [N, d] (or [N] for one target) with the same number of "
+        f"rows, got X {tuple(x.shape)} and Y {tuple(y.shape)}"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1058,6 +1083,8 @@ class JointRegressor:
     def fit(self, X: ArrayLike, Y: ArrayLike) -> "JointRegressor":
         """Fit on features ``X [N, p]`` and targets ``Y [N, d]`` (``NaN`` = missing).
 
+        ``X`` and ``Y`` are tensors, NumPy arrays, nested lists, or pandas or polars
+        frames with numeric columns; a one-dimensional ``Y`` is a single target.
         Deterministic for a given ``seed``; the caller's torch RNG state is left as
         it was.  ``±inf`` in ``Y`` is an error (only ``NaN`` marks a missing target).
         """
@@ -1065,10 +1092,12 @@ class JointRegressor:
             return self._fit(X, Y)
 
     def _fit(self, X: ArrayLike, Y: ArrayLike) -> "JointRegressor":
-        x = torch.as_tensor(X, dtype=torch.float32)
-        y = torch.as_tensor(Y, dtype=torch.float32)
+        # The split, the statistics and the kept rows live on the CPU, whatever device the
+        # inputs came on; the networks see them on ``self.device``.
+        x = _float_tensor(X, "X").cpu()
+        y = _targets(Y).cpu()
         if x.dim() != 2 or y.dim() != 2 or x.shape[0] != y.shape[0]:
-            raise ValueError("X must be [N, p] and Y [N, d] with the same number of rows")
+            raise _rows_error(x, y)
         if not bool(torch.isfinite(x).all()):
             raise ValueError("X must be finite")
         n, d = y.shape
@@ -1097,6 +1126,16 @@ class JointRegressor:
         val, rec = perm[:n_val], perm[n_val : n_val + n_rec]
         conf, train = perm[n_val + n_rec : n_val + n_rec + n_conf], perm[n_val + n_rec + n_conf :]
 
+        seen = observed[train].sum(0)
+        if bool((seen < 2).any()):
+            # One value has no spread and none has no location: the standardisation would
+            # fall back to mean 0 and spread 1e-6, a point mass wherever the data are.
+            short = {int(j): int(seen[j]) for j in (seen < 2).nonzero().flatten()}
+            raise ValueError(
+                f"each target needs at least 2 observed values among the {train.numel()} "
+                f"training rows; observed counts by target index: {short}"
+                + (" (in one fold model of cv)" if self._holdout is False else "")
+            )
         x_mean, x_std = x[train].mean(0), x[train].std(0).clamp_min(1e-6)
         filled = torch.where(observed, y, torch.zeros_like(y))
         count = observed[train].sum(0).clamp_min(1)
@@ -1136,7 +1175,10 @@ class JointRegressor:
         names = self._member_names(d, has_missing)
         log_density: list[Tensor] = []
         self._heads, self.validation_log_score_, self.validation_energy_score_ = {}, {}, {}
+        # Nothing of a previous fit survives (a refit may not fit the Sklar head at all).
         self.marginal_scores_, self.marginal_engine_ = {}, None
+        self.dependence_scores_, self.dependence_ = {}, None
+        self._engine, self._dependence, self._marginal_candidates = None, None, {}
         for offset, name in enumerate(names):
             torch.manual_seed(self.seed + offset)
             if name == "sklar":
@@ -1229,7 +1271,7 @@ class JointRegressor:
         if len(names) == 1:
             self.weights_ = torch.ones(1)
         else:
-            stacked = torch.stack(log_density, dim=1).double()
+            stacked = torch.stack(log_density, dim=1).cpu().double()
             self.weights_ = _stack(stacked).to(torch.float32).cpu()
         self._own_weights = self.weights_
 
@@ -1377,7 +1419,7 @@ class JointRegressor:
                     )
                 seen = obs[sel] if masked else torch.ones_like(obs[sel])
                 jac = (seen.to(lp.dtype) * log_sd.to(lp.dtype)).sum(-1)
-                log_density[rows[sel.cpu()], h] = (lp - jac).double().cpu()
+                log_density[rows[sel.cpu()], h] = (lp - jac).cpu().double()
         self.validation_log_score_ = {
             name: float(log_density[:, h][~torch.isnan(log_density[:, h])].mean())
             for h, name in enumerate(names)
@@ -1434,7 +1476,8 @@ class JointRegressor:
                 self._recalibrator = recalibrator
                 self.scale_ = fitted.detach().cpu()
         self._conformal_rows = None
-        self._cross_rows = (x, filled, observed)
+        # A copy: the scores are computed at the first region() call, from these rows.
+        self._cross_rows = (x.clone(), filled, observed)
         self._cross_cache = {}
         return self
 
@@ -1474,10 +1517,10 @@ class JointRegressor:
         """
         if self.n_features_in_ is None or self.n_targets_ is None:
             raise RuntimeError("Call fit() first.")
-        x = torch.as_tensor(X, dtype=torch.float32).cpu()
-        y = torch.as_tensor(Y, dtype=torch.float32).cpu()
+        x = _float_tensor(X, "X").cpu()
+        y = _targets(Y).cpu()
         if x.dim() != 2 or y.dim() != 2 or x.shape[0] != y.shape[0]:
-            raise ValueError("X must be [N, p] and Y [N, d] with the same number of rows")
+            raise _rows_error(x, y)
         if x.shape[1] != self.n_features_in_ or y.shape[1] != self.n_targets_:
             raise ValueError(
                 f"X must have {self.n_features_in_} columns and Y {self.n_targets_}, "
@@ -1491,7 +1534,9 @@ class JointRegressor:
             raise ValueError("at least one calibration row is needed")
         observed = torch.isfinite(y)
         filled = torch.where(observed, y, torch.zeros_like(y))
-        self._conformal_rows = (x, filled, observed)
+        # A copy of X: the scores are computed at the first region() call, and the
+        # caller's array may have changed by then.
+        self._conformal_rows = (x.clone(), filled, observed)
         self._conformal_cache = {}
         # External rows replace the cross-conformal calibration (cv): split conformal.
         self._cross_rows, self._cross_cache = None, {}
@@ -1843,14 +1888,49 @@ class JointRegressor:
         return AffineJoint(inner, loc, scale)
 
     def predict(self, X: ArrayLike) -> JointPredictive:
-        """Joint predictive distributions for the rows of ``X`` (data units, recalibrated)."""
-        x = torch.as_tensor(X, dtype=torch.float32)
-        if x.dim() != 2 or x.shape[1] != self.n_features_in_:
-            raise ValueError(f"X must be [n, {self.n_features_in_}]")
+        """Joint predictive distributions for the rows of ``X`` (data units, recalibrated).
+
+        ``X [n, p]`` must be finite, as at :meth:`fit`: a row with a ``NaN`` feature
+        has no prediction, and an error says so rather than a ``NaN`` density later.
+        """
+        x = self._features(X)
         if self._fold_models:
             return _average(self._fold_predictives(x))
         base = self._base_predictive(x)
         return base if self._recalibrator is None else self._recalibrator.transform(base)
+
+    def _features(self, X: ArrayLike) -> Tensor:
+        """Features of new rows as a finite float32 ``[n, p]`` tensor."""
+        if self.n_features_in_ is None:
+            raise RuntimeError("Call fit() first.")
+        x = _float_tensor(X, "X")
+        if x.dim() != 2 or x.shape[1] != self.n_features_in_:
+            one_row = x.dim() == 1 and x.numel() == self.n_features_in_
+            hint = "; for a single row pass X[None]" if one_row else ""
+            raise ValueError(f"X must be [n, {self.n_features_in_}], got {tuple(x.shape)}{hint}")
+        finite = torch.isfinite(x).all(dim=1)
+        if not bool(finite.all()):
+            raise ValueError(
+                f"X must be finite: {int((~finite).sum())} of {x.shape[0]} rows hold NaN or inf"
+            )
+        return x.cpu()  # the feature statistics are on the CPU; networks move it
+
+    def __repr__(self) -> str:
+        # The arguments that differ from their defaults, in the order of the signature.
+        shown = []
+        for name, param in inspect.signature(type(self).__init__).parameters.items():
+            if name == "self" or not hasattr(self, name):
+                continue
+            value = getattr(self, name)
+            default = param.default
+            if isinstance(default, (list, tuple)):
+                default = tuple(default)
+            if value is default or (type(value) is type(default) and value == default):
+                continue
+            if isinstance(value, torch.device):
+                value = str(value)  # the device in use, also when it was left to the default
+            shown.append(f"{name}={value!r}")
+        return f"{type(self).__name__}({', '.join(shown)})"
 
     # -------------------------------------------------------------- region
     def _score_for(self, predictive: JointPredictive, has_missing: bool) -> ConformalScore:
@@ -1940,7 +2020,10 @@ class JointRegressor:
                 sub-vector, with the other (nuisance) targets integrated out of the
                 predictive before calibration.
         """
-        dims = None if interest is None else tuple(int(i) for i in interest)
+        rows = self._cross_rows if self._cross_rows is not None else self._conformal_rows
+        if rows is None:
+            raise RuntimeError("Call fit() first.")
+        dims = None if interest is None else tuple(target_index(interest, rows[1].shape[1]))
         levels = (
             (float(alpha),) if isinstance(alpha, (int, float)) else tuple(float(a) for a in alpha)
         )
@@ -2062,9 +2145,7 @@ class JointRegressor:
                 masked_scores = fold_scores([masked_score] * n_folds, m_c.any(1), True)
             self._cross_cache[key] = (score, scores, masked_score, masked_scores)
         score, scores, masked_score, masked_scores = self._cross_cache[key]
-        x = torch.as_tensor(X, dtype=torch.float32)
-        if x.dim() != 2 or x.shape[1] != self.n_features_in_:
-            raise ValueError(f"X must be [n, {self.n_features_in_}]")
+        x = self._features(X)
         tests = [restrict(self._fold_base(k, x, own=True)) for k in range(n_folds)]
         proposal = _average(tests)
         region = CrossConformalRegion(proposal, score, alpha, tests, scores)

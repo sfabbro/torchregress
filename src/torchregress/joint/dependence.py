@@ -73,6 +73,7 @@ from torch import Tensor, nn
 
 from ..losses.mdn import MixtureDensityLoss
 from ..losses.nflows import NormalizingFlowLoss, create_flow_model
+from ..utils.distributions import normal_icdf
 from ._common import mlp, safe_cholesky, target_index, train
 from .marginals import Marginals
 from .predictive import DistributionJoint, FlowJoint, GaussianJoint, JointPredictive
@@ -1048,7 +1049,7 @@ def _rank_normal_scores(z: Tensor) -> Tensor:
     """Per-column normal scores of the ranks, :math:`\\Phi^{-1}(r / (N + 1))` (ties by order)."""
     n_rows = z.shape[0]
     ranks = torch.argsort(torch.argsort(z, dim=0, stable=True), dim=0, stable=True)
-    return torch.special.ndtri((ranks + 1).to(z.dtype) / (n_rows + 1))
+    return normal_icdf((ranks + 1).to(z.dtype) / (n_rows + 1))
 
 
 class SchaakeShuffle(Dependence):

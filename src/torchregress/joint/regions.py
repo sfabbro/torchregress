@@ -100,7 +100,7 @@ from scipy.stats import chi2
 from torch import Tensor
 
 from ..losses.conformal import _weighted_conformal_thresholds, finite_sample_quantile
-from ._common import masked_gaussian_quadratic, safe_cholesky
+from ._common import masked_gaussian_quadratic, safe_cholesky, to_tensor
 from .predictive import JointPredictive
 
 __all__ = [
@@ -140,7 +140,7 @@ def _check_y(predictive: JointPredictive, y: Any) -> Tensor:
 
 
 def _check_mask(predictive: JointPredictive, mask: Any, like: Tensor) -> Tensor:
-    mask = torch.as_tensor(mask)
+    mask = to_tensor(mask)
     shape = (predictive.batch_size, predictive.event_dim)
     if mask.dtype != torch.bool or tuple(mask.shape) != shape:
         raise ValueError(
@@ -211,6 +211,9 @@ class ConformalScore(ABC):
     name: str = "score"
     #: The score accepts a missing-target mask (``True`` = observed).
     supports_mask: bool = False
+    #: With a mask, rows with different observed targets are scored on one scale, so a
+    #: threshold calibrated on rows with missing targets also applies to a complete row.
+    mask_comparable: bool = False
 
     def check(self, predictive: JointPredictive) -> None:
         """Raise a clear error if the predictive lacks a needed capability."""
@@ -267,7 +270,11 @@ class DensityScore(ConformalScore):
     :math:`\{y : \hat p(y \mid x) \ge e^{-\hat t}\}`, the smallest-volume region
     when the predictive is correct (Lei et al. 2018; Dheur et al. 2025).  With a
     mask the score is the negative log density of the observed sub-vector, which
-    needs a predictive with ``exact_marginals``.  The threshold is shared across
+    needs a predictive with ``exact_marginals``.  That value depends on how many
+    targets are observed (each one adds about 1.4 nats for a standard normal), so a
+    region calibrated with a mask answers ``contains(y, mask=...)`` only: for a
+    complete row without a mask, and for volumes, draws and boxes, calibrate on
+    complete rows.  The threshold is shared across
     rows, so rows with a broad predictive get a low density level; for an
     adaptive level use :class:`HPDScore`.
     """
@@ -407,11 +414,19 @@ class MahalanobisScore(ConformalScore):
 
     name = "mahalanobis"
     supports_mask = True
+    mask_comparable = True  # every pattern is on the chi-square CDF scale
 
     def _prepare(self, predictive: JointPredictive) -> _State:
         cov = predictive.covariance()  # first: Monte Carlo moments then draw once for both
         mean = predictive.mean()
-        return {"mean": mean, "cov": cov, "chol": safe_cholesky(cov)}
+        chol, info = torch.linalg.cholesky_ex(cov)
+        singular = info != 0
+        if bool(singular.any()):
+            # A constant target, or fewer draws than targets: the jittered matrix is the
+            # covariance of that row on both paths (the masked one factorises sub-blocks).
+            chol = safe_cholesky(cov)
+            cov = torch.where(singular[:, None, None], chol @ chol.mT, cov)
+        return {"mean": mean, "cov": cov, "chol": chol}
 
     def _evaluate(
         self, predictive: JointPredictive, y: Tensor, mask: Optional[Tensor], state: _State
@@ -461,7 +476,12 @@ class MaxResidualScore(ConformalScore):
         \qquad s_j = \sqrt{\Sigma_{jj}},
 
     with the maximum over observed targets only under a mask.  The region is the
-    box :math:`\prod_j [m_j - \hat t s_j, m_j + \hat t s_j]`.
+    box :math:`\prod_j [m_j - \hat t s_j, m_j + \hat t s_j]`.  A maximum over
+    fewer targets is smaller, so a threshold calibrated with a mask is too small for
+    a complete row: such a region answers ``contains(y, mask=...)`` only, and the
+    box, its volume and draws need a calibration on complete rows.  A target with
+    zero predicted spread contributes 0 when its residual is 0 and ``+inf``
+    otherwise.
 
     Why one calibrated maximum gives a *joint* guarantee:
     :math:`Y \in \text{box}` if and only if :math:`s(X, Y) \le \hat t`, and the
@@ -490,7 +510,10 @@ class MaxResidualScore(ConformalScore):
         self, predictive: JointPredictive, y: Tensor, mask: Optional[Tensor], state: _State
     ) -> Tensor:
         mean, std = state["mean"].to(y), state["std"].to(y)
-        r = (_as_3d(y) - mean.unsqueeze(1)).abs() / std.unsqueeze(1)
+        resid = (_as_3d(y) - mean.unsqueeze(1)).abs()
+        # A target with zero predicted spread: no residual is no excess (0, not 0 / 0),
+        # any residual is infinitely far.
+        r = torch.where(resid == 0, torch.zeros_like(resid), resid / std.unsqueeze(1))
         if mask is not None:
             r = torch.where(mask.unsqueeze(1), r, torch.zeros_like(r))
         return _like_input(r.amax(dim=-1), y)
@@ -620,7 +643,12 @@ class JointConformal:
                 (and, for :class:`DensityScore`, predictives with
                 ``exact_marginals``).  Rows with nothing observed are dropped.
                 The guarantee then holds for test points with the same
-                missingness mechanism.
+                missingness mechanism, scored with their mask
+                (``region.contains(y, mask=...)``).  Only a score with
+                ``mask_comparable`` (:class:`MahalanobisScore`) also gives a
+                threshold for complete rows, volumes, draws and boxes; the others
+                raise there, because their values depend on how many targets are
+                observed.
             weights: Non-negative ``[n]`` for weighted split conformal.
             groups: Integer ``[n]`` group ids for Mondrian calibration.
         """
@@ -633,13 +661,13 @@ class JointConformal:
             self.score.check_mask(predictive)
             mask = _check_mask(predictive, mask, y)
         if weights is not None:
-            weights = torch.as_tensor(weights)
+            weights = to_tensor(weights)
             if weights.shape != (n,):
                 raise ValueError(f"weights must be [n] = [{n}], got {tuple(weights.shape)}")
             if not bool(torch.isfinite(weights).all()) or bool((weights < 0).any()):
                 raise ValueError("weights must be finite and non-negative")
         if groups is not None:
-            groups = torch.as_tensor(groups)
+            groups = to_tensor(groups)
             if groups.shape != (n,) or groups.is_floating_point() or groups.dtype == torch.bool:
                 raise ValueError(f"groups must be an integer [n] = [{n}] tensor")
 
@@ -681,6 +709,7 @@ class JointConformal:
         self._grouped = groups is not None
         self._weighted = weights is not None
         self._masked = mask is not None
+        self._event_dim = predictive.event_dim
         self._fitted = True
         return self
 
@@ -696,13 +725,19 @@ class JointConformal:
         Args:
             predictive: Predictive of the test rows.
             test_weights: Non-negative ``[n]`` test weights (required after a
-                weighted calibration).
+                weighted calibration).  ``+inf`` gives that row a ``+inf`` threshold.
             groups: Integer ``[n]`` group ids (required after a Mondrian
                 calibration).  A group unseen in calibration gets ``+inf``.
         """
         if not self._fitted:
             raise RuntimeError("call calibrate() before region()")
         self.score.check(predictive)
+        if predictive.event_dim != self._event_dim:
+            raise ValueError(
+                f"calibrated on {self._event_dim} targets, but the predictive has "
+                f"{predictive.event_dim}: a threshold belongs to the target vector it was "
+                "calibrated on (for a subset, calibrate on predictive.marginal(dims))"
+            )
         n = predictive.batch_size
         device = self.thresholds_.device
         dtype = self.thresholds_.dtype
@@ -711,7 +746,7 @@ class JointConformal:
         if self._grouped:
             if groups is None:
                 raise ValueError("calibrated with groups: pass groups= to region()")
-            groups = torch.as_tensor(groups)
+            groups = to_tensor(groups)
             if groups.shape != (n,) or groups.is_floating_point():
                 raise ValueError(f"groups must be an integer [n] = [{n}] tensor")
             ids = self.group_ids_
@@ -731,13 +766,16 @@ class JointConformal:
         if self._weighted:
             if test_weights is None:
                 raise ValueError("calibrated with weights: pass test_weights= to region()")
-            test_weights = torch.as_tensor(test_weights)
-            if test_weights.shape != (n,) or bool((test_weights < 0).any()):
-                raise ValueError(f"test_weights must be non-negative [n] = [{n}]")
+            test_weights = to_tensor(test_weights)
+            if test_weights.shape != (n,) or not bool((test_weights >= 0).all()):
+                raise ValueError(f"test_weights must be non-negative [n] = [{n}] (no NaN)")
             tw = test_weights.to(device, torch.float64)
+            # An infinite test weight puts all the mass of the weighted quantile on the
+            # test point: its threshold is +inf, the limit of large finite weights.
+            finite = torch.isfinite(tw)
             threshold = torch.full((n, n_levels), math.inf, dtype=dtype, device=device)
             for gi in range(len(self._scores)):
-                rows = (idx == gi) & known
+                rows = (idx == gi) & known & finite
                 w_g = self._weights[gi]
                 if not bool(rows.any()) or w_g is None:
                     continue
@@ -837,8 +875,31 @@ class JointRegion:
         with torch.no_grad():
             return _nan_as_inf(self.score._evaluate(self.predictive, y, mask, self._state))
 
+    @property
+    def covers_complete_rows(self) -> bool:
+        """Whether the threshold applies to complete rows.
+
+        ``False`` for a region calibrated with a mask by a score without
+        ``mask_comparable`` (:class:`DensityScore`, :class:`MaxResidualScore`): it
+        answers ``contains(y, mask=...)`` only, and ``contains(y)``,
+        :meth:`log_volume`, :meth:`sample` and :meth:`bounding_box` raise.
+        """
+        return not self._masked or self.score.mask_comparable
+
+    def _require_complete_rows(self, what: str) -> None:
+        """Refuse a complete-row use of a threshold that is only valid with a mask."""
+        if not self.covers_complete_rows:
+            raise ValueError(
+                f"{what} needs a threshold for complete rows, but this region was calibrated "
+                f"on rows with missing targets with {self.score!r}, whose values depend on how "
+                "many targets are observed (on complete rows such a 90% region covered 33% "
+                "in a five-target example). Pass mask= to contains(), calibrate on complete "
+                "rows, or use MahalanobisScore, which puts every pattern on one scale."
+            )
+
     def _inside(self, y: Tensor) -> Tensor:
         """Membership of fully observed ``y [n, S, d]``: ``[n, S, L]``."""
+        self._require_complete_rows("membership of complete rows")
         s = self._scores(y)
         return s.unsqueeze(-1) <= self.threshold.to(s).unsqueeze(1)
 
@@ -859,6 +920,8 @@ class JointRegion:
             if not self._masked:
                 raise ValueError("this region was calibrated without a mask; pass none")
             mask = _check_mask(self.predictive, mask, y)
+        else:
+            self._require_complete_rows("contains() without a mask")
         s = self._scores(y, mask)
         t = self.threshold.to(s)
         inside = s.unsqueeze(-1) <= (t if y.dim() == 2 else t.unsqueeze(1))
@@ -898,6 +961,7 @@ class JointRegion:
         balls (accurate in low ``d`` only).  ``+inf`` for an infinite threshold;
         ``-inf`` (standard error ``nan``) when no draw falls inside.
         """
+        self._require_complete_rows("log_volume()")
         t = self.threshold
         closed = self.score._closed_log_volume(self._state, t, self._masked)
         if closed is not None:
@@ -1036,6 +1100,7 @@ class JointRegion:
         range of ``n_samples`` accepted draws (:meth:`sample`), an inner
         estimate of the true box; ``-inf``/``+inf`` for an infinite threshold.
         """
+        self._require_complete_rows("bounding_box()")
         closed = self.score._closed_box(self._state, self.threshold, self._masked)
         if closed is not None:
             lower, upper = closed
@@ -1078,6 +1143,7 @@ class _CrossScore(ConformalScore):
         fold_scores: Sequence[Tensor],
     ) -> None:
         self.bases = list(bases)
+        self.mask_comparable = all(b.mask_comparable for b in self.bases)
         names = list(dict.fromkeys(b.name for b in self.bases))
         self.name = "cross-" + "/".join(names)
         self.fold_predictives = list(fold_predictives)

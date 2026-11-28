@@ -51,7 +51,7 @@ import torch
 from torch import Tensor
 
 from ..losses.student_t_mixture import _mixture_tail_quantile, _work_dtype
-from ..utils.distributions import normal_cdf
+from ..utils.distributions import normal_cdf, normal_icdf, normal_log_cdf
 from ._common import target_index
 
 __all__ = [
@@ -113,7 +113,7 @@ class Marginals(ABC):
         where some :math:`F_j` is within :math:`\varepsilon` of 0 or 1.
         """
         u = self.cdf(y).clamp(eps, 1.0 - eps)
-        return torch.special.ndtri(u)
+        return normal_icdf(u)
 
     def from_normal_scores(self, z: Tensor, eps: float = 1e-6) -> Tensor:
         r"""Inverse of :meth:`normal_scores`.
@@ -203,7 +203,7 @@ class GaussianMarginals(Marginals):
 
     def icdf(self, u: Tensor) -> Tensor:
         loc, scale = self._params(self._check(u))
-        return loc + scale * torch.special.ndtri(u)
+        return loc + scale * normal_icdf(u)
 
     def log_prob(self, y: Tensor) -> Tensor:
         loc, scale = self._params(self._check(y))
@@ -284,14 +284,15 @@ class _PiecewiseMarginals(Marginals):
         n, d = self.batch_size, self.event_dim
         quarter = torch.full((n, d), 0.25, dtype=self.knots.dtype, device=self.knots.device)
         sigma = (self.icdf(1.0 - quarter) - self.icdf(quarter)) / 1.3489795003921634
-        levels = self.levels.expand(n, d, self.knots.shape[-1]).double()
+        # float64 on the CPU (MPS has no float64); the scales go back to the knots' device
+        levels = self.levels.expand(n, d, self.knots.shape[-1]).cpu().double()
 
         def mills(tail: Tensor) -> Tensor:  # F / f of a standard normal at the tail level
-            score = torch.special.ndtri(tail)
+            score = normal_icdf(tail)
             return tail * math.sqrt(2.0 * math.pi) * torch.exp(0.5 * score.square())
 
-        left = floor * sigma * mills(levels[..., 0]).to(sigma.dtype)
-        right = floor * sigma * mills(1.0 - levels[..., -1]).to(sigma.dtype)
+        left = floor * sigma * mills(levels[..., 0]).to(sigma)
+        right = floor * sigma * mills(1.0 - levels[..., -1]).to(sigma)
         self.left_scale = torch.maximum(self.left_scale, left)
         self.right_scale = torch.maximum(self.right_scale, right)
 
@@ -669,8 +670,8 @@ class MixtureMarginals(Marginals):
         work = _work_dtype(y.device)
         logw, loc, scale = self._params(y, work)
         r = (y.to(work).unsqueeze(-1) - loc) / scale
-        log_cdf = torch.logsumexp(logw + torch.special.log_ndtr(r), dim=-1)
-        log_sf = torch.logsumexp(logw + torch.special.log_ndtr(-r), dim=-1)
+        log_cdf = torch.logsumexp(logw + normal_log_cdf(r), dim=-1)
+        log_sf = torch.logsumexp(logw + normal_log_cdf(-r), dim=-1)
         return log_cdf, log_sf
 
     def cdf(self, y: Tensor) -> Tensor:
@@ -687,7 +688,7 @@ class MixtureMarginals(Marginals):
         log_cdf, log_sf = self._log_cdf_and_sf(self._check(y))
         upper = log_sf < log_cdf
         tail = torch.where(upper, log_sf, log_cdf).exp().clamp(eps, 1.0 - eps)
-        z = torch.special.ndtri(tail)
+        z = normal_icdf(tail)
         return torch.where(upper, -z, z).to(y.dtype)
 
     def icdf(self, u: Tensor) -> Tensor:

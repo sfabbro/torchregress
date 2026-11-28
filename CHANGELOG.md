@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `JointRegressor` and the joint predictives take pandas and polars frames (and series, and
+  any object NumPy can read) wherever they took arrays: `fit`, `predict`, `region`,
+  `calibrate`, `log_prob`, `contains`, masks. Torch alone rejects a frame ("could not
+  determine the shape of object type 'DataFrame'") and reads a series element by element. A
+  read-only array is copied instead of raising torch's "not writable" warning. A
+  one-dimensional `Y` is a single target (`fit`, `calibrate`). `repr(JointRegressor(...))`
+  lists the arguments that differ from their defaults.
 - `JointRegressor(location="mse")` (off by default): a point model first. Five networks are
   trained by squared error on the training rows, each without one fifth of them; the heads
   (whatever `method` says) then model the residuals in units of their out-of-fold spread, and
@@ -404,6 +411,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1.33 to 1.25. Fits take about twice as long there (31 s against 19 s on `mt_enb`). Fitted
   models with fewer than about 2,000 training rows change; larger ones do not. These numbers
   were measured on a laptop while CANFAR was unavailable; the suite-wide re-run is pending.
+- `JointRegressor.predict` and `region` raise a `ValueError` for rows with `NaN` or infinite
+  features, as `fit` does, naming how many rows; such a row used to get a `NaN` predictive
+  without a word. Before `fit` they raise `RuntimeError("Call fit() first.")` (`predict` used
+  to say "X must be [n, None]"). Shape errors print the shapes received, and a single row
+  passed as a vector gets the hint to pass `X[None]`. `region(interest=...)` validates the
+  indices (a `ValueError`, where an out-of-range index was a bare `IndexError`).
+- `MixtureJoint.mean`, `center` and `covariance` (the moments of the stacked predictive of
+  `JointRegressor()`) ask a member without closed forms for about `n_samples` times its
+  weight draws (at least 32), not for `n_samples` each. With three flow copies and a Sklar
+  member in the stack, every moment used to cost four times the draws of one sample of the
+  mixture. The estimate from these stratified draws is still more precise than one from
+  `n_samples` draws of the mixture (its variance leaves out the spread of the member means),
+  and members with closed forms stay exact. Measured on a laptop for the default stack on
+  4 targets and 300 rows: 3.5 s to 0.7 s for mean and covariance; error of the mean 0.035
+  standard deviations, against 0.044 for 512 draws of the mixture and 0.015 for the previous
+  512 draws per member. Seeded results that use these moments change within Monte Carlo
+  error.
 - Sampling is faster at many targets. The maps and distributions are the same (flow draws
   and mixture quantiles agree with the previous code to floating-point rounding). Monte
   Carlo moments are now drawn once per predictive instead of at every call, so a seeded
@@ -524,6 +548,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `JointConformal` regions calibrated with missing targets (`calibrate(..., mask=)`) by
+  `DensityScore` or `MaxResidualScore` were used as they were for complete rows. Those scores
+  grow with the number of observed targets (a negative log density gains about 1.4 nats per
+  standard-normal target; a maximum over more targets is larger), so the threshold was too
+  small: with a correct five-target Gaussian predictive and half the calibration targets
+  missing, the 90% region covered 33% (density) and 84% (max residual) of complete test rows,
+  and `log_volume`, `sample` and `bounding_box` described that set. Such a region now answers
+  `contains(y, mask=...)` only and raises for the complete-row uses
+  (`JointRegion.covers_complete_rows` is `False`; scores declare `mask_comparable`).
+  `MahalanobisScore` puts every pattern on the chi-square scale and is unchanged (0.913).
+  `JointRegressor.region` was not affected: it calibrates complete rows separately.
+- `JointRegressor.fit`: a target with fewer than two observed values among the training rows
+  was standardised with mean 0 and spread 1e-6, a point mass at 0 in data units wherever
+  the data were (validation log score -5e12 in one example). It is now a `ValueError` that
+  names the target and its count.
+- `JointRegressor` with inputs or a model on an accelerator: `fit` crashed on tensors that
+  live on CUDA or MPS (the split indexed them with CPU indices), and a model fitted that way
+  could not predict from CPU arrays. The split, the statistics and the kept rows now live on
+  the CPU. On MPS, `method="auto"` and `"sklar"` could not fit at all (float64 casts on the
+  device; `ndtri` and `log_ndtr` are not implemented there): the casts happen on the CPU and
+  the two functions fall back to the CPU for MPS tensors
+  (`utils.distributions.normal_icdf`, `normal_log_cdf`). Every method now fits, samples,
+  scores and builds regions on MPS, also with `location="mse"` and `cv`.
+- `JointRegressor.calibrate` and `fit(cv=...)` kept the caller's `X` array itself; the
+  conformal scores are computed at the first `region()` call, so changing the array in
+  between changed the calibration. They keep a copy.
+- Refitting a `JointRegressor` left the dependence model, marginal engine and their scores
+  of the previous fit when the new fit has no Sklar head (`dependence_`, `n_parameters_`).
+- `MahalanobisScore` with a mask raised "total covariance must have a positive finite
+  diagonal" for a row whose covariance is singular (a target that is constant in the draws,
+  fewer draws than targets), where the unmasked path adds jitter. Both paths now use the
+  same jittered matrix.
+- `MaxResidualScore`: a target with zero predicted spread and zero residual gave 0/0, counted
+  as `+inf`, so every calibration score was infinite and the region was the whole space. It
+  now contributes 0 (and `+inf` when the residual is not zero).
+- `JointConformal.region` accepted a predictive with another number of targets than the
+  calibration and returned a region with a meaningless threshold; it raises. An infinite
+  test weight gives a `+inf` threshold (the limit of large finite weights) instead of an
+  error from the quantile helper.
 - `JointRegressor`: absurd draws from mixture components of small weight. The mixture head
   and the mixture marginal engine put no upper limit on a component's spread or on how far
   its mean could sit from the data, and the likelihood hardly penalises a low-weight

@@ -534,3 +534,134 @@ def test_mondrian_with_every_calibration_row_dropped() -> None:
     region = cp.region(pred, groups=groups)
     assert bool(torch.isinf(region.threshold).all())
     assert bool(region.contains(y).all())
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# edges: thresholds calibrated with a mask, singular covariances, target count
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _half_missing(n: int, d: int, seed: int) -> tuple[GaussianJoint, torch.Tensor, torch.Tensor]:
+    """A correct ``N(0, I_d)`` predictive, its targets, and a mask with half the targets missing."""
+    gen = torch.Generator().manual_seed(seed)
+    pred = GaussianJoint(torch.zeros(n, d, dtype=F64), torch.eye(d, dtype=F64).expand(n, d, d))
+    y = torch.randn(n, d, generator=gen, dtype=F64)
+    mask = torch.rand(n, d, generator=gen) < 0.5
+    return pred, y, mask
+
+
+@pytest.mark.parametrize("score", [DensityScore, MaxResidualScore])
+def test_a_mask_calibrated_threshold_is_not_used_for_complete_rows(
+    score: type[ConformalScore],
+) -> None:
+    # These scores grow with the number of observed targets.  Before the guard, the 90%
+    # region below covered 33% (density) and 84% (max residual) of complete test rows.
+    pred, y, mask = _half_missing(4000, 5, seed=30)
+    test, y_test, mask_test = _half_missing(4000, 5, seed=31)
+    assert not score.mask_comparable
+    region = JointConformal(score(), alpha=0.1).calibrate(pred, y, mask=mask).region(test)
+    assert not region.covers_complete_rows
+    assert JointConformal(score(), alpha=0.1).calibrate(pred, y).region(test).covers_complete_rows
+    for call in (
+        lambda: region.contains(y_test),
+        lambda: region.log_volume(),
+        lambda: region.sample(4),
+        lambda: region.bounding_box(),
+    ):
+        with pytest.raises(ValueError, match="calibrated on rows with missing targets"):
+            call()
+    # With the mask of the test rows the guarantee holds, as before.
+    inside = region.contains(y_test, mask=mask_test)[mask_test.any(-1)]
+    sd = _coverage_sd(int(mask.any(-1).sum()), int(inside.numel()), 0.1)
+    assert abs(float(inside.double().mean()) - 0.9) <= 4 * sd
+    # The threshold really is too small for complete rows: this is what the guard refuses.
+    complete = torch.ones_like(mask_test)
+    assert float(region.contains(y_test, mask=complete).double().mean()) < 0.86
+
+
+def test_mahalanobis_keeps_one_scale_across_missingness_patterns() -> None:
+    pred, y, mask = _half_missing(4000, 5, seed=32)
+    test, y_test, _ = _half_missing(4000, 5, seed=33)
+    assert MahalanobisScore.mask_comparable
+    region = (
+        JointConformal(MahalanobisScore(), alpha=0.1).calibrate(pred, y, mask=mask).region(test)
+    )
+    assert region.covers_complete_rows
+    coverage = float(region.contains(y_test).double().mean())  # complete rows, no mask
+    assert abs(coverage - 0.9) <= 4 * _coverage_sd(int(mask.any(-1).sum()), 4000, 0.1), coverage
+    assert bool(torch.isfinite(region.log_volume()[0]).all())
+
+
+def _constant_target() -> tuple[SampleJoint, torch.Tensor, torch.Tensor]:
+    """Draws whose third target is the same in every draw: a singular covariance."""
+    gen = torch.Generator().manual_seed(34)
+    draws = torch.randn(50, 40, 3, generator=gen)
+    draws[:, :, 2] = 1.0
+    y = torch.randn(50, 3, generator=gen)
+    y[:, 2] = 1.0
+    mask = torch.ones(50, 3, dtype=torch.bool)
+    mask[::2, 0] = False
+    return SampleJoint(draws), y, mask
+
+
+def test_mahalanobis_with_a_mask_handles_a_singular_covariance() -> None:
+    # The unmasked path adds jitter to rows that do not factorise; the masked path used to
+    # raise "total covariance must have a positive finite diagonal".
+    pred, y, mask = _constant_target()
+    plain = JointConformal(MahalanobisScore(), alpha=0.1).calibrate(pred, y)
+    masked = JointConformal(MahalanobisScore(), alpha=0.1).calibrate(pred, y, mask=mask)
+    assert bool(torch.isfinite(plain.thresholds_).all())
+    assert bool(torch.isfinite(masked.thresholds_).all()) and 0 < float(masked.thresholds_) < 1
+    region = masked.region(pred)
+    assert region.contains(y, mask=mask).double().mean() > 0.8
+    # a complete row is scored on the same jittered matrix by both paths
+    complete = torch.ones_like(mask)
+    radius = MahalanobisScore().score(pred, y)
+    level = MahalanobisScore().score(pred, y, mask=complete)
+    want = torch.special.gammainc(torch.tensor(1.5), 0.5 * radius.square())
+    torch.testing.assert_close(level, want, rtol=1e-4, atol=1e-6)
+
+
+def test_max_residual_ignores_a_target_with_zero_spread_and_zero_residual() -> None:
+    # 0 / 0 was NaN, counted as +inf: every threshold infinite, the region all of R^d.
+    pred, y, mask = _constant_target()
+    for kwargs in ({}, {"mask": mask}):
+        cp = JointConformal(MaxResidualScore(), alpha=0.1).calibrate(pred, y, **kwargs)
+        assert bool(torch.isfinite(cp.thresholds_).all())
+    # With one set of moments: the constant target adds nothing to the maximum.
+    score = MaxResidualScore()
+    state = score._prepare(pred)
+    without_third = torch.ones_like(mask)
+    without_third[:, 2] = False
+    scores = score._evaluate(pred, y, None, state)
+    assert bool(torch.isfinite(scores).all())
+    torch.testing.assert_close(scores, score._evaluate(pred, y, without_third, state))
+    off = y.clone()
+    off[:3, 2] = 1.5  # a residual where no spread is predicted: infinitely atypical
+    assert bool(torch.isposinf(score._evaluate(pred, off, None, state)[:3]).all())
+
+
+def test_region_refuses_a_predictive_with_another_number_of_targets() -> None:
+    mean, tril, y = _problem(200, seed=35)
+    cp = JointConformal(DensityScore(), alpha=0.1).calibrate(GaussianJoint(mean, tril), y)
+    fewer = GaussianJoint(mean[:, :2], tril[:, :2, :2])
+    with pytest.raises(ValueError, match="calibrated on 3 targets, but the predictive has 2"):
+        cp.region(fewer)
+    assert cp.region(GaussianJoint(mean[:5], tril[:5])).contains(y[:5]).shape == (5,)
+
+
+def test_an_infinite_test_weight_gives_an_infinite_threshold() -> None:
+    mean, tril, y = _problem(300, seed=36)
+    pred = GaussianJoint(mean, tril)
+    weights = torch.ones(300, dtype=F64)
+    cp = JointConformal(MaxResidualScore(), alpha=0.1).calibrate(pred, y, weights=weights)
+    test = GaussianJoint(mean[:3], tril[:3])
+    region = cp.region(test, test_weights=torch.tensor([1.0, math.inf, 1e12], dtype=F64))
+    reference = cp.region(test, test_weights=torch.tensor([1.0, 1.0, 1.0], dtype=F64))
+    assert float(region.threshold[0, 0]) == float(reference.threshold[0, 0])
+    assert math.isinf(float(region.threshold[1, 0]))  # the limit of large finite weights
+    assert math.isinf(float(region.threshold[2, 0]))
+    with pytest.raises(ValueError, match="non-negative"):
+        cp.region(test, test_weights=torch.tensor([1.0, math.nan, 1.0], dtype=F64))
+    with pytest.raises(ValueError, match="non-negative"):
+        cp.region(test, test_weights=torch.tensor([1.0, -1.0, 1.0], dtype=F64))

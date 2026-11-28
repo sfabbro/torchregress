@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
+import pandas as pd
+import polars as pl
 import pytest
 import torch
 
@@ -326,3 +329,226 @@ def test_diagnostics_accept_numpy_arrays() -> None:
         dependence_error(draws.numpy(), y.numpy()).predicted,
         dependence_error(draws, y).predicted,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# F. what a new user passes to the estimator
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _frame_data(n: int = 160) -> tuple[np.ndarray, np.ndarray]:
+    rng = np.random.default_rng(5)
+    x = rng.normal(size=(n, 3)).astype(np.float32)
+    y = np.stack([x[:, 0], x[:, 1] ** 2], axis=1) + 0.3 * rng.normal(size=(n, 2))
+    return x, y.astype(np.float32)
+
+
+@pytest.mark.parametrize("frames", ["pandas", "polars"])
+def test_estimator_and_predictives_accept_data_frames(frames: str) -> None:
+    x, y = _frame_data()
+    x_frame: Any
+    y_frame: Any
+    if frames == "pandas":
+        x_frame = pd.DataFrame(x, columns=["a", "b", "c"])
+        y_frame = pd.DataFrame(y, columns=["u", "v"])
+    else:
+        x_frame = pl.DataFrame(x, schema=["a", "b", "c"])
+        y_frame = pl.DataFrame(y, schema=["u", "v"])
+    x_head, y_head = x_frame.head(7), y_frame.head(7)
+    from_arrays = JointRegressor("gaussian", seed=1, **SMALL).fit(x, y)
+    model = JointRegressor("gaussian", seed=1, **SMALL).fit(x_frame, y_frame)
+    pred, want = model.predict(x_head), from_arrays.predict(x[:7])
+    # the same fit as from the arrays, and frames go wherever arrays go
+    torch.testing.assert_close(pred.mean(), want.mean(), rtol=0, atol=0)
+    torch.testing.assert_close(pred.log_prob(y_head), want.log_prob(y[:7]), rtol=0, atol=0)
+    region = model.region(x_head, alpha=0.2)
+    assert region.contains(y_head).tolist() == region.contains(y[:7]).tolist()
+    model.calibrate(x_frame, y_frame)
+    assert model.n_conformal_ == len(x)
+
+
+def test_frames_with_text_columns_are_named_in_the_error() -> None:
+    x, y = _frame_data()
+    frame = pd.DataFrame(x, columns=["a", "b", "c"]).assign(site="north")
+    with pytest.raises(TypeError, match="X must hold numbers.*DataFrame"):
+        JointRegressor("gaussian", **SMALL).fit(frame, y)
+
+
+def test_a_read_only_array_is_copied_without_a_warning(recwarn: pytest.WarningsRecorder) -> None:
+    x, y = _frame_data()
+    x.flags.writeable = False
+    y.flags.writeable = False
+    model = JointRegressor("gaussian", **SMALL).fit(x, y)
+    assert model.predict(x[:4]).log_prob(y[:4]).shape == (4,)
+    assert not [w for w in recwarn.list if "not writable" in str(w.message)]
+
+
+def test_one_dimensional_targets_are_a_single_target() -> None:
+    x, y = _frame_data()
+    column = JointRegressor("gaussian", seed=2, **SMALL).fit(x, y[:, :1])
+    flat = JointRegressor("gaussian", seed=2, **SMALL).fit(x, y[:, 0])
+    series = JointRegressor("gaussian", seed=2, **SMALL).fit(x, pd.Series(y[:, 0]))
+    assert flat.n_targets_ == series.n_targets_ == 1
+    want = column.predict(x[:5]).log_prob(y[:5, :1])
+    torch.testing.assert_close(flat.predict(x[:5]).log_prob(y[:5, :1]), want, rtol=0, atol=0)
+    torch.testing.assert_close(series.predict(x[:5]).log_prob(y[:5, :1]), want, rtol=0, atol=0)
+    flat.calibrate(x, y[:, 0])  # the same convention for calibration rows
+    assert flat.n_conformal_ == len(x)
+
+
+def test_shape_errors_say_what_was_passed() -> None:
+    x, y = _frame_data()
+    with pytest.raises(ValueError, match=r"got X \(160,\) and Y \(160, 2\)"):
+        JointRegressor("gaussian", **SMALL).fit(x[:, 0], y)
+    with pytest.raises(ValueError, match=r"got X \(100, 3\) and Y \(160, 2\)"):
+        JointRegressor("gaussian", **SMALL).fit(x[:100], y)
+    model = JointRegressor("gaussian", **SMALL)
+    with pytest.raises(RuntimeError, match="fit"):
+        model.predict(x[:3])
+    with pytest.raises(RuntimeError, match="fit"):
+        model.region(x[:3])
+    model.fit(x, y)
+    with pytest.raises(ValueError, match=r"X must be \[n, 3\], got \(5, 2\)"):
+        model.predict(x[:5, :2])
+    with pytest.raises(ValueError, match=r"got \(3,\); for a single row pass X\[None\]"):
+        model.predict(x[0])
+    assert model.predict(x[0][None]).batch_size == 1
+
+
+def test_predict_refuses_rows_with_missing_features() -> None:
+    x, y = _frame_data()
+    model = JointRegressor("gaussian", **SMALL).fit(x, y)
+    bad = x[:6].copy()
+    bad[1, 0], bad[4, 2] = np.nan, np.inf
+    with pytest.raises(ValueError, match="2 of 6 rows hold NaN or inf"):
+        model.predict(bad)
+    with pytest.raises(ValueError, match="2 of 6 rows hold NaN or inf"):
+        model.region(bad)
+    cross = JointRegressor("gaussian", cv=2, **SMALL).fit(x, y)
+    with pytest.raises(ValueError, match="2 of 6 rows hold NaN or inf"):
+        cross.region(bad)
+
+
+def test_targets_of_interest_are_validated() -> None:
+    x, y = _frame_data()
+    model = JointRegressor("gaussian", **SMALL).fit(x, y)
+    with pytest.raises(ValueError, match=r"target index 5 is outside \[0, 2\)"):
+        model.region(x[:3], interest=[5])
+    with pytest.raises(ValueError, match="distinct"):
+        model.region(x[:3], interest=[0, 0])
+    one = model.region(x[:3], interest=[1])
+    assert one.contains(y[:3, [1]]).shape == (3,)
+
+
+def test_repr_lists_the_arguments_that_are_not_defaults() -> None:
+    assert repr(JointRegressor(device="cpu")) == "JointRegressor(device='cpu')"
+    model = JointRegressor("flow", cv=3, hidden=[64, 64], location="mse", device="cpu")
+    assert repr(model) == (
+        "JointRegressor(method='flow', hidden=(64, 64), cv=3, location='mse', device='cpu')"
+    )
+    assert "hidden" not in repr(JointRegressor(hidden=[128, 128], device="cpu"))
+
+
+def test_a_target_seen_in_fewer_than_two_training_rows_is_refused() -> None:
+    # Such a target used to be standardised with mean 0 and spread 1e-6: a point mass at 0
+    # in data units, wherever the data are (validation log score -5e12 in one example).
+    x, y = _frame_data(120)
+    y = y.astype(np.float64)
+    y[:, 1] = np.nan
+    y[:3, 1] = 5.0  # three observed values in the whole set
+    model = JointRegressor("gaussian", seed=0, **SMALL)
+    gen = torch.Generator().manual_seed(0)
+    perm = torch.randperm(120, generator=gen)  # the split of fit(): held-out rows come first
+    held_out = perm[: 120 - 90].tolist()  # 12 + 8 + 12 rows are held out, 88 or more train
+    order = held_out[:2] + [i for i in range(120) if i not in held_out[:2]]
+    y_sparse = np.full_like(y, np.nan)
+    y_sparse[:, 0] = y[:, 0]
+    y_sparse[held_out[:2], 1] = 5.0  # only in held-out rows
+    y_sparse[order[2], 1] = 5.0  # and in a single training row
+    with pytest.raises(ValueError, match=r"at least 2 observed values.*\{1: 1\}"):
+        model.fit(x, y_sparse)
+    y_sparse[order[3], 1] = 5.5  # a second training value: enough to standardise
+    fitted = JointRegressor("gaussian", seed=0, **SMALL).fit(x, y_sparse)
+    assert float(fitted._y_stats[1][1]) > 0.1
+
+
+def test_refitting_forgets_the_dependence_model_of_the_previous_fit() -> None:
+    x, y = _frame_data(200)
+    tiny = dict(max_epochs=2, patience=2, hidden=(8,), n_members=1, device="cpu")
+    with_holes = y.copy()
+    with_holes[::4, 0] = np.nan
+    model = JointRegressor("auto", seed=0, **tiny).fit(x, y)
+    assert "sklar" in model.members_ and model.dependence_ is not None
+    model.fit(x, with_holes)  # missing targets: the Sklar head is not fitted
+    fresh = JointRegressor("auto", seed=0, **tiny).fit(x, with_holes)
+    assert "sklar" not in model.members_
+    assert model.dependence_ is None and model.dependence_scores_ == {}
+    assert model.marginal_engine_ is None and model.marginal_scores_ == {}
+    assert model.n_parameters_ == fresh.n_parameters_
+
+
+@pytest.mark.parametrize("cv", [None, 2])
+def test_kept_calibration_rows_do_not_alias_the_callers_arrays(cv: int | None) -> None:
+    # The conformal scores are computed at the first region() call, from the kept rows.
+    x, y = _frame_data(200)
+    x_cal, y_cal = _frame_data(120)
+
+    def threshold(model: JointRegressor) -> torch.Tensor:
+        torch.manual_seed(0)  # the averaged fold predictive is scored with reference draws
+        return model.region(x[:6], alpha=0.2).threshold
+
+    reference = JointRegressor("gaussian", cv=cv, seed=0, **SMALL).fit(x, y)
+    model = JointRegressor("gaussian", cv=cv, seed=0, **SMALL)
+    x_fit, x_given = x.copy(), x_cal.copy()
+    model.fit(x_fit, y)
+    x_fit *= 0.0  # cv keeps the training rows for its out-of-fold scores
+    torch.testing.assert_close(threshold(model), threshold(reference), rtol=0, atol=0)
+    reference.calibrate(x_cal, y_cal)
+    model.calibrate(x_given, y_cal)
+    x_given *= 0.0
+    torch.testing.assert_close(threshold(model), threshold(reference), rtol=0, atol=0)
+
+
+ACCELERATOR = pytest.mark.skipif(
+    not (torch.cuda.is_available() or torch.backends.mps.is_available()),
+    reason="needs an accelerator",
+)
+
+
+def _accelerator() -> torch.device:
+    return torch.device("cuda" if torch.cuda.is_available() else "mps")
+
+
+@ACCELERATOR
+def test_fit_takes_tensors_on_the_accelerator_and_predicts_from_cpu_inputs() -> None:
+    device = _accelerator()
+    x, y = _frame_data(200)
+    xd, yd = torch.as_tensor(x, device=device), torch.as_tensor(y, device=device)
+    small = {**SMALL, "device": device}
+    model = JointRegressor("gaussian", seed=0, **small).fit(xd, yd)
+    assert model._x_stats[0].device.type == "cpu"
+    for features in (x[:5], xd[:5]):  # CPU arrays and device tensors alike
+        pred = model.predict(features)
+        assert bool(torch.isfinite(pred.log_prob(y[:5])).all())
+    model.calibrate(xd, yd)
+    assert model.region(x[:5], alpha=0.2).contains(y[:5]).shape == (5,)
+
+
+@ACCELERATOR
+def test_the_stack_fits_and_samples_on_the_accelerator() -> None:
+    # MPS has no float64: the stacking weights and the member picks are computed on the CPU.
+    device = _accelerator()
+    x, y = _frame_data(200)
+    tiny = dict(max_epochs=2, patience=2, hidden=(8,), n_members=1, device=device)
+    model = JointRegressor("auto", seed=0, **tiny).fit(x, y)
+    assert len(model.members_) > 1
+    pred = model.predict(x[:4])
+    assert pred.sample(6).shape == (4, 6, 2)
+    cross = JointRegressor("auto", cv=2, seed=0, **tiny).fit(x, y)
+    assert cross.predict(x[:4]).sample(3).shape == (4, 3, 2)
+    members = [
+        GaussianJoint(torch.zeros(3, 2, device=device), torch.eye(2, device=device)),
+        GaussianJoint(torch.ones(3, 2, device=device), torch.eye(2, device=device)),
+    ]
+    mix = MixtureJoint(members, torch.tensor([0.3, 0.7], device=device))
+    assert mix.sample(5).shape == (3, 5, 2)

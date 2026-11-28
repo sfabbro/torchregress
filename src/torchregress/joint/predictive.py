@@ -33,7 +33,14 @@ from torch import Tensor
 
 from ..losses.known_covariance import KnownCovarianceGaussianNLL, _total_covariance
 from ..metrics.distribution import sample_hpd_level
-from ._common import MOMENT_SEED, masked_gaussian_quadratic, safe_cholesky, seeded, target_index
+from ._common import (
+    MOMENT_SEED,
+    masked_gaussian_quadratic,
+    safe_cholesky,
+    seeded,
+    target_index,
+    to_tensor,
+)
 
 
 def _same_token(kept: Optional[tuple[Any, ...]], token: tuple[Any, ...]) -> bool:
@@ -66,6 +73,7 @@ __all__ = [
 
 _LOG_2PI = math.log(2.0 * math.pi)
 _HPD_CHUNK_ELEMS = 1 << 22  # elements of the [n, chunk, S] reference block in hpd_level
+_MIN_MEMBER_DRAWS = 32  # fewest draws asked of a member for a moment of a mixture
 
 
 def _reference_tensor(obj: Any, depth: int = 0) -> Optional[Tensor]:
@@ -318,9 +326,9 @@ class JointPredictive(ABC):
 
     # -------------------------------------------------------------- helpers
     def as_input(self, y: Any) -> Tensor:
-        """``y`` (tensor or array, any floating dtype and device) as a tensor in this
-        predictive's dtype and on its device."""
-        t = torch.as_tensor(y)
+        """``y`` (tensor, array, nested list, or a pandas or polars frame; any dtype and
+        device) as a tensor in this predictive's dtype and on its device."""
+        t = to_tensor(y)
         try:
             dtype, device = self.dtype, self.device
         except NotImplementedError:
@@ -337,7 +345,7 @@ class JointPredictive(ABC):
         return y
 
     def _check_mask(self, y: Tensor, mask: Any) -> Tensor:
-        mask = torch.as_tensor(mask)
+        mask = to_tensor(mask)
         if mask.dtype != torch.bool or mask.shape != (self.batch_size, self.event_dim):
             raise ValueError(
                 f"mask must be boolean [n, d] = [{self.batch_size}, {self.event_dim}], "
@@ -1038,6 +1046,12 @@ class MixtureJoint(JointPredictive):
         members: Predictives with the same ``n`` and ``d``.
         weights: Non-negative ``[K]`` (or per-row ``[n, K]``) summing to one;
             uniform when omitted.
+
+    ``mean``, ``center`` and ``covariance`` combine the members' moments (law of
+    total covariance).  A member without closed forms is asked for about
+    ``n_samples`` times its weight draws, not ``n_samples``: the estimate is at
+    least as precise as one from ``n_samples`` draws of the mixture and costs about
+    as many draws (see ``_member_draws``).
     """
 
     def __init__(
@@ -1087,9 +1101,12 @@ class MixtureJoint(JointPredictive):
         # Monte Carlo conformity scores rely on).  Member k is then asked only for as
         # many draws as the row that needs it most, not for S draws.
         n, d = self.batch_size, self.event_dim
+        # On the CPU in float64 (MPS has none), then to the device of the weights.
         pick = torch.multinomial(
-            self.weights.double().expand(n, len(self.members)), n_samples, replacement=True
-        )  # [n, S]
+            self.weights.detach().cpu().double().expand(n, len(self.members)),
+            n_samples,
+            replacement=True,
+        ).to(self.weights.device)  # [n, S]
         onehot = torch.nn.functional.one_hot(pick, len(self.members))  # [n, S, K]
         counts = onehot.sum(1)  # [n, K]
         # Position of each draw among the draws of the same row and member.
@@ -1120,20 +1137,40 @@ class MixtureJoint(JointPredictive):
             log_w = log_w.unsqueeze(1)
         return torch.logsumexp(parts + log_w, dim=-1)
 
+    def _member_draws(self, n_samples: int) -> list[int]:
+        """Draws asked of each member for a moment of the mixture from ``n_samples`` draws.
+
+        Proportional to the member's weight (its largest over the rows), at least
+        ``_MIN_MEMBER_DRAWS`` and at most ``n_samples``.  With :math:`n_k \\ge S w_k`
+        draws for member :math:`k`, the stratified mean :math:`\\sum_k w_k \\bar Y_k`
+        has variance :math:`\\sum_k w_k^2 \\Sigma_k / n_k \\le \\sum_k w_k \\Sigma_k / S`,
+        which is at most the variance of the mean of :math:`S` draws from the mixture
+        (that one also carries the spread of the member means).  Members with closed
+        forms ignore the number.  Asking every member for all ``S`` draws would cost
+        ``K`` times the draws of one sample of the mixture.
+        """
+        top = self.weights.detach().reshape(-1, len(self.members)).amax(0).tolist()
+        return [min(n_samples, max(_MIN_MEMBER_DRAWS, math.ceil(n_samples * w))) for w in top]
+
     def mean(self, n_samples: int = 512) -> Tensor:
-        means = torch.stack([m.mean(n_samples) for m in self.members], dim=1)  # [n, K, d]
+        draws = self._member_draws(n_samples)
+        means = torch.stack([m.mean(k) for m, k in zip(self.members, draws)], dim=1)  # [n, K, d]
         return (self._row_weights(means).unsqueeze(-1) * means).sum(1)
 
     def center(self, n_samples: int = 512) -> Tensor:
-        centers = torch.stack([m.center(n_samples) for m in self.members], dim=1)  # [n, K, d]
+        draws = self._member_draws(n_samples)
+        centers = torch.stack(
+            [m.center(k) for m, k in zip(self.members, draws)], dim=1
+        )  # [n, K, d]
         return (self._row_weights(centers).unsqueeze(-1) * centers).sum(1)
 
     def covariance(self, n_samples: int = 512) -> Tensor:
         # Law of total covariance: mean of the members' covariances plus the
         # covariance of their means.
         # Covariances first: a member without closed forms then draws once for both.
-        covs = torch.stack([m.covariance(n_samples) for m in self.members], dim=1)
-        means = torch.stack([m.mean(n_samples) for m in self.members], dim=1)  # [n, K, d]
+        draws = self._member_draws(n_samples)
+        covs = torch.stack([m.covariance(k) for m, k in zip(self.members, draws)], dim=1)
+        means = torch.stack([m.mean(k) for m, k in zip(self.members, draws)], dim=1)  # [n, K, d]
         w = self._row_weights(means)
         centre = (w.unsqueeze(-1) * means).sum(1, keepdim=True)
         spread = (means - centre).unsqueeze(-1) * (means - centre).unsqueeze(-2)

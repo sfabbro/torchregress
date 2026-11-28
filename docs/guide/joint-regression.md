@@ -28,7 +28,10 @@ The library has three layers.
    inside.
 
 `JointRegressor` is the shortcut: give it arrays, and it trains heads, combines
-them, recalibrates, and calibrates regions for you.
+them, recalibrates, and calibrates regions for you. "Arrays" means tensors, NumPy
+arrays, nested lists, or pandas or polars frames with numeric columns, here and
+wherever a predictive or a region takes targets; a one-dimensional `Y` is a
+single target, and `NaN` in `Y` marks a missing target.
 
 ```mermaid
 flowchart LR

@@ -52,6 +52,7 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch.distributions import Distribution, constraints
 
+from ..utils.distributions import normal_icdf, normal_log_cdf
 from .families import _student_t_log_cdf_vec
 
 __all__ = ["StudentTMixture"]
@@ -170,12 +171,12 @@ def _t_log_cdf(z: Tensor, df: Tensor) -> Tensor:
     pos_inf, neg_inf = zw == math.inf, zw == -math.inf
     z_safe = torch.where(pos_inf | neg_inf, torch.zeros_like(zw), zw)
     if bool(inf_df.all()):
-        out = torch.special.log_ndtr(z_safe)
+        out = normal_log_cdf(z_safe)
     else:
         nu_s = torch.where(inf_df, torch.ones_like(nu), nu)
         out = _student_t_log_cdf_vec(z_safe, nu_s)
         if bool(inf_df.any()):
-            out = torch.where(inf_df, torch.special.log_ndtr(z_safe), out)
+            out = torch.where(inf_df, normal_log_cdf(z_safe), out)
     out = torch.where(pos_inf, torch.zeros_like(out), out)
     out = torch.where(neg_inf, torch.full_like(out, -math.inf), out)
     return out
@@ -1002,7 +1003,7 @@ def _gaussian_mixture_log_tail_and_log_pdf(
     Student-t normaliser and incomplete-beta evaluation.
     """
     z = (x - loc) / scale
-    log_tail = torch.logsumexp(logw + torch.special.log_ndtr(torch.where(upper, -z, z)), dim=-1)
+    log_tail = torch.logsumexp(logw + normal_log_cdf(torch.where(upper, -z, z)), dim=-1)
     log_pdf = torch.logsumexp(logw - 0.5 * z.square() - torch.log(scale) - 0.5 * _LOG_2PI, dim=-1)
     return log_tail, log_pdf
 
@@ -1034,7 +1035,7 @@ def _mixture_tail_quantile(
     :class:`~torchregress.joint.MixtureMarginals`.
     """
     q = torch.where(upper, 1.0 - tail, tail).unsqueeze(-1)
-    zq = torch.special.ndtri(q)
+    zq = normal_icdf(q)
     # A Gaussian mixture (every df infinite, no point mass) needs no Student-t
     # machinery: its component quantiles are closed form and bracket the root, and
     # log F and log f are a logsumexp of log_ndtr and of Gaussian log densities.
@@ -1042,7 +1043,7 @@ def _mixture_tail_quantile(
     if gaussian:
         # Level q on the lower side is ndtri(q); on the upper side, where q rounds
         # to 1, it is -ndtri(tail), exact relative to the tail mass.
-        zq = torch.where(upper.unsqueeze(-1), -torch.special.ndtri(tail.unsqueeze(-1)), zq)
+        zq = torch.where(upper.unsqueeze(-1), -normal_icdf(tail.unsqueeze(-1)), zq)
         component_quantiles = loc + zq * scale
         lo, hi = component_quantiles.amin(-1), component_quantiles.amax(-1)
     else:

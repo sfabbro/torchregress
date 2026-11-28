@@ -9,8 +9,9 @@ from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Literal, Optional, Union
+from typing import Any, Literal, Optional, Union
 
+import numpy as np
 import torch
 from torch import Tensor, nn
 
@@ -241,3 +242,23 @@ def fixed_moment_seed(seed: int) -> Generator[None]:
         yield
     finally:
         MOMENT_SEED.reset(token)
+
+
+def to_tensor(data: Any) -> Tensor:
+    """``data`` as a tensor: a tensor (returned as it is) or anything NumPy reads.
+
+    NumPy arrays, nested lists and numbers go through :func:`torch.as_tensor`.  Any
+    other object that converts to an array (a pandas or polars frame or series, an
+    xarray array) is converted by NumPy first; torch alone rejects a frame and reads
+    a series element by element.  A read-only array is copied, so the tensor never
+    aliases memory torch may not write to.
+    """
+    if isinstance(data, Tensor):
+        return data
+    if not isinstance(data, (np.ndarray, list, tuple, int, float, bool)) and hasattr(
+        data, "__array__"
+    ):
+        data = np.asarray(data)
+    if isinstance(data, np.ndarray) and not data.flags.writeable:
+        data = data.copy()
+    return torch.as_tensor(data)

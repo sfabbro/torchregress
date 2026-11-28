@@ -53,7 +53,7 @@ import torch
 from scipy.stats import chi2, chisquare, kstest
 from torch import Tensor
 
-from ._common import masked_gaussian_quadratic
+from ._common import masked_gaussian_quadratic, to_tensor
 
 __all__ = [
     "CoverageByMask",
@@ -81,7 +81,7 @@ _PAIR_BUDGET = 1 << 22  # elements per chunk of pairwise-distance tensors
 
 def _tensor(value: Any) -> Tensor:
     """``value`` as a tensor (the diagnostics accept NumPy arrays and lists as well)."""
-    return value if isinstance(value, Tensor) else torch.as_tensor(value)
+    return to_tensor(value)
 
 
 def _check_samples(samples: Tensor, y: Tensor) -> None:

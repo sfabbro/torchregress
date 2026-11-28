@@ -19,6 +19,27 @@ def normal_cdf(z: Tensor) -> Tensor:
     return 0.5 * torch.erfc(-z * _INV_SQRT2)
 
 
+def normal_icdf(u: Tensor) -> Tensor:
+    """Standard normal quantile ``Phi^{-1}(u)`` (:func:`torch.special.ndtri`).
+
+    MPS does not implement the operator; a tensor on that device is evaluated on the CPU
+    and moved back (gradients pass through the moves).
+    """
+    if u.device.type == "mps":
+        return torch.special.ndtri(u.cpu()).to(u.device)
+    return torch.special.ndtri(u)
+
+
+def normal_log_cdf(z: Tensor) -> Tensor:
+    """``log Phi(z)`` (:func:`torch.special.log_ndtr`), on the CPU for MPS tensors.
+
+    MPS does not implement the operator; gradients pass through the moves.
+    """
+    if z.device.type == "mps":
+        return torch.special.log_ndtr(z.cpu()).to(z.device)
+    return torch.special.log_ndtr(z)
+
+
 def inverse_softplus(x: Tensor) -> Tensor:
     """Inverse of ``softplus`` for ``x > 0``: ``log(expm1(x)) = x + log(-expm1(-x))``.
 

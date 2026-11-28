@@ -46,7 +46,7 @@ from scipy.stats import chi2
 from torch import Tensor
 
 from ..utils.distributions import normal_cdf
-from ._common import fixed_moment_seed, seeded, target_index
+from ._common import fixed_moment_seed, seeded, target_index, to_tensor
 from .predictive import AffineJoint, GaussianJoint, JointPredictive, SampleJoint
 
 __all__ = [
@@ -77,7 +77,7 @@ def _check_pair(predictive: JointPredictive, y: Any) -> Tensor:
 def _check_fit_mask(y: Tensor, mask: Optional[Tensor]) -> Tensor:
     if mask is None:
         return torch.ones(y.shape, dtype=torch.bool, device=y.device)
-    mask = torch.as_tensor(mask)
+    mask = to_tensor(mask)
     if mask.dtype != torch.bool or mask.shape != y.shape:
         raise ValueError(f"mask must be boolean {tuple(y.shape)}, got {mask.dtype} {mask.shape}")
     if not bool(mask.any(dim=0).all()):

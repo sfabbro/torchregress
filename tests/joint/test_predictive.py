@@ -544,6 +544,89 @@ class TestMonteCarloMoments:
         assert joint.calls == calls
 
 
+class _SizedJoint(_CountingJoint):
+    """Records how many draws each ``sample`` call asked for."""
+
+    def __init__(self, base: GaussianJoint) -> None:
+        super().__init__(base)
+        self.sizes: list[int] = []
+
+    def sample(self, n_samples: int) -> torch.Tensor:
+        self.sizes.append(n_samples)
+        return super().sample(n_samples)
+
+
+def _three_gaussians() -> list[GaussianJoint]:
+    mean, tril = _gaussian(n=5, d=3)
+    return [
+        GaussianJoint(mean, tril),
+        GaussianJoint(mean + 2.0, 0.5 * tril),
+        GaussianJoint(mean - 3.0, 1.5 * tril),
+    ]
+
+
+class TestMixtureMoments:
+    """A mixture asks a sampled member for its share of the draws, not for all of them."""
+
+    def test_sampled_members_draw_in_proportion_to_their_weight(self) -> None:
+        a, b, c = _three_gaussians()
+        first, last = _SizedJoint(a), _SizedJoint(c)
+        mix = MixtureJoint([first, b, last], torch.tensor([0.6, 0.3, 0.1], dtype=F64))
+        torch.manual_seed(0)
+        mix.covariance(1000)
+        mix.mean(1000)
+        assert first.sizes == [600] and last.sizes == [100]  # once each, for both moments
+        # a floor for members with a small weight, and never more than was asked for
+        small = _SizedJoint(c)
+        MixtureJoint([a, small], torch.tensor([0.99, 0.01], dtype=F64)).mean(1000)
+        assert small.sizes == [32]
+        small = _SizedJoint(c)
+        MixtureJoint([a, small], torch.tensor([0.99, 0.01], dtype=F64)).mean(16)
+        assert small.sizes == [16]
+        # per-row weights: the largest weight of the member over the rows
+        rows = torch.tensor([[0.9, 0.1]] * 4 + [[0.5, 0.5]], dtype=F64)
+        small = _SizedJoint(c)
+        MixtureJoint([a, small], rows).mean(1000)
+        assert small.sizes == [500]
+
+    def test_closed_form_members_are_exact_whatever_the_sample_size(self) -> None:
+        a, b, c = _three_gaussians()
+        mix = MixtureJoint([a, b, c], torch.tensor([0.6, 0.3, 0.1], dtype=F64))
+        torch.testing.assert_close(mix.mean(8), mix.mean(4096), rtol=0, atol=0)
+        torch.testing.assert_close(mix.covariance(8), mix.covariance(4096), rtol=0, atol=0)
+
+    def test_the_estimate_beats_the_same_number_of_draws_from_the_mixture(self) -> None:
+        # Truth from the closed forms; the sampled mixture hides them behind draws-only
+        # members.  Root mean square errors over 40 repetitions of S = 256.  The mean of
+        # 256 draws of the mixture also carries the spread of the member means.
+        a, b, c = _three_gaussians()
+        weights = torch.tensor([0.6, 0.3, 0.1], dtype=F64)
+        exact = MixtureJoint([a, b, c], weights)
+        true_mean, true_cov = exact.mean(), exact.covariance()
+        sd = true_cov.diagonal(dim1=-2, dim2=-1).sqrt()
+        err_strat, err_plain, cov_sum = [], [], torch.zeros_like(true_cov)
+        reps = 40
+        for rep in range(reps):
+            torch.manual_seed(rep)
+            mix = MixtureJoint([_CountingJoint(a), _CountingJoint(b), _CountingJoint(c)], weights)
+            cov_sum += mix.covariance(256)
+            err_strat.append(((mix.mean(256) - true_mean) / sd).square().mean())
+            plain = exact.sample(256).mean(1)
+            err_plain.append(((plain - true_mean) / sd).square().mean())
+        rmse_strat = float(torch.stack(err_strat).mean().sqrt())
+        rmse_plain = float(torch.stack(err_plain).mean().sqrt())
+        assert rmse_strat < 0.8 * rmse_plain, (rmse_strat, rmse_plain)
+        assert rmse_plain < 1.3 / 16  # 1 / sqrt(256) in standard deviations: the yardstick
+        # The covariance is right on average.  Variances: mean relative error within 3%
+        # (measured +0.0% to +0.9% over three sets of seeds; the noisy member means
+        # inflate it by about 0.7% here).  Every entry: within 10% of the row's largest.
+        average = cov_sum / reps
+        variances = average.diagonal(dim1=-2, dim2=-1) / true_cov.diagonal(dim1=-2, dim2=-1)
+        assert abs(float(variances.mean()) - 1.0) < 0.03, float(variances.mean())
+        scale = true_cov.abs().amax((-2, -1), keepdim=True)
+        assert float(((average - true_cov) / scale).abs().max()) < 0.1
+
+
 class TestSeededBlock:
     def test_restores_the_cpu_generator(self) -> None:
         from torchregress.joint._common import seeded
