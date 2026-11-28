@@ -37,8 +37,8 @@ import copy
 import math
 import warnings
 from collections import Counter
-from collections.abc import Sequence
-from typing import Any, Literal, Optional, Union
+from collections.abc import Iterable, Sequence
+from typing import Any, Literal, Optional, Union, cast
 
 import torch
 from torch import Tensor, nn
@@ -92,8 +92,42 @@ _ENERGY_VAL_DRAWS = 16  # fixed draws per validation row for the energy head
 #: from the oracle against 10.6 without it; it fits in 155 s instead of 51 s.  Beyond 32
 #: targets it has not been measured.
 _AUTO_FLOW_MAX_TARGETS = 32
+#: Folds of the cross-fitted point model of ``location="mse"`` (fewer on tiny data).
+_LOCATION_FOLDS = 5
+_LOCATION_CHUNK = 65_536  # rows per forward pass of the point networks
 
 Method = Literal["auto", "gaussian", "mixture", "flow", "sklar", "energy"]
+
+
+def _location_mean(nets: Iterable[nn.Module], xs: Tensor) -> Tensor:
+    """Average of the point networks of ``location="mse"`` at ``xs``, in chunks of rows."""
+    members = list(nets)
+    with torch.no_grad():
+        parts = [
+            torch.stack([net(part) for net in members]).mean(0)
+            for part in xs.split(_LOCATION_CHUNK)
+        ]
+    return torch.cat(parts)
+
+
+def _auto_batch_size(n_train: int) -> int:
+    """Minibatch size of ``batch_size="auto"`` for ``n_train`` training rows.
+
+    256, halved while an epoch would have fewer than 8 steps (down to 16) and doubled
+    while it would have more than 400 (up to 4096).  Early stopping counts epochs: with
+    300 rows and batches of 256 an epoch is two steps and a patience of 30 epochs is
+    60 steps, too few to fit a head.  On two real sets with 145 and 308 training rows
+    (three seeds each) batches of 16 and 32 improved the stacked log score by 0.26 and
+    0.68 nats over batches of 256.
+    """
+    batch = 256
+    while batch > 16 and n_train < 8 * batch:
+        batch //= 2
+    while batch < 4096 and n_train > 400 * batch:
+        batch *= 2
+    return batch
+
+
 ArrayLike = Any  # torch.Tensor or anything torch.as_tensor accepts (numpy arrays)
 
 
@@ -719,10 +753,11 @@ class JointRegressor:
         rank: Rank of the Gaussian head's low-rank covariance; ``None`` uses a full
             Cholesky factor up to 32 targets and rank 8 beyond.
         max_epochs, patience, lr, weight_decay: Training budget per head.
-        batch_size: Minibatch size, or ``"auto"`` (default): 256, doubled while an
-            epoch would take more than 400 steps, up to 4096 (256 up to about
-            100,000 training rows, 4096 from about 800,000).  The size used is
-            ``batch_size_``.
+        batch_size: Minibatch size, or ``"auto"`` (default): 256, halved while an
+            epoch would have fewer than 8 steps, down to 16 (below about 2,000 training
+            rows), and doubled while it would take more than 400 steps, up to 4096
+            (256 up to about 100,000 training rows, 4096 from about 800,000).  The
+            size used is ``batch_size_``.
         val_fraction, recal_fraction, conformal_fraction: Held-out shares for early
             stopping and stacking, for recalibration, and for conformal calibration.
         max_holdout: Cap on the rows of each held-out split.  Beyond it more
@@ -732,6 +767,10 @@ class JointRegressor:
         cv: ``None`` (default): one split, as described below.  An integer
             :math:`K \ge 2`: cross-fitting for small data sets, see
             **Cross-fitting** below.  ``K`` fits instead of one.
+        location: ``None`` (default): the heads model the targets directly.  ``"mse"``:
+            a point model is fitted first by squared error and the heads model its
+            residuals, see **Location model** below.  Five more network fits of the
+            same ``hidden`` size (per fold model with ``cv``).
         recalibrate: Fit the per-target scale recalibration.
         clip_features: Clamp every feature to the range seen in the training rows
             before it enters the networks (default).  A network has no information
@@ -773,6 +812,30 @@ class JointRegressor:
     mixture heads.  The flow head needs complete rows, so ``"auto"`` leaves it out when
     targets are missing; it also leaves it out beyond 32 targets, where its cost has not
     been measured (``method="flow"`` has no such limit).
+
+    **Location model** (``location="mse"``).  A head trained by likelihood fits scale
+    and shape together with the centre, and with early stopping its centre can end
+    up less accurate than a squared-error network's (on a 16-target real set the
+    Gaussian head's predictive mean had a root mean square error of 0.63 standard
+    deviations against 0.37).  With ``location="mse"`` the predictive is
+
+    .. math:: Y = m(x) + s \odot R, \qquad R \mid x \sim \hat p_R(\cdot \mid x),
+
+    where :math:`m` is the average of five networks trained by squared error on
+    the training rows, each without one fifth of them (a ``val_fraction`` of the
+    rest stops its training early; fewer networks below 40 training rows, with the
+    same ``batch_size_`` as the heads), :math:`s` the per-target spread
+    of their out-of-fold residuals, and :math:`\hat p_R` whatever ``method`` fits,
+    to the residuals.  A training row's residual uses the network that did not see
+    it (a density fitted to in-sample residuals is overconfident on new rows); the
+    validation, recalibration and conformal rows and every row at ``predict`` use
+    the average of the five, none of which saw them, so the stacking weights, the
+    recalibration and the coverage statement of :meth:`region` hold as without it.
+    It is not always a gain: it helped where the heads' centres were poor (that
+    16-target set: energy score 413 to 241 for the Gaussian head) and hurt on a set
+    with 308 training rows, where networks trained on four fifths of the rows are
+    worse than the heads' own centres (default log score 1.73 to 2.57).  Compare
+    ``validation_log_score_`` with and without it.
 
     **The energy head** (``method="energy"``, engression; Shen and Meinshausen 2024)
     is a network :math:`g(x, \varepsilon)`, :math:`\varepsilon \sim \mathcal N(0, I_k)`,
@@ -886,6 +949,7 @@ class JointRegressor:
         conformal_fraction: float = 0.1,
         max_holdout: int = 20_000,
         cv: Optional[int] = None,
+        location: Optional[str] = None,
         recalibrate: bool = True,
         clip_features: bool = True,
         score: Union[str, ConformalScore] = "auto",
@@ -937,6 +1001,9 @@ class JointRegressor:
             raise ValueError(f"energy_draws must be at least 2, got {energy_draws}")
         self.noise_dim = None if noise_dim is None else int(noise_dim)
         self.energy_draws = int(energy_draws)
+        if location not in (None, "mse"):
+            raise ValueError(f"location must be None or 'mse', got {location!r}")
+        self.location = location
         if n_members is not None and int(n_members) < 1:
             raise ValueError(f"n_members must be at least 1, got {n_members}")
         self.n_members = None if n_members is None else int(n_members)
@@ -968,6 +1035,10 @@ class JointRegressor:
         self._x_stats: Optional[tuple[Tensor, Tensor]] = None
         self._x_range: Optional[tuple[Tensor, Tensor]] = None
         self._y_stats: Optional[tuple[Tensor, Tensor]] = None
+        # Location model (location="mse"): the fold networks and the per-target scale of
+        # their out-of-fold residuals, in units of the standardised targets.
+        self._location: Optional[nn.ModuleList] = None
+        self._location_div: Optional[Tensor] = None
         self._conformal_rows: Optional[tuple[Tensor, Tensor, Tensor]] = None
         self._conformal_cache: dict[Any, tuple[JointConformal, Optional[JointConformal]]] = {}
         # Cross-fitting (cv): fold of each row, the fold models, the training rows
@@ -1037,10 +1108,7 @@ class JointRegressor:
         self.n_train_, self.n_val_ = int(train.numel()), int(val.numel())
         self.n_recal_, self.n_conformal_ = int(rec.numel()), int(conf.numel())
         if isinstance(self.batch_size, str):
-            batch = 256
-            while batch < 4096 and self.n_train_ > 400 * batch:
-                batch *= 2
-            self.batch_size_ = batch
+            self.batch_size_ = _auto_batch_size(self.n_train_)
         else:
             self.batch_size_ = self.batch_size
 
@@ -1054,6 +1122,16 @@ class JointRegressor:
         mask = observed.to(dev)
         mask_arg: Optional[Tensor] = mask if has_missing else None
         train_d, val_d = train.to(dev), val.to(dev)
+
+        self._location, self._location_div = None, None
+        if self.location is not None:
+            # The heads model what a cross-fitted point model leaves: from here on ``ys``
+            # are its residuals in units of their own spread, and ``y_std`` that spread
+            # in data units.
+            ys, residual_scale = self._fit_location(xs, ys, mask, train_d)
+            y_std = y_std * residual_scale.cpu()
+            self._y_stats = (y_mean, y_std)
+            log_y_std = y_std.log().to(dev)
 
         names = self._member_names(d, has_missing)
         log_density: list[Tensor] = []
@@ -1220,6 +1298,7 @@ class JointRegressor:
             recal_fraction=self.recal_fraction,
             conformal_fraction=self.conformal_fraction,
             max_holdout=self.max_holdout,
+            location=self.location,
             recalibrate=False,
             clip_features=self.clip_features,
             score=self.score,
@@ -1267,7 +1346,7 @@ class JointRegressor:
             mu, sd = model._y_stats
             xs = model._standardised(x[rows]).to(dev)
             obs = observed[rows].to(dev)
-            ys = torch.where(obs, (filled[rows].to(dev) - mu.to(dev)) / sd.to(dev), 0.0)
+            ys = model._head_targets(xs, filled[rows].to(dev), obs)
             log_sd = sd.log().to(dev)
             for h, name in enumerate(names):
                 if name == "energy":
@@ -1565,10 +1644,106 @@ class JointRegressor:
             )
 
         total = sum(count(head) for copies in self._heads.values() for head in copies)
-        for part in (self._engine, self._dependence):
+        for part in (self._engine, self._dependence, self._location):
             if part is not None:
                 total += count(part)
         return total
+
+    # ------------------------------------------------------------ location
+    def _fit_location(
+        self, xs: Tensor, ys: Tensor, mask: Tensor, train_d: Tensor
+    ) -> tuple[Tensor, Tensor]:
+        """Fit the point model of ``location="mse"``; return the heads' targets and their scale.
+
+        ``K`` networks are trained by squared error on the training rows, each on the
+        other ``K - 1`` folds (with an inner validation split for early stopping).  A
+        training row is predicted by the network that did not see it; every other row
+        (validation, recalibration, conformal, and any row at ``predict``) by the
+        average of the ``K`` networks, none of which saw it.  In-sample residuals would
+        be too small: a density fitted to them is overconfident on new rows.
+
+        Returns the residuals of the standardised targets ``ys`` divided by the
+        per-target spread of the out-of-fold residuals (zero where a target is
+        missing), and that spread ``[d]``.
+        """
+        dev, d = xs.device, ys.shape[1]
+        n_train = int(train_d.numel())
+        k_folds = max(2, min(_LOCATION_FOLDS, n_train // 8))
+        gen = torch.Generator().manual_seed(self.seed + 7411)
+        order = train_d[torch.randperm(n_train, generator=gen).to(dev)]
+        folds = [order[k::k_folds] for k in range(k_folds)]
+        assert self.batch_size_ is not None
+        nets: list[nn.Module] = []
+        out_of_fold = torch.zeros_like(ys)
+        for k, held in enumerate(folds):
+            rows = torch.cat([f for j, f in enumerate(folds) if j != k])
+            n_val = max(1, int(round(self.val_fraction * rows.numel())))
+            rows_va, rows_tr = rows[:n_val], rows[n_val:]
+            torch.manual_seed(self.seed + 7411 + k)
+            net = mlp(xs.shape[1], self.hidden, d).to(dev)
+
+            def loss(r: Tensor, net: nn.Module = net) -> Tensor:
+                weight = mask[r].to(ys.dtype)
+                return ((net(xs[r]) - ys[r]).square() * weight).sum() / weight.sum().clamp_min(1)
+
+            def batch_loss(idx: Tensor, rows: Tensor = rows_tr, loss: Any = loss) -> Tensor:
+                return cast(Tensor, loss(rows[idx.to(rows.device)]))
+
+            def validation(rows: Tensor = rows_va, loss: Any = loss) -> Tensor:
+                return cast(Tensor, loss(rows))
+
+            train_module(
+                net,
+                batch_loss,
+                int(rows_tr.numel()),
+                validation,
+                max_epochs=self.max_epochs,
+                patience=self.patience,
+                batch_size=self.batch_size_,
+                lr=self.lr,
+                weight_decay=self.weight_decay,
+                generator=gen,
+                optimizer="adamw",
+                clip_norm=10.0,
+                skip_nonfinite=True,
+                name=f"location network {k}",
+            )
+            for param in net.parameters():
+                param.requires_grad_(False)
+            with torch.no_grad():
+                out_of_fold[held] = net(xs[held])
+            nets.append(net)
+        self._location = nn.ModuleList(nets)
+        # Rows outside the training split: the average of the networks.  The training
+        # rows keep their out-of-fold prediction and are not evaluated again.
+        other = torch.ones(xs.shape[0], dtype=torch.bool, device=dev)
+        other[train_d] = False
+        location = out_of_fold
+        location[other] = _location_mean(nets, xs[other])
+        residual = torch.where(mask, ys - location, torch.zeros_like(ys))
+        observed = mask[train_d].to(ys.dtype)
+        spread = (
+            ((residual[train_d].square() * observed).sum(0) / observed.sum(0).clamp_min(1))
+            .sqrt()
+            .clamp_min(1e-6)
+        )
+        self._location_div = spread
+        return residual / spread, spread
+
+    def _location_at(self, xs: Tensor) -> Tensor:
+        """The point model at standardised features ``xs``, in units of the residual spread."""
+        assert self._location is not None and self._location_div is not None
+        mean = _location_mean(self._location, xs)
+        return mean / self._location_div.to(mean)
+
+    def _head_targets(self, xs: Tensor, y: Tensor, observed: Tensor) -> Tensor:
+        """Targets in the space the heads model (zero where missing), from data-unit ``y``."""
+        assert self._y_stats is not None
+        mu, sd = self._y_stats
+        target = (y - mu.to(y)) / sd.to(y)
+        if self._location is not None:
+            target = target - self._location_at(xs)
+        return torch.where(observed, target, torch.zeros_like(target))
 
     def _standardised(self, x: Tensor) -> Tensor:
         """Standardised features, clamped to the training range when ``clip_features``."""
@@ -1659,10 +1834,13 @@ class JointRegressor:
             flat_weights = torch.tensor(flat_w, dtype=torch.float32, device=self.device)
             inner = flat[0] if len(flat) == 1 else MixtureJoint(flat, flat_weights)
         loc, scale = self._y_stats
+        loc, scale = loc.to(self.device), scale.to(self.device)
+        if self._location is not None:
+            loc = loc + scale * self._location_at(xs)  # [n, d]: the point model's prediction
         if isinstance(inner, GaussianJoint):
             # Stay Gaussian in data units: closed-form marginals, conditionals and CDFs.
-            return inner.affine(loc.to(self.device), scale.to(self.device))
-        return AffineJoint(inner, loc.to(self.device), scale.to(self.device))
+            return inner.affine(loc, scale)
+        return AffineJoint(inner, loc, scale)
 
     def predict(self, X: ArrayLike) -> JointPredictive:
         """Joint predictive distributions for the rows of ``X`` (data units, recalibrated)."""

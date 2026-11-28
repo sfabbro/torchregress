@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `JointRegressor(location="mse")` (off by default): a point model first. Five networks are
+  trained by squared error on the training rows, each without one fifth of them; the heads
+  (whatever `method` says) then model the residuals in units of their out-of-fold spread, and
+  `predict` adds the average of the five back. Training rows use the network that did not see
+  them; validation, recalibration and conformal rows use the average, so stacking,
+  recalibration and the coverage of `region` hold as before. It exists because the heads'
+  centres can be less accurate than a squared-error network's (on the 16-target harness set
+  `mt_scm20d` the Gaussian head's mean had a root mean square error of 0.63 standard
+  deviations against 0.37), which is what the default's poor energy score there came from.
+  Measured on a laptop, not yet on CANFAR: on that set, one seed, energy score 413 to 241
+  (Gaussian head), 282 to 243 (flow), 270 to 243 (Sklar), log score 91.9 to 89.3, 87.8 to 88.7
+  and 91.5 to 89.3; on `mt_enb` (308 training rows, three seeds) the default gets worse with
+  it (log score 1.73 to 2.57). Off by default until the suite-wide runs say where it belongs.
 - `MixtureDensityLoss(max_std=...)`: an upper bound on the spread of every component
   (`None`, the default, leaves it unbounded). Diagonal components have every standard
   deviation clamped (a tensor gives one bound per feature); a full-covariance component whose
@@ -379,6 +392,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ScaleRecalibrator(..., about="mean" | "center")` takes its per-target scaling about either.
 ### Changed
 
+- `JointRegressor(batch_size="auto")` (the default) shrinks the batch on small data: 256 is
+  halved while an epoch would have fewer than 8 gradient steps, down to 16 (it already grew
+  above 100,000 rows). Early stopping counts epochs, so with 300 training rows and batches of
+  256 an epoch was two steps and a patience of 30 epochs was 60 steps: the heads stopped
+  before their means were fitted, which showed as predicted centres twice as far off as a
+  squared-error network's and as poor energy scores. On the harness's two small real sets,
+  through the suite's own code, three seeds: `mt_enb` (308 training rows, batch 32) log score
+  2.41 to 1.73 and energy score 1.38 to 0.81, from third or fourth of 26 rows to first in two
+  seeds; `mt_jura` (145 rows, batch 16) 5.85 to 5.59; in `density_parity` -2.81 to -3.15 and
+  1.33 to 1.25. Fits take about twice as long there (31 s against 19 s on `mt_enb`). Fitted
+  models with fewer than about 2,000 training rows change; larger ones do not. These numbers
+  were measured on a laptop while CANFAR was unavailable; the suite-wide re-run is pending.
 - Sampling is faster at many targets. The maps and distributions are the same (flow draws
   and mixture quantiles agree with the previous code to floating-point rounding). Monte
   Carlo moments are now drawn once per predictive instead of at every call, so a seeded

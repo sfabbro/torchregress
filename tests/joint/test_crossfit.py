@@ -104,7 +104,11 @@ def test_cv_none_reproduces_the_recorded_fit(method: str, missing: bool) -> None
     )
     if missing:
         y[::7, 1] = float("nan")
-    model = JointRegressor(method, max_epochs=15, patience=5, hidden=(16,), seed=3).fit(x, y)
+    # batch_size=256 was the automatic choice when the values were recorded (it is 16 now
+    # for these 150 training rows): the test is about cv=None, not about the batch rule.
+    model = JointRegressor(
+        method, max_epochs=15, patience=5, hidden=(16,), batch_size=256, seed=3
+    ).fit(x, y)
     assert model.cv is None and model.folds_ is None
     lp = model.predict(x_test).log_prob(y_test)[:6]
     recorded = torch.tensor(_RECORDED[(method, missing)])
@@ -224,11 +228,14 @@ def test_cross_conformal_region_matches_its_p_value_definition() -> None:
 def test_density_gap_to_the_truth_on_small_data() -> None:
     """Mean test log-score gap to the true density, cv = 5 against one split, paired.
 
-    Gaussian head, 60 epochs, 4 seeds (measured, nats): N = 150 gap 0.280 +- 0.039
-    (cv) against 0.494 +- 0.135 (split), paired difference 0.21 +- 0.15; N = 400
-    0.137 +- 0.008 against 0.183 +- 0.030, paired 0.047 +- 0.036.  The difference
-    is positive on average at both sizes but within about 1.5 standard errors of
-    zero; the full-budget ``JointRegressor()`` comparison is in the docs.
+    Gaussian head, 60 epochs, 4 seeds (measured, nats): N = 150 gap 0.140 +- 0.026
+    (cv) against 0.297 +- 0.026 (split), paired difference 0.156 +- 0.044; N = 400
+    0.042 +- 0.003 against 0.042 +- 0.008, paired 0.001 +- 0.008.  Cross-fitting
+    helps at 150 rows and makes no measurable difference at 400.  (Before
+    ``batch_size="auto"`` shrank the batch on small data the gaps were 0.280 against
+    0.494 and 0.137 against 0.183: most of what cross-fitting used to gain at 400
+    rows was the single split's too-short training.)  The full-budget
+    ``JointRegressor()`` comparison is in the docs.
     """
     budget = dict(max_epochs=60, patience=10, hidden=(32, 32), device="cpu")
     for n, seeds in ((150, 4), (400, 4)):
@@ -245,8 +252,12 @@ def test_density_gap_to_the_truth_on_small_data() -> None:
             assert gaps["cv"] > -0.05  # the truth is the best density
             diffs.append(gaps["split"] - gaps["cv"])
         d = torch.tensor(diffs)
-        # cv = 5 is closer to the truth on these small data sets (paired over seeds).
-        assert float(d.mean()) > 0, f"N = {n}: split - cv gap {d.tolist()}"
+        if n == 150:
+            # cv = 5 is closer to the truth (paired over seeds: 0.156 +- 0.044 measured).
+            assert float(d.mean()) > 0.05, f"N = {n}: split - cv gap {d.tolist()}"
+        else:
+            # no measurable difference at 400 rows (0.001 +- 0.008 measured)
+            assert abs(float(d.mean())) < 0.04, f"N = {n}: split - cv gap {d.tolist()}"
 
 
 # ── surface ────────────────────────────────────────────────────────────────────

@@ -179,7 +179,36 @@ class TestScalingDefaults:
         x, y = self._data(400)
         model = JointRegressor("gaussian", max_epochs=1, device="cpu").fit(x, y)
         assert (model.n_val_, model.n_recal_, model.n_conformal_) == (40, 20, 40)
-        assert model.batch_size_ == 256
+        assert model.batch_size_ == 32  # 300 training rows: 10 steps per epoch
+
+    @pytest.mark.parametrize(
+        ("n_train", "expected"),
+        [
+            (40, 16),
+            (127, 16),
+            (128, 16),
+            (255, 16),
+            (256, 32),
+            (308, 32),
+            (1000, 64),
+            (2047, 128),
+            (2048, 256),
+            (102_400, 256),
+            (102_401, 512),
+            (245_000, 1024),
+            (5_000_000, 4096),
+        ],
+    )
+    def test_auto_batch_size_keeps_an_epoch_between_8_and_400_steps(
+        self, n_train: int, expected: int
+    ) -> None:
+        from torchregress.joint.estimator import _auto_batch_size
+
+        batch = _auto_batch_size(n_train)
+        assert batch == expected
+        steps = n_train / batch
+        assert steps >= 8 or batch == 16
+        assert steps <= 400 or batch == 4096
 
     def test_auto_batch_size_grows_with_the_training_set(self) -> None:
         x, y = self._data(300_000)

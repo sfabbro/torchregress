@@ -569,7 +569,7 @@ EXPECTED_SIGNATURES = {
         "weight_decay: 'float' = 1e-05, "
         "val_fraction: 'float' = 0.1, recal_fraction: 'float' = 0.05, "
         "conformal_fraction: 'float' = 0.1, max_holdout: 'int' = 20000, "
-        "cv: 'Optional[int]' = None, recalibrate: 'bool' = True, clip_features: 'bool' = True, "
+        "cv: 'Optional[int]' = None, location: 'Optional[str]' = None, recalibrate: 'bool' = True, clip_features: 'bool' = True, "
         "score: 'Union[str, ConformalScore]' = 'auto', n_folds: 'int' = 3, "
         "n_members: 'Optional[int]' = None, "
         "noise_dim: 'Optional[int]' = None, energy_draws: 'int' = 2, "

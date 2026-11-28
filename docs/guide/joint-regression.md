@@ -554,13 +554,10 @@ results are in data units. **Caution:** `"auto"` costs much more than
 flowchart TD
     A["Targets y in R^d"] --> B{"Missing targets<br/>in training?"}
     B -->|"yes"| C["gaussian + mixture"]
-    B -->|"no"| D{"Few rows (hundreds)?"}
-    D -->|"yes"| E["gaussian, or sklar"]
-    D -->|"no"| F{"d > 16?"}
+    B -->|"no"| F{"d > 32?"}
     F -->|"yes"| G["gaussian + mixture + sklar"]
     F -->|"no"| H["auto: all four, stacked"]
     C --> S{"Missing targets<br/>at calibration?"}
-    E --> S
     G --> S
     H --> S
     S -->|"yes"| M["MahalanobisScore"]
@@ -570,6 +567,42 @@ flowchart TD
     Q -->|"yes"| L["LatentScore"]
     Q -->|"no"| R["HPDScore"]
 ```
+
+**A point model first (`location="mse"`, off by default).** A head trained by
+likelihood fits scale and shape together with the centre, and with early
+stopping its centre can end up less accurate than a squared-error network's. With
+`location="mse"` the predictive is
+
+$$
+\mathbf Y = \mathbf m(\mathbf x) + \mathbf s \odot \mathbf R, \qquad
+\mathbf R \mid \mathbf x \sim \hat p_R(\cdot \mid \mathbf x),
+$$
+
+with $\mathbf m$ the average of five networks trained by squared error, each
+without one fifth of the training rows (a tenth of the rest stops its training
+early; fewer networks below 40 training rows), $\mathbf s$ the per-target spread of their
+out-of-fold residuals, and $\hat p_R$ whatever `method` fits, to the residuals.
+A training row's residual comes from the network that did not see it; held-out
+rows and new rows use the average of the five, none of which saw them, so
+stacking, recalibration and the coverage of `region` hold as without it.
+
+| Measured (laptop CPU) | without | with `location="mse"` |
+|:--|:-:|:-:|
+| Synthetic, 3 targets, 1,500 rows, flow head, 3 seeds: error of the mean / log score | 0.235 / 1.604 | 0.199 / 1.491 |
+| Real, 16 targets, 3,586 training rows, Gaussian head, 1 seed: energy score / log score | 413 / 91.9 | 241 / 89.3 |
+| The same set, flow head: energy score / log score | 282 / 87.8 | 243 / 88.7 |
+| Real, 2 targets, 308 training rows, default, 3 seeds: energy score / log score | 0.81 / 1.73 | 0.96 / 2.57 |
+
+!!! warning "Not always a gain"
+    It helps where the heads' centres are poor, and gives every head about the
+    same energy score. It hurt on the small set of the last row, where
+    networks fitted to about 220 of the 308 rows are worse than the heads' own
+    centres, and it made the flow's log score slightly worse on the 16-target
+    set. In-sample residuals are not an alternative: in a prototype that gave
+    every row passed to `fit`, the conformal rows included, the residual of a
+    network that had seen it, the 90% regions covered 35 to 47% of new rows.
+    It costs five more network fits of the same size (per fold model with
+    `cv`). Compare `validation_log_score_` with and without it on your data.
 
 ### 4.3 Per-target predictions joined by a dependence model
 
@@ -733,18 +766,18 @@ for cv in (None, 5):
 ```
 
 ```text
-cv=None: 225 rows train each model, 30 calibrate; log score -1.459, coverage 0.834
-cv=5: 216 rows train each model, 300 calibrate; log score -1.162, coverage 0.896
+cv=None: 225 rows train each model, 30 calibrate; log score -1.415, coverage 0.924
+cv=5: 216 rows train each model, 300 calibrate; log score -1.111, coverage 0.926
 ```
 
 With 300 rows the single split trains on 225 and calibrates on 30, so its
 region rests on 30 scores; with `cv=5` every row calibrates. The density gains
 too. For the default `JointRegressor()` against `JointRegressor(cv=5)` on a
 two-target problem with a known Gaussian density (5 seeds, paired, 2,000 test
-rows), the mean gap to the true log density was 0.263 ± 0.066 nats against
-0.125 ± 0.016 at $N = 150$ (paired difference 0.138 ± 0.065), and 0.069 ± 0.016
-against 0.041 ± 0.003 at $N = 400$ (0.028 ± 0.016). Fitting took 2.5 s against
-6.7 s at $N = 150$ and 6.2 s against 16.1 s at $N = 400$ (laptop CPU), and a
+rows), the mean gap to the true log density was 0.337 ± 0.090 nats against
+0.091 ± 0.016 at $N = 150$ (paired difference 0.246 ± 0.089), and 0.059 ± 0.009
+against 0.038 ± 0.002 at $N = 400$ (0.021 ± 0.008). Fitting took 7.9 s against
+19.0 s at $N = 150$ and 12.1 s against 29.8 s at $N = 400$ (laptop CPU), and a
 region for 500 rows about 0.5 s against 1.6 to 1.9 s.
 
 | | `cv=None` (default) | `cv=K` |
@@ -756,14 +789,13 @@ region for 500 rows about 0.5 s against 1.6 to 1.9 s.
 
 !!! warning "On real small data: steadier, and sometimes conservative"
     On two small real data sets with the default `JointRegressor()` against
-    `JointRegressor(cv=5)` (four seeds, 90% regions): with 193 training rows
-    (`mt_jura`) the realised coverage ranged over 0.75 to 0.97 for the single
-    split and 0.92 to 0.96 with cross-fitting; with 410 rows (`mt_enb`) it was
-    0.87 to 0.96 against 0.97 to 0.99, so there the cross-conformal region is
+    `JointRegressor(cv=5)` (three seeds, 90% regions): with 193 training rows
+    (`mt_jura`) the realised coverage ranged over 0.78 to 1.00 for the single
+    split and 0.94 to 1.00 with cross-fitting; with 410 rows (`mt_enb`) it was
+    0.90 to 0.97 against 0.96 to 0.99, so there the cross-conformal region is
     larger than it needs to be. The log score did not change beyond the spread
-    across seeds on either set (5.84 against 5.81, and 2.17 against 2.23; ten
-    folds gave 5.74 and 2.14 over three seeds). Expect steadier coverage from
-    `cv`; do not count on a better density.
+    across seeds on either set (5.59 against 5.55, and 1.73 against 1.78).
+    Expect steadier coverage from `cv`; do not count on a better density.
 
 !!! info "What the fold models use"
     The fold models that score region candidates are stacked with their own
@@ -1019,11 +1051,20 @@ models instead of one split, so every row trains and calibrates
 candidate at `region`; the proved coverage is $1 - 2\alpha$ minus a small term,
 not $1 - \alpha$.
 
+**Small data.** With `batch_size="auto"` (the default) the batch shrinks below
+about 2,000 training rows so that an epoch keeps at least 8 gradient steps (16
+rows per batch at the least). Early stopping counts epochs, so with 300 rows and
+batches of 256 a patience of 30 epochs was 60 steps, too few to fit a head. On
+the two real sets above (three seeds) the default's log score went from 5.85 to
+5.59 and from 2.41 to 1.73 with the smaller batches, and its energy score on the
+second from 1.38 to 0.81; fits take about twice as long. For the last bit of
+calibration on a few hundred rows, add `cv=5` ([§4.5](#45-small-data-cross-fitting)).
+
 **Large data.** Held-out splits are capped at `max_holdout` rows each (20,000 by
 default): more held-out rows add little, so with a million rows 94% of them
 train the heads instead of 75%. With `batch_size="auto"` (the default) the batch
 grows from 256 up to 4096 so that an epoch stays under about 400 steps;
-`batch_size_` reports the size used. Below about 100,000 training rows nothing
+`batch_size_` reports the size used. Between about 2,000 and 100,000 training rows nothing
 changes. Scoring and regions need no draws for the scale recalibration, which
 is taken about `center()`, a location without sampling.
 
